@@ -1,0 +1,71 @@
+# ============================================================================
+# MAC (multi agent cad) — .gitignore
+# ============================================================================
+
+# ── macOS ───────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Editor / IDE ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.python-version
+
+# ── Virtual environments ───────────────────────────────────────────────────
+.venv/
+.venv_311/
+venv/
+env/
+
+# ── MAC runtime artifacts ───────────────────────────────────────────────────
+# Per-iteration generated files (see WORKFLOW.md §6 for what each contains).
+temp_*.py
+temp_output_*.step
+temp_output_*.stp
+temp_output_*.stl
+temp_output_*.3mf
+temp_measurements_*.json
+temp_missed_*.json
+
+# Cached pipeline state (user-specific; don't commit cached cad_brief / architect_plan).
+# Use `git add -f pipeline_cache/<file>.json` to share a specific cache snapshot.
+pipeline_cache/
+
+# Local Claude Code state (session logs, scheduled tasks).
+.claude/
+
+# ── Local dev scripts & scratch space ──────────────────────────────────────
+tmp/
+
+# ── Third-party content not for redistribution ─────────────────────────────
+# api.md is a wholesale copy of Alibaba Cloud Bailian error docs -- do not
+# commit. Keep local copy for reference only.
+api.md
+
+# ── Logs & ad-hoc dumps ─────────────────────────────────────────────────────
+*.log
+*.jsonl
+last_turn.json
+turn_log.json
+
+# ── OS / misc ──────────────────────────────────────────────────────────────
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/

@@ -1,0 +1,93 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multi-agent-cad"
+version = "1.0.0"
+description = "MAC (multi agent cad): A decoupled multi-agent framework for text-to-CAD generation via constrained test-time compute."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "PUMA" }]
+keywords = ["cad", "build123d", "langgraph", "multi-agent", "text-to-cad", "step", "aider"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Graphics :: 3D Modeling",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    # CAD kernel
+    "build123d>=0.8",
+    # LangGraph orchestration (pinned for Python 3.11 compat)
+    "langgraph>=0.2,<0.3",
+    "langgraph-checkpoint>=2.0,<3.0",
+    # Data contracts
+    "pydantic>=2.5",
+    # LLM clients (OpenAI-compatible — DashScope / Qwen / OpenAI / DeepSeek)
+    "openai>=1.20.0",
+    # Autonomous code repair engine
+    "aider-chat>=0.50",
+    # Optional fallback provider (Claude)
+    "anthropic>=0.30",
+]
+
+[project.optional-dependencies]
+mesh = [
+    # Engine B: STL mesh analysis. conda-forge preferred — pip wheels for
+    # trimesh + rtree can be unreliable on Windows.
+    "trimesh>=4.0",
+    "rtree>=1.1",
+]
+science = [
+    "numpy>=1.24,<2",
+    "scipy>=1.10",
+    "scikit-learn>=1.3",
+]
+dev = [
+    "ipython>=8.15",
+    "pytest>=7.4",
+    "ruff>=0.1",
+]
+
+# Convenience: install everything for local dev
+all = [
+    "multi-agent-cad[mesh,science,dev]"
+]
+
+[project.scripts]
+# Restore config.py to defaults (the only module with a callable main()).
+# Run the workflows themselves via `python -m multi_agent_cad.graph` /
+# `python -m multi_agent_cad.graph_aider` — see README §6 for details.
+mac-config-reset = "multi_agent_cad._config_defaults:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["multi_agent_cad*"]
+exclude = ["tmp*", "legacy_refs*", "packages*", "pipeline_cache*", "tests*"]
+
+[tool.setuptools.package-data]
+multi_agent_cad = [
+    "prompts/*.md",
+    "build123d_reference.md",
+    "WORKFLOW.md",
+]
+
+# ── Ruff config (optional — only used if ruff is installed) ─────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]  # line length is a guideline, not a hard rule
+
+[tool.ruff.lint.per-file-ignores]
+"multi_agent_cad/nodes.py" = ["E712"]  # == True/False comparisons are intentional in this file

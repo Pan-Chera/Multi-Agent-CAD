@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cadpy"
+version = "0.3.8"
+description = "Shared STEP/GLB topology artifact generation runtime for CAD skills."
+requires-python = ">=3.11"
+dependencies = [
+  "build123d",
+  "cadquery-ocp",
+]
+
+[project.scripts]
+cadpy-step-artifact = "cadpy.step_artifact:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["cadpy*"]
+
+[tool.setuptools.package-data]
+cadpy = ["py.typed"]
