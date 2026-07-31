@@ -22,7 +22,7 @@
 
 > **同等的 CAD 生成能力，1/116 的 token、1/13 的推理成本。**
 
-| | [单 agent 基线](https://github.com/earthtojake/text-to-cad) | MAC | 优势 |
+| | [CAD Skills](https://github.com/earthtojake/text-to-cad) | MAC (ours) | 优势 |
 |---|---:|---:|---:|
 | Tokens | 103.9M | **896k** | **116× ↓** |
 | Cost | ¥125.69 | **¥9.67** | **13× ↓** |
@@ -32,11 +32,11 @@
 
 ## 📖 目录
 - [1. 📸 实物打印画廊](#1-实物打印画廊)
-- [2. 💡 项目简介](#2-项目简介)
-- [3. ✨ 核心优势](#3-核心优势)
-- [4. 📊 量化评测](#4-量化评测)
-- [5. 🧠 系统架构](#5-系统架构)
-- [6. 🚀 快速上手](#6-快速上手)
+- [2. 🚀 快速上手](#2-快速上手)
+- [3. 💡 项目简介](#3-项目简介)
+- [4. ✨ 核心优势](#4-核心优势)
+- [5. 📊 量化评测](#5-量化评测)
+- [6. 🧠 系统架构](#6-系统架构)
 - [7. 📝 学术引用](#7-学术引用)
 
 ---
@@ -45,7 +45,7 @@
 
 ![3D打印模型实物总览](assets/overview.jpg)
 
-下方 10 个基准测试零件（P1–P10，与 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) 同源 prompt）与 1 个可动演示均由 MAC 流水线生成。原始 prompt 见 [qwen3.7_token.md](qwen3.7_token.md)。
+下方 10 个基准测试零件（P1–P10，与 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) 同源 prompt）与 1 个可动演示均由 MAC 流水线生成。上图实物打印模型的 3D 旋转视图与 prompt 见 [qwen3.7_token.md](qwen3.7_token.md)。
 
 ### 🤖 可动样例（print-in-place articulable）
 
@@ -80,11 +80,91 @@
 |---|---|---|---|---|
 | ![P6](assets/benchmark06.gif) | ![P7](assets/benchmark07.gif) | ![P8](assets/benchmark08.gif) | ![P9](assets/benchmark09.gif) | ![P10](assets/benchmark10.gif) |
 
-> 设计你自己的打印品！参见 [§6 快速上手](#6-快速上手) 了解如何生成模型。
+> 设计你自己的打印品！参见 [§2 快速上手](#2-快速上手) 了解如何生成模型。
 
 ---
 
-## 2. 💡 项目简介
+## 2. 🚀 快速上手
+
+### 安装
+
+```bash
+git clone https://github.com/Pan-Chera/Multi-Agent-CAD
+cd text-to-cad-main
+conda env create -f environment.yml
+conda activate multi_agent_cad
+```
+
+> pip 用户见 [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml)。Windows 上 `trimesh`、`rtree`、`OCP` 的 C 扩展建议从 conda-forge 装。
+
+### 配置
+
+编辑 [multi_agent_cad/config.py](multi_agent_cad/config.py)：
+
+| 字段 | 作用 |
+|---|---|
+| `DS_API_KEY` | API key（或设环境变量 `DASHSCOPE_API_KEY`，优先级更高） |
+| `USER_REQUEST` | 默认 CAD 生成需求 |
+| `DS_BASE_URL` + 4 个阶段的 `MODEL` / `TEMPERATURE` / `MAX_TOKENS` / `KWARGS` | provider 与每阶段模型参数（见 [§4 混合路由](#-混合路由--每阶段独立选模调用更自由二次开发空间更大)） |
+
+配置改坏时一键恢复默认：
+
+```bash
+python -m multi_agent_cad._config_defaults --reset
+```
+
+### 运行
+
+```bash
+python -m multi_agent_cad.graph          # 原始工作流：确定性 coder 优先，Aider 兜底
+python -m multi_agent_cad.graph_aider    # 修改工作流：在已有 temp_design*.py 上应用 USER_REQUEST 的修改需求
+```
+
+两个入口都会流式打印 LangGraph 事件，每次 QA 后给 10 秒选择（超时自动迭代）：按 `1` 自动迭代、`2` 注入修改需求、`3` 停止并保留当前产物。
+
+跑完后根目录生成：
+
+| 文件 | 内容 |
+|---|---|
+| `temp_output_0.step` / `.stl` | 最终模型 |
+| `temp_design_0.py` | 生成的 build123d 源码 |
+| `temp_measurements_0.json` | 白盒特征测量 |
+| `temp_missed_0.json` | 运行时诊断 |
+
+更复杂示例 prompt 见 [§1 画廊](#1-实物打印画廊)。
+
+### 缓存机制
+
+`pipeline_cache/` 存储前两个阶段的产出，让重跑省时省钱：
+
+| 文件 | 来源 | 作用 |
+|---|---|---|
+| `cad_brief.json` | Spec Planner（阶段 1） | 解析后的需求结构化数据 |
+| `architect_plan.json` | Geometric Architect（阶段 2） | 几何方案（草图、步骤、选择器） |
+
+**重跑同一 prompt**：直接 `python -m multi_agent_cad.graph` —— 命中缓存跳过前两个 LLM 阶段，从 Python Coder 开始重新生成代码并跑修复循环。如果上次 QA 失败 / Aider 修复跑偏，重跑就能用相同的 plan 再试一次，几秒内出结果。
+
+**生成不同模型**：cache 只检查文件是否存在、不比对 `USER_REQUEST` 内容。所以改了 prompt 不删 cache，会继续用旧 plan 生成旧模型。换模型前必须清缓存：
+
+```bash
+rm pipeline_cache/cad_brief.json pipeline_cache/architect_plan.json
+```
+
+或代码层面绕过：在 [multi_agent_cad/graph.py](multi_agent_cad/graph.py) 的 `get_default_initial_state` 中设 `force_refresh: True`。
+
+### 自定义 prompt
+
+编辑 [multi_agent_cad/config.py](multi_agent_cad/config.py) 的 `USER_REQUEST`，例如：
+
+```python
+USER_REQUEST = "Create a single solid circular flange as a STEP model in millimeters. The flange is a cylinder with an outside diameter of 80 mm and a thickness of 10 mm. Add a central vertical through-bore with diameter 30 mm."
+```
+
+改完后按上面 [缓存机制](#缓存机制) 的说明清缓存，再 `python -m multi_agent_cad.graph`。
+
+---
+
+## 3. 💡 项目简介
 
 近期基于 LLM 的 text-to-CAD agent 已能生成复杂模型，但推理成本高昂：长上下文交互反复消费文档、对话历史和调试栈。
 
@@ -114,7 +194,7 @@ MAC 同时是一个白盒系统：每个中间产物（`CADBrief`、`ArchitectPl
 
 ---
 
-## 3. ✨ 核心优势
+## 4. ✨ 核心优势
 
 ### 为什么 token 效率是核心指标？
 
@@ -139,13 +219,13 @@ CAD 生成天生是多轮迭代过程：代码生成 → 执行 → 错误分析
 
 LLM-only CAD agent 每次生成代码都要烧 token。MAC 反其道而行：用确定性翻译器 [`_plan_to_code`](multi_agent_cad/nodes.py) 把 Coder 阶段的"读 JSON 写代码"工作完全脱离 LLM —— 直接从 `ArchitectPlan` 翻译成 build123d 代码，**零 token 成本**。支持 `extrude`、`revolve`、`hole`、`boolean_union/cut`、`pattern_linear/circular`、`mirror`、`fillet`、`chamfer`、`shell` 等常见 CAD 操作；只有不支持的步骤类型（`draft`、`rib`、无 `control_points` 的自定义多边形）才生成 `# TODO_AIDER` 占位符由 Aider 填充。
 
-这是 token 用量降到 1/116 的关键之一：常见几何操作走翻译器，只在边界情况调用 LLM。这也是 §3.4 混合路由的极致——把 Coder 阶段的模型调用降到零。
+这是 token 用量降到 1/116 的关键之一：常见几何操作走翻译器，只在边界情况调用 LLM。这也是 §4.4 混合路由的极致——把 Coder 阶段的模型调用降到零。
 
 默认配置：Qwen 3.7-max，Planner/Coder/Repair 开启 thinking，Architect 关闭 thinking 以保证 JSON 确定性。
 
 ---
 
-## 4. 📊 量化评测
+## 5. 📊 量化评测
 
 基准测试：10 个 prompt（P1–P10），共 141 个几何特征。每个特征为二元通过/失败项，对照生成的 STEP 验证。通过率 = 通过特征数 / 特征总数。完整方法论、每 prompt 明细及失败模式分解见 [quantified_quality.md](quantified_quality.md) / [quantified_quality Chinese.md](quantified_quality%20Chinese.md)。原始 token / API / 成本数据见 [qwen3.7_token.md](qwen3.7_token.md)。
 
@@ -181,7 +261,7 @@ MAC 在 10 个 prompt、141 个特征上达到 **99.3% 通过率**，**13× 成�
 
 ---
 
-## 5. 🧠 系统架构
+## 6. 🧠 系统架构
 
 ### 核心思路：信息压缩，而非单纯多 agent
 
@@ -278,93 +358,13 @@ GraphState = {
 
 ---
 
-## 6. 🚀 快速上手
-
-### 安装
-
-```bash
-git clone https://github.com/Pan-Chera/Multi-Agent-CAD
-cd text-to-cad-main
-conda env create -f environment.yml
-conda activate multi_agent_cad
-```
-
-> pip 用户见 [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml)。Windows 上 `trimesh`、`rtree`、`OCP` 的 C 扩展建议从 conda-forge 装。
-
-### 配置
-
-编辑 [multi_agent_cad/config.py](multi_agent_cad/config.py)：
-
-| 字段 | 作用 |
-|---|---|
-| `DS_API_KEY` | API key（或设环境变量 `DASHSCOPE_API_KEY`，优先级更高） |
-| `USER_REQUEST` | 默认 CAD 生成需求 |
-| `DS_BASE_URL` + 4 个阶段的 `MODEL` / `TEMPERATURE` / `MAX_TOKENS` / `KWARGS` | provider 与每阶段模型参数（见 [§3 混合路由](#-混合路由--每阶段独立选模调用更自由二次开发空间更大)） |
-
-配置改坏时一键恢复默认：
-
-```bash
-python -m multi_agent_cad._config_defaults --reset
-```
-
-### 运行
-
-```bash
-python -m multi_agent_cad.graph          # 原始工作流：确定性 coder 优先，Aider 兜底
-python -m multi_agent_cad.graph_aider    # 修改工作流：在已有 temp_design*.py 上应用 USER_REQUEST 的修改需求
-```
-
-两个入口都会流式打印 LangGraph 事件，每次 QA 后给 10 秒选择（超时自动迭代）：按 `1` 自动迭代、`2` 注入修改需求、`3` 停止并保留当前产物。
-
-跑完后根目录生成：
-
-| 文件 | 内容 |
-|---|---|
-| `temp_output_0.step` / `.stl` | 最终模型 |
-| `temp_design_0.py` | 生成的 build123d 源码 |
-| `temp_measurements_0.json` | 白盒特征测量 |
-| `temp_missed_0.json` | 运行时诊断 |
-
-更复杂示例 prompt 见 [§1 画廊](#1-实物打印画廊)。
-
-### 缓存机制
-
-`pipeline_cache/` 存储前两个阶段的产出，让重跑省时省钱：
-
-| 文件 | 来源 | 作用 |
-|---|---|---|
-| `cad_brief.json` | Spec Planner（阶段 1） | 解析后的需求结构化数据 |
-| `architect_plan.json` | Geometric Architect（阶段 2） | 几何方案（草图、步骤、选择器） |
-
-**重跑同一 prompt**：直接 `python -m multi_agent_cad.graph` —— 命中缓存跳过前两个 LLM 阶段，从 Python Coder 开始重新生成代码并跑修复循环。如果上次 QA 失败 / Aider 修复跑偏，重跑就能用相同的 plan 再试一次，几秒内出结果。
-
-**生成不同模型**：cache 只检查文件是否存在、不比对 `USER_REQUEST` 内容。所以改了 prompt 不删 cache，会继续用旧 plan 生成旧模型。换模型前必须清缓存：
-
-```bash
-rm pipeline_cache/cad_brief.json pipeline_cache/architect_plan.json
-```
-
-或代码层面绕过：在 [multi_agent_cad/graph.py](multi_agent_cad/graph.py) 的 `get_default_initial_state` 中设 `force_refresh: True`。
-
-### 自定义 prompt
-
-编辑 [multi_agent_cad/config.py](multi_agent_cad/config.py) 的 `USER_REQUEST`，例如：
-
-```python
-USER_REQUEST = "Create a single solid circular flange as a STEP model in millimeters. The flange is a cylinder with an outside diameter of 80 mm and a thickness of 10 mm. Add a central vertical through-bore with diameter 30 mm."
-```
-
-改完后按上面 [缓存机制](#缓存机制) 的说明清缓存，再 `python -m multi_agent_cad.graph`。
-
----
-
 ## 7. 📝 学术引用
 
 如果你觉得本项目对你的研究有帮助，请考虑引用：
 
 ```bibtex
 @misc{mac2026,
-  author = {PUMA and Maurezou},
+  author = {Guanxing Qu and Maurezou},
   title  = {MAC (Multi-Agent CAD): A Decoupled Multi-Agent Framework for Text-to-CAD Generation},
   year   = {2026},
   publisher = {GitHub},

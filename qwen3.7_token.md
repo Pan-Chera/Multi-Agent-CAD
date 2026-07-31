@@ -257,6 +257,7 @@
 
 ![test1 result](assets/show1.gif)
 > Create a single solid desktop organizer in millimeters. The main body is a hexagon with a flat-to-flat distance of 80 mm and a height of 40 mm, centered on the origin with its bottom at Z = 0. Create a honeycomb pattern of vertical hexagonal pockets descending from the top face. Each pocket has a flat-to-flat distance of 14 mm and a depth of 25 mm, ending at Z = 15. The pockets should be arranged in a hexagonal grid with a 2 mm wall thickness between them. Leave a 5 mm solid border around the outer edge of the main body where no pockets are cut. On all 6 vertical sides of the main body, add a rectangular cutout for paperclips near the bottom of each side, 35 mm wide along the side, 10 mm deep into the body, and 8 mm tall in Z, starting from Z = 3 and extending to Z = 11, leaving a solid bottom base. Add a 1.5 mm fillet to all top perimeter edges of the main body."
+
 |input | cache_w | cache_r | output | total | API 调用 | 费用（元） |
 |---:|---:|---:|---:|---:|---:|---:|
 | 67,329 | 0 | 0 | 43,865 | 111,194 | 6 | **1.19** |
@@ -265,6 +266,7 @@
 
 ![test2 result](assets/show2.gif)
 > Create a single solid gyroscope-style desk ornament as a STEP model in millimeters. It consists of three concentric rings and a central sphere, all centered at the origin (0,0,37). The outer ring has an outer radius of 30 mm, an inner radius of 25 mm, and a width of 8 mm in Z. The middle ring has an outer radius of 23 mm, an inner radius of 19 mm, and a width of 8 mm, but is rotated 45 degrees around the X axis. The inner ring has an outer radius of 17 mm, an inner radius of 14 mm, and a width of 8 mm, rotated 90 degrees around the Y axis. Add a solid central sphere of radius 11 mm. Connect the inner ring to the central sphere with two 4 mm diameter cylindrical pegs, embedded at least 3 mm into both bodies. Connect the middle ring to the inner ring with two 4 mm pegs, embedded at least 3 mm into both bodies. Add a cylindrical base stand at the bottom, diameter 45 mm and height 8 mm, resting on the XY plane at Z=0. Connect the base to the outer ring with a central vertical trunk of diameter 14 mm, adding 3 mm fillets at the intersections with the base and the outer ring. Add a 1.5 mm chamfer to the top edge of the base.
+
 |input | cache_w | cache_r | output | total | API 调用 | 费用（元） |
 |---:|---:|---:|---:|---:|---:|---:|
 | 66,683 | 0 | 4,224 | 63,870 | 134,777 | 6 | **1.55** |
@@ -283,6 +285,7 @@
 
 ![test5 result](assets/show5.gif)
 > Create a print-in-place ball-in-cage fidget toy consisting of two separate solid bodies. Body 1 (the Cage): A cube of 40x40x40 mm centered at the origin. Cut a spherical hollow inside the cube with a radius of 16 mm, centered at the origin. To make the ball visible and touchable, cut circular through-holes of radius 12 mm on all six faces of the cube (extrude cuts along X, Y, and Z axes through the entire cube). Add a 2 mm fillet to all outer straight edges of the cube. Body 2 (the Ball): A solid sphere with a radius of 15 mm centered at the origin. Note that the ball is physically separated from the cage by a 1 mm clearance everywhere. Ensure the final result is a multi-body part containing both bodies. 
+
 |input | cache_w | cache_r | output | total | API 调用 | 费用（元） |
 |---:|---:|---:|---:|---:|---:|---:|
 | 29,444 | 0 | 4,224 | 19,059 | 52,727 | 4 | **0.52** |
@@ -291,6 +294,7 @@
 
 ![test6 result](assets/show6.gif)
 > Create a print-in-place articulable gyroscope toy consisting of two separate bodies. Body 1 (Outer Ring): A cylindrical ring with an outer radius of 30 mm, an inner radius of 23 mm, and a height of 10 mm, centered at the origin on the XY plane. Cut 12 evenly spaced gear-like notches (2 mm deep, 3 mm wide) along the outer perimeter of the outer ring. Cut two circular holes of radius 2.4 mm entirely through the outer ring along the X-axis. Body 2 (Inner Spinner): A cylindrical ring with an outer radius of 22 mm, an inner radius of 15 mm, and a height of 10 mm, centered at the origin. Cut 8 evenly spaced gear-like notches (2 mm deep, 3 mm wide) along the inner perimeter of the inner ring. Add two cylindrical pivot pins protruding outward along the X-axis from the outer surface of the inner ring. The pins should have a radius of 2.0 mm and extend 6 mm outward, reaching into the holes of the outer ring. The 0.4 mm difference in radii ensures a clearance gap so the inner ring can spin freely. Add a 1 mm chamfer to the top and bottom outer edges of both rings. Ensure the final result is a multi-body part containing both bodies.
+
 |input | cache_w | cache_r | output | total | API 调用 | 费用（元） |
 |---:|---:|---:|---:|---:|---:|---:|
 | 78,352 | 0 | 4,224 | 44,003 | 126,579 | 7 | **1.26** |
@@ -299,6 +303,7 @@
 
 ![test7 result](assets/show7.gif)
 > Create a print-in-place articulable multi-link chain consisting of 5 separate interlocking bodies. Body 1 (Link 1): A solid torus with a major radius of 10 mm and a minor radius of 2.5 mm, lying flat on the XY plane, centered at the origin. Body 2 (Link 2): An identical solid torus (major radius 10 mm, minor radius 2.5 mm). Rotate this torus 90 degrees around the X-axis, and translate it 13 mm along the positive X-axis to interlock with Body 1. Body 3 (Link 3): An identical torus with the same orientation as Body 1 (flat on the XY plane), translated 26 mm along the positive X-axis to interlock with Body 2. Body 4 (Link 4): An identical torus with the same orientation as Body 2 (rotated 90 degrees around the X-axis), translated 39 mm along the positive X-axis to interlock with Body 3. Body 5 (Link 5): An identical torus with the same orientation as Body 1 (flat on the XY plane), translated 52 mm along the positive X-axis to interlock with Body 4. Note: A clearance gap of approximately 0.5 mm is maintained between adjacent links so they remain physically separated and move freely after printing. Keep the result as a multi-body STEP file containing all 5 bodies.
+
 |input | cache_w | cache_r | output | total | API 调用 | 费用（元） |
 |---:|---:|---:|---:|---:|---:|---:|
 | 30,825 | 0 | 4,224 | 33,063 | 68,112 | 7 | **0.78** |
