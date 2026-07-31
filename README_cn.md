@@ -364,7 +364,7 @@ GraphState = {
 
 ```bibtex
 @misc{mac2026,
-  author = {Guanxing Qu and Maurezou},
+  author = {Guanxing Qu and Xueyan Zou},
   title  = {MAC (Multi-Agent CAD): A Decoupled Multi-Agent Framework for Text-to-CAD Generation},
   year   = {2026},
   publisher = {GitHub},
@@ -394,7 +394,7 @@ MIT —— 见 [LICENSE](LICENSE)。
 
 ## 🙏 致谢
 
-- [Tsinghua University, IEI Lab](https://www.tsinghua.edu.cn) —— 本项目所属实验室，提供研究环境与导师指导
+- [Tsinghua University, IEI Lab](https://maureenzou.github.io/lab.html) —— 本项目所属实验室，提供研究环境与导师指导
 - [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD Skills）—— 对比基线 `cad skill` 的来源；本项目的 10 个 benchmark prompt（P1–P10）取自该项目 [benchmarks/](https://github.com/earthtojake/text-to-cad/tree/main/benchmarks) 目录
 - [build123d](https://github.com/gumyr/build123d) —— 代数 B-rep CAD 内核
 - [LangGraph](https://langchain-ai.github.io/langgraph/) —— 有状态 agent 编排

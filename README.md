@@ -364,7 +364,7 @@ If you find this project useful for your research, please consider citing:
 
 ```bibtex
 @misc{mac2026,
-  author = {Guanxing Qu and Maurezou},
+  author = {Guanxing Qu and Xueyan Zou},
   title  = {MAC (Multi-Agent CAD): A Decoupled Multi-Agent Framework for Text-to-CAD Generation},
   year   = {2026},
   publisher = {GitHub},
@@ -394,7 +394,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## 🙏 Acknowledgements
 
-- [Tsinghua University, IEI Lab](https://www.tsinghua.edu.cn) — the lab where this project was developed; provided the research environment and advisor guidance
+- [Tsinghua University, IEI Lab](https://maureenzou.github.io/lab.html) — the lab where this project was developed; provided the research environment and advisor guidance
 - [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) (CAD Skills) — source of the `cad skill` baseline used in the quantitative evaluation; the 10 benchmark prompts (P1–P10) are taken from the project's [benchmarks/](https://github.com/earthtojake/text-to-cad/tree/main/benchmarks) directory
 - [build123d](https://github.com/gumyr/build123d) — algebraic B-rep CAD kernel
 - [LangGraph](https://langchain-ai.github.io/langgraph/) — stateful agent orchestration
