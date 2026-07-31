@@ -53,7 +53,7 @@
 
 | 描述 | 实拍图 |
 |---|---|
-| **笼中小球玩具（Ball-in-Cage Fidget Toy）**<br>经典一体化打印解压玩具：实心球被关在立方笼内，一次打印成形 —— 球可自由滚动但无法脱出。<br>• 40×40×40 mm 立方笼，内部 16 mm 半径球形空腔，居中于原点<br>• 15 mm 半径实心球，与笼内壁四周保持 1 mm 间隙<br>• 六面各开一个 12 mm 半径通孔，便于观察和触摸小球<br>• 两个独立实体（笼 + 球）共存于同一个 STEP 文件<br><br>**可动陀螺仪玩具（Articulable Gyroscope Toy）**<br>一体化打印的旋转结构：内环通过两根 pivot pin 在外环内自由旋转，0.4 mm 径向间隙直接打印在几何中。<br>• 外环：30 mm 外 / 23 mm 内半径，高 10 mm，居中于 XY 平面<br>• 外环上沿 X 轴开两个 2.4 mm 半径的 pivot 孔<br>• 内旋转体：22 mm 外 / 15 mm 内半径，高 10 mm，内壁 8 个凹槽<br>• 两根 pivot pin（半径 2.0 mm，长 6 mm）向外伸入外环孔内<br>• 0.4 mm 径向间隙使内环绕 X 轴 360° 自由旋转 | <img src="assets/articulable.gif" width="320" alt="可动模型实拍图"> |
+| **笼中小球玩具（Ball-in-Cage Fidget Toy）**<br>经典一体化打印解压玩具：实心球被关在立方笼内，一次打印成形 —— 球可自由滚动但无法脱出。<br>• 40×40×40 mm 立方笼，内部 16 mm 半径球形空腔，居中于原点<br>• 15 mm 半径实心球，与笼内壁四周保持 1 mm 间隙<br>• 六面各开一个 12 mm 半径通孔，便于观察和触摸小球<br><br>**可动陀螺仪玩具（Articulable Gyroscope Toy）**<br>一体化打印的旋转结构：内环通过两根 pivot pin 在外环内自由旋转。<br>• 外环：30 mm 外 / 23 mm 内半径，高 10 mm，居中于 XY 平面<br>• 外环上沿 X 轴开两个 2.4 mm 半径的 pivot 孔<br>• 内旋转体：22 mm 外 / 15 mm 内半径，高 10 mm，内壁 8 个凹槽<br>• 两根 pivot pin（半径 2.0 mm，长 6 mm）向外伸入外环孔内<br>• 0.4 mm 径向间隙使内环绕 X 轴 360° 自由旋转 | <img src="assets/articulable.gif" width="320" alt="可动模型实拍图"> |
 
 ### 📐 基准测试零件（P1–P10）
 
