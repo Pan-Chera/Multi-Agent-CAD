@@ -67,6 +67,7 @@ legacy_refs/
 packages/
 └── cadpy/                     # Engine A: STEP topology analysis
 pipeline_cache/                # Cached cad_brief.json + architect_plan.json (gitignored)
+docs/                          # Project docs: quantified_quality.md, quantified_quality_cn.md, qwen3.7_token.md
 ```
 
 ## 🔄 Workflow conventions
@@ -126,7 +127,7 @@ If you're adding a new feature, please include a prompt that exercises it.
 4. Open a PR against `main`. In the PR description, include:
    - What changed and why
    - Which prompt(s) you tested against
-   - Token / cost numbers before vs after (if relevant — see [qwen3.7_token.md](qwen3.7_token.md) for the benchmark format)
+   - Token / cost numbers before vs after (if relevant — see [qwen3.7_token.md](docs/qwen3.7_token.md) for the benchmark format)
 
 ## 🐛 Reporting bugs
 

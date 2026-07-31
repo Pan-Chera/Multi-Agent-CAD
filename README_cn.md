@@ -45,17 +45,19 @@
 
 ![3D打印模型实物总览](assets/overview.jpg)
 
-下方 10 个基准测试零件（P1–P10，与 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) 同源 prompt）与 1 个可动演示均由 MAC 流水线生成。上图实物打印模型的 3D 旋转视图与 prompt 见 [qwen3.7_token.md](qwen3.7_token.md)。
+下方 10 个基准测试零件（P1–P10，与 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) 同源 prompt）与 1 个可动演示均由 MAC 流水线生成。上图实物打印模型的 3D 旋转视图与 prompt 见 [qwen3.7_token.md](docs/qwen3.7_token.md)。
 
 ### 🤖 可动样例（print-in-place articulable）
 
-![可动模型演示](assets/articulable.gif)
-
 打印即装配的多体可动模型 —— 多个独立实体在同一个 STEP 内通过 0.4–1 mm 微小间隙实现"印完即可动"，无需后续组装。这是单 agent 单实体生成之外更难的场景：不仅要分别建模多个 body，还要精确控制 clearance 让运动副功能化。
+
+| Prompt | 实拍图 |
+|---|---|
+| **笼中小球玩具（Ball-in-Cage Fidget Toy）**<br>• 40 mm 立方笼<br>• 15 mm 半径小球<br>• 四周 1 mm 间隙<br>• 球可自由滚动<br><br>**可动陀螺仪玩具（Articulable Gyroscope Toy）**<br>• 外环 + 内旋转体<br>• pivot pin 连接<br>• 0.4 mm 径向间隙<br>• 内环可自由旋转 | <img src="assets/articulable.gif" width="320" alt="可动模型实拍图"> |
 
 ### 📐 基准测试零件（P1–P10）
 
-10 个机械零件涵盖阵列特征、布尔运算、旋转阵列、螺旋扫掠、多体装配等典型 CAD 操作。下方演示模型均由本项目根据 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD skill）提供的 prompt 生成。详细 prompt 与每条几何特征通过率见 [qwen3.7_token.md](qwen3.7_token.md)。
+10 个机械零件涵盖阵列特征、布尔运算、旋转阵列、螺旋扫掠、多体装配等典型 CAD 操作。下方演示模型均由本项目根据 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD skill）提供的 prompt 生成。详细 prompt 与每条几何特征通过率见 [qwen3.7_token.md](docs/qwen3.7_token.md)。
 
 | # | 零件 | 主要几何特征 |
 |---|---|---|
@@ -227,7 +229,7 @@ LLM-only CAD agent 每次生成代码都要烧 token。MAC 反其道而行：用
 
 ## 5. 📊 量化评测
 
-基准测试：10 个 prompt（P1–P10），共 141 个几何特征。每个特征为二元通过/失败项，对照生成的 STEP 验证。通过率 = 通过特征数 / 特征总数。完整方法论、每 prompt 明细及失败模式分解见 [quantified_quality.md](quantified_quality.md) / [quantified_quality Chinese.md](quantified_quality%20Chinese.md)。原始 token / API / 成本数据见 [qwen3.7_token.md](qwen3.7_token.md)。
+基准测试：10 个 prompt（P1–P10），共 141 个几何特征。每个特征为二元通过/失败项，对照生成的 STEP 验证。通过率 = 通过特征数 / 特征总数。完整方法论、每 prompt 明细及失败模式分解见 [quantified_quality.md](docs/quantified_quality.md) / [quantified_quality_cn.md](docs/quantified_quality_cn.md)。原始 token / API / 成本数据见 [qwen3.7_token.md](docs/qwen3.7_token.md)。
 
 对比基线 `cad skill` 即 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD Skills，[文档](https://www.cadskills.xyz)）项目的 [`cad` skill](https://github.com/earthtojake/text-to-cad/tree/main/skills/cad) —— 一个基于 Claude Code skill 的单体 agent 文本到 CAD 生成器。
 
@@ -257,7 +259,7 @@ MAC 在 10 个 prompt、141 个特征上达到 **99.3% 通过率**，**13× 成�
 |---|---:|---:|---:|
 | 平均 output/input | 0.332 | 0.659 | **1.98×** |
 
-这里比率更高意味着 LLM 的输出算力聚焦在实际代码生成上，而非浪费在反复阅读历史错误栈、build123d 参考文档和冗长对话历史上。该比率的提升来自**分母的精简**（输入极小化），而非分子膨胀 —— 与 [quantified_quality.md](quantified_quality.md) §5 的架构结论一致。
+这里比率更高意味着 LLM 的输出算力聚焦在实际代码生成上，而非浪费在反复阅读历史错误栈、build123d 参考文档和冗长对话历史上。该比率的提升来自**分母的精简**（输入极小化），而非分子膨胀 —— 与 [quantified_quality.md](docs/quantified_quality.md) §5 的架构结论一致。
 
 ---
 
