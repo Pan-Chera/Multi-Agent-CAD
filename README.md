@@ -51,9 +51,9 @@ The 10 benchmark parts (P1–P10, sharing prompts with [earthtojake/text-to-cad]
 
 Multi-body articulable models that print pre-assembled — multiple independent solid bodies coexist in one STEP with 0.4–1 mm clearance gaps so they move freely right off the build plate, no assembly required. This is a harder scenario than single-body generation: not only must the pipeline model each body separately, it must also precisely control clearances so the kinematic pairs actually function.
 
-| Prompt | Real-shot |
+| Description | Real-shot |
 |---|---|
-| **Ball-in-Cage Fidget Toy**<br>• 40 mm cube cage<br>• 15 mm radius ball<br>• 1 mm clearance everywhere<br>• ball rattles freely<br><br>**Articulable Gyroscope Toy**<br>• outer ring + inner spinner<br>• pivot pin connection<br>• 0.4 mm radial clearance<br>• inner ring spins freely | <img src="assets/articulable.gif" width="320" alt="Articulable models real-shot"> |
+| **Ball-in-Cage Fidget Toy**<br>A print-in-place classic: a solid ball is trapped inside a cube cage, printed as one piece — the ball rattles freely but cannot escape.<br>• 40 mm cube cage with a 16 mm radius spherical hollow inside, centered at origin<br>• 15 mm radius solid ball — 1 mm clearance from cage interior on all sides<br>• Six 12 mm radius through-holes (one on each face) make the ball visible & touchable<br>• Two separate solid bodies (cage + ball) coexist in one STEP file<br><br>**Articulable Gyroscope Toy**<br>A print-in-place rotational pair: the inner ring spins inside the outer ring via two pivot pins, with the 0.4 mm radial clearance printed directly into the geometry.<br>• Outer ring: 30 mm outer / 23 mm inner radius, 10 mm tall, centered on XY plane<br>• Two 2.4 mm radius pivot holes through the outer ring along the X axis<br>• Inner spinner: 22 mm outer / 15 mm inner radius, 10 mm tall, 8 inner notches<br>• Two pivot pins (2.0 mm radius, 6 mm long) protrude outward into outer ring holes<br>• 0.4 mm radial clearance lets the inner ring spin freely 360° around the X axis | <img src="assets/articulable.gif" width="320" alt="Articulable models real-shot"> |
 
 ### 📐 Benchmark Parts (P1–P10)
 
@@ -77,10 +77,14 @@ Multi-body articulable models that print pre-assembled — multiple independent 
 | P1 | P2 | P3 | P4 | P5 |
 |---|---|---|---|---|
 | ![P1](assets/benchmark01.gif) | ![P2](assets/benchmark02.gif) | ![P3](assets/benchmark03.gif) | ![P4](assets/benchmark04.gif) | ![P5](assets/benchmark05.gif) |
+| ¥5.53 → **¥0.31** (17.8×) | ¥8.07 → **¥0.34** (23.7×) | ¥13.07 → **¥1.08** (12.1×) | ¥6.53 → **¥0.57** (11.5×) | ¥2.88 → **¥0.36** (8.0×) |
 
 | P6 | P7 | P8 | P9 | P10 |
 |---|---|---|---|---|
 | ![P6](assets/benchmark06.gif) | ![P7](assets/benchmark07.gif) | ![P8](assets/benchmark08.gif) | ![P9](assets/benchmark09.gif) | ![P10](assets/benchmark10.gif) |
+| ¥15.21 → **¥3.10** (4.9×) | ¥17.42 → **¥0.53** (32.9×) | ¥32.75 → **¥1.20** (27.3×) | ¥12.80 → **¥1.45** (8.8×) | ¥11.43 → **¥0.73** (15.7×) |
+
+> Per-prompt cost (CNY): **CAD Skills → MAC** (cost-reduction ratio). Totals: **¥125.69 → ¥9.67 (13.0×)**. Raw data: [docs/qwen3.7_token.md](docs/qwen3.7_token.md).
 
 > Design your own prints! See [§2 Quick Start](#2-quick-start) for how to generate a model.
 

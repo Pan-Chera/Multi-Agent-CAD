@@ -51,9 +51,9 @@
 
 打印即装配的多体可动模型 —— 多个独立实体在同一个 STEP 内通过 0.4–1 mm 微小间隙实现"印完即可动"，无需后续组装。这是单 agent 单实体生成之外更难的场景：不仅要分别建模多个 body，还要精确控制 clearance 让运动副功能化。
 
-| Prompt | 实拍图 |
+| 描述 | 实拍图 |
 |---|---|
-| **笼中小球玩具（Ball-in-Cage Fidget Toy）**<br>• 40 mm 立方笼<br>• 15 mm 半径小球<br>• 四周 1 mm 间隙<br>• 球可自由滚动<br><br>**可动陀螺仪玩具（Articulable Gyroscope Toy）**<br>• 外环 + 内旋转体<br>• pivot pin 连接<br>• 0.4 mm 径向间隙<br>• 内环可自由旋转 | <img src="assets/articulable.gif" width="320" alt="可动模型实拍图"> |
+| **笼中小球玩具（Ball-in-Cage Fidget Toy）**<br>经典一体化打印解压玩具：实心球被关在立方笼内，一次打印成形 —— 球可自由滚动但无法脱出。<br>• 40×40×40 mm 立方笼，内部 16 mm 半径球形空腔，居中于原点<br>• 15 mm 半径实心球，与笼内壁四周保持 1 mm 间隙<br>• 六面各开一个 12 mm 半径通孔，便于观察和触摸小球<br>• 两个独立实体（笼 + 球）共存于同一个 STEP 文件<br><br>**可动陀螺仪玩具（Articulable Gyroscope Toy）**<br>一体化打印的旋转结构：内环通过两根 pivot pin 在外环内自由旋转，0.4 mm 径向间隙直接打印在几何中。<br>• 外环：30 mm 外 / 23 mm 内半径，高 10 mm，居中于 XY 平面<br>• 外环上沿 X 轴开两个 2.4 mm 半径的 pivot 孔<br>• 内旋转体：22 mm 外 / 15 mm 内半径，高 10 mm，内壁 8 个凹槽<br>• 两根 pivot pin（半径 2.0 mm，长 6 mm）向外伸入外环孔内<br>• 0.4 mm 径向间隙使内环绕 X 轴 360° 自由旋转 | <img src="assets/articulable.gif" width="320" alt="可动模型实拍图"> |
 
 ### 📐 基准测试零件（P1–P10）
 
@@ -77,10 +77,14 @@
 | P1 | P2 | P3 | P4 | P5 |
 |---|---|---|---|---|
 | ![P1](assets/benchmark01.gif) | ![P2](assets/benchmark02.gif) | ![P3](assets/benchmark03.gif) | ![P4](assets/benchmark04.gif) | ![P5](assets/benchmark05.gif) |
+| ¥5.53 → **¥0.31** (17.8×) | ¥8.07 → **¥0.34** (23.7×) | ¥13.07 → **¥1.08** (12.1×) | ¥6.53 → **¥0.57** (11.5×) | ¥2.88 → **¥0.36** (8.0×) |
 
 | P6 | P7 | P8 | P9 | P10 |
 |---|---|---|---|---|
 | ![P6](assets/benchmark06.gif) | ![P7](assets/benchmark07.gif) | ![P8](assets/benchmark08.gif) | ![P9](assets/benchmark09.gif) | ![P10](assets/benchmark10.gif) |
+| ¥15.21 → **¥3.10** (4.9×) | ¥17.42 → **¥0.53** (32.9×) | ¥32.75 → **¥1.20** (27.3×) | ¥12.80 → **¥1.45** (8.8×) | ¥11.43 → **¥0.73** (15.7×) |
+
+> 单 prompt 成本（CNY）：**CAD Skills → MAC**（成本降低倍数）。总计：**¥125.69 → ¥9.67（13.0×）**。原始数据见 [docs/qwen3.7_token.md](docs/qwen3.7_token.md)。
 
 > 设计你自己的打印品！参见 [§2 快速上手](#2-快速上手) 了解如何生成模型。
 
