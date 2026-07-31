@@ -45,65 +45,13 @@
 
 ![3D打印模型实物总览](assets/overview.jpg)
 
-下方 18 个样例均由 MAC 流水线生成：8 个展示样例（实用性 + 观赏性 + 可动）+ 10 个基准测试零件（P1–P10，与 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) 同源 prompt）。原始 prompt 见 [qwen3.7_token.md](qwen3.7_token.md)。
-
-### 🛠️ 实用性样例
-
-#### 蜂窝桌面收纳盒（Hex-Grid Desktop Organizer）
-![蜂窝桌面收纳盒](assets/show1.gif)
-
-六边形主体（对边距 80 mm × 高 40 mm）顶部下沉蜂窝状六边形凹槽阵列，6 个垂直侧面各开一个回形针收纳槽，顶边倒 1.5 mm 圆角。考验阵列特征与多边界布尔剪裁。
-*Prompt 来源：[qwen3.7_token.md](qwen3.7_token.md) test1*
-
-#### 智能手机支架（Smartphone Stand）
-![智能手机支架](assets/show4.gif)
-
-100×80×6 mm 圆角底座 + 65° 后倾面板 + 两块防滑唇边 + 两片三角加强筋。面板用 YZ 平行四边形草图 + X 方向拉伸构造。
-*Prompt 来源：[qwen3.7_token.md](qwen3.7_token.md) test3*
-
-### 🎨 观赏性样例
-
-#### 同心陀螺仪摆件（Concentric Gyroscope Desk Sculpture）
-![同心陀螺仪摆件](assets/show2.gif)
-
-三层正交同心圆环（外/中/内）+ 中心球 + 圆柱底座，通过 4 mm 圆柱销连接。考验空间旋转矩阵与多体布尔合并的连接性。
-*Prompt 来源：[qwen3.7_token.md](qwen3.7_token.md) test2*
-
-#### 装饰性灯塔摆件（Decorative Lighthouse Ornament）
-![装饰性灯塔摆件](assets/show3.gif)
-
-圆形底座 + 锥形塔身 + 观景平台 + 8 根均布支撑托架 + 灯笼室（带 8 扇窗）+ 锥形屋顶 + 拱门入口 + 三排凹陷窗户 + 五道凸出装饰环。整体高 180 mm、最大直径 70 mm，考验复杂旋转阵列特征与浮雕细节。
-*Prompt 来源：[qwen3.7_token.md](qwen3.7_token.md) test4*
-
-#### 日内瓦机构驱动轮（Geneva Mechanism Drive Wheel）
-![日内瓦机构驱动轮](assets/show8.gif)
-
-实心底座圆柱（r=30 mm，h=6 mm）+ 中心通孔（r=5 mm）+ 4 条直槽以 90° 均布 + 4 段圆弧（r=12 mm）切割出扇形外轮廓 + 顶部外缘 1 mm 倒角。考验极坐标阵列布尔剪切与圆弧负几何。
-*Prompt 来源：[qwen3.7_token.md](qwen3.7_token.md) test8*
+下方 10 个基准测试零件（P1–P10，与 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) 同源 prompt）与 1 个可动演示均由 MAC 流水线生成。原始 prompt 见 [qwen3.7_token.md](qwen3.7_token.md)。
 
 ### 🤖 可动样例（print-in-place articulable）
 
 ![可动模型演示](assets/articulable.gif)
 
 打印即装配的多体可动模型 —— 多个独立实体在同一个 STEP 内通过 0.4–1 mm 微小间隙实现"印完即可动"，无需后续组装。这是单 agent 单实体生成之外更难的场景：不仅要分别建模多个 body，还要精确控制 clearance 让运动副功能化。
-
-#### 球笼弹珠玩具（Ball-in-Cage Fidget Toy）
-![球笼弹珠玩具](assets/show5.gif)
-
-40 mm 立方体笼子 + 内部 r=16 mm 球形空腔 + 6 个面各开 r=12 mm 圆孔让球可见可触 + 内部 r=15 mm 实心球，球与笼之间各方向 1 mm 间隙。考验多体装配与 clearance 控制。
-*Prompt 来源：[qwen3.7_token.md](qwen3.7_token.md) test5*
-
-#### 可动陀螺仪（Articulable Gyroscope）
-![可动陀螺仪](assets/show6.gif)
-
-外环（r=30/23 mm）带 12 个外齿 + 两边 X 轴方向 r=2.4 mm 通孔；内环（r=22/15 mm）带 8 个内齿 + 两边 X 轴方向 r=2.0 mm 凸出枢轴销，销伸入外环孔中。0.4 mm 半径差让内环绕 X 轴自由旋转。考验 pivot 配合与旋转自由度。
-*Prompt 来源：[qwen3.7_token.md](qwen3.7_token.md) test6*
-
-#### 多环链（Multi-Link Chain）
-![多环链](assets/show7.gif)
-
-5 个相同环（major r=10 mm、minor r=2.5 mm）依次互锁，相邻环方向交替（XY 平面 ↔ 绕 X 轴旋转 90°），X 方向间距 13 mm，环间 0.5 mm 间隙使各环可自由摆动。考验多体互锁与方向交替阵列。
-*Prompt 来源：[qwen3.7_token.md](qwen3.7_token.md) test7*
 
 ### 📐 基准测试零件（P1–P10）
 
