@@ -119,6 +119,37 @@ conda activate multi_agent_cad
 python -m multi_agent_cad._config_defaults --reset
 ```
 
+### 🔌 可接入任意 LLM provider（不绑定阿里云）
+
+MAC 通过 **OpenAI 兼容端点**调用模型。仓库默认指向阿里云百炼（`qwen3.7-max`），只是因为基准测试用了它——**并非强制**。把两个配置字段指向任意 provider，整条流水线随之切换：
+
+| Provider | `DS_BASE_URL` | `*_MODEL` 示例 | 说明 |
+|---|---|---|---|
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o`、`o3` | `DASHSCOPE_API_KEY` 填 OpenAI key；`*_KWARGS = {}` |
+| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` | OpenAI 兼容 |
+| Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.0-flash` | OpenAI 兼容端点 |
+| 本地（Ollama） | `http://localhost:11434/v1` | `qwen2.5-coder:32b` | 无需 API key |
+| Anthropic Claude | 经 OpenAI 兼容网关（OpenRouter / LiteLLM 代理） | `claude-3-5-sonnet` | Aider 修复阶段可经 litellm 原生支持 Claude |
+
+以 OpenAI 为例，编辑 [config.py](multi_agent_cad/config.py)：
+
+```python
+DS_BASE_URL = "https://api.openai.com/v1"
+SPEC_PLANNER_MODEL = ARCHITECT_MODEL = CODER_MODEL = REPAIR_MODEL = "gpt-4o"
+# 关闭 Qwen 专属的思维链开关：
+SPEC_PLANNER_KWARGS = ARCHITECT_KWARGS = CODER_KWARGS = REPAIR_KWARGS = {}
+# Aider 阶段（litellm 前缀模型名）：
+AIDER_MODEL = "openai/gpt-4o"
+```
+
+然后导出 key（环境变量名是历史遗留——接受任意 OpenAI 兼容 key）：
+
+```bash
+export DASHSCOPE_API_KEY="sk-..."
+```
+
+> **关于模型名 `qwen3.7-max`**——它只是所配置端点上的模型 ID，此处指阿里云百炼的旗舰推理模型。每个 `*_MODEL` 字段都接受你所选 provider 暴露的任意模型 ID，代码中没有任何 Qwen 专属逻辑。唯一的 Qwen 专属项是 `*_KWARGS` 里的 `enable_thinking` 开关——换其它 provider 时设 `*_KWARGS = {}`（[config.py](multi_agent_cad/config.py) 内附更多 provider 示例）。
+
 ### 运行
 
 ```bash
@@ -398,10 +429,12 @@ GraphState = {
 
 MIT —— 见 [LICENSE](LICENSE)。
 
+内置的 [`packages/cadpy`](packages/cadpy) STEP/GLB 运行时源自 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD Skills），按其原始 MIT 协议再分发——见 [packages/cadpy/LICENSE](packages/cadpy/LICENSE)。
+
 ## 🙏 致谢
 
 - [Tsinghua University, IEI Lab](https://maureenzou.github.io/lab.html) —— 本项目所属实验室，提供研究环境与导师指导
-- [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD Skills）—— 对比基线 `cad skill` 的来源；本项目的 10 个 benchmark prompt（P1–P10）取自该项目 [benchmarks/](https://github.com/earthtojake/text-to-cad/tree/main/benchmarks) 目录
+- [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD Skills）—— 对比基线 `cad skill` 的来源；本项目的 10 个 benchmark prompt（P1–P10）取自该项目 [benchmarks/](https://github.com/earthtojake/text-to-cad/tree/main/benchmarks) 目录。内置的 [`packages/cadpy`](packages/cadpy) 运行时同样源自该项目，保留其原始 MIT 版权
 - [build123d](https://github.com/gumyr/build123d) —— 代数 B-rep CAD 内核
 - [LangGraph](https://langchain-ai.github.io/langgraph/) —— 有状态 agent 编排
 - [Aider](https://aider.chat/) —— LLM 驱动的代码修复

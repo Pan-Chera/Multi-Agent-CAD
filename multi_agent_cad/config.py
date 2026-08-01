@@ -93,6 +93,13 @@ INTERVENTION_INPUT_TIMEOUT = 3600
 #   4. Autonomous Skill Loop -- Aider repair + direct API fallback
 #
 # DS_BASE_URL is shared across all stages (same endpoint).
+#
+# Model names: every *_MODEL below is just the model ID served on DS_BASE_URL.
+# The default "qwen3.7-max" is the flagship model of Alibaba DashScope. Swap in
+# "gpt-4o", "deepseek-chat", "gemini-2.0-flash", a local Ollama model, etc. --
+# nothing in the code is Qwen-specific except the `enable_thinking` toggle in
+# *_KWARGS (set *_KWARGS = {} for providers without such a toggle). See the
+# "Use any LLM provider" section in README.md for full per-provider setup.
 
 DS_BASE_URL = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 

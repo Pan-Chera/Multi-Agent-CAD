@@ -1,5 +1,10 @@
 # cadpy
 
+> **Provenance**: This package is derived from
+> [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) (CAD
+> Skills) and is redistributed under its original MIT license — see
+> [LICENSE](LICENSE). Copyright (c) 2026 earthtojake.
+
 Shared Python runtime for STEP-backed and Python-backed CAD Viewer GLB/topology artifacts.
 
 The package boundary is intentionally narrow: it owns artifact generation,

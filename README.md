@@ -119,6 +119,47 @@ To restore defaults after editing config:
 python -m multi_agent_cad._config_defaults --reset
 ```
 
+### 🔌 Use any LLM provider (not locked to Alibaba Cloud)
+
+MAC calls models through an **OpenAI-compatible endpoint**. The repo defaults to
+Alibaba Cloud DashScope (`qwen3.7-max`) only because that is what the benchmark
+uses — it is **not required**. Point two config fields at any provider and the
+whole pipeline follows:
+
+| Provider | `DS_BASE_URL` | Example `*_MODEL` | Notes |
+|---|---|---|---|
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o`, `o3` | `DASHSCOPE_API_KEY` = your OpenAI key; set `*_KWARGS = {}` |
+| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` | OpenAI-compatible |
+| Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.0-flash` | OpenAI-compatible endpoint |
+| Local (Ollama) | `http://localhost:11434/v1` | `qwen2.5-coder:32b` | no API key needed |
+| Anthropic Claude | via an OpenAI-compatible gateway (OpenRouter / LiteLLM proxy) | `claude-3-5-sonnet` | the Aider repair stage supports Claude natively via litellm |
+
+For OpenAI, edit [config.py](multi_agent_cad/config.py):
+
+```python
+DS_BASE_URL = "https://api.openai.com/v1"
+SPEC_PLANNER_MODEL = ARCHITECT_MODEL = CODER_MODEL = REPAIR_MODEL = "gpt-4o"
+# disable the Qwen-only thinking toggle:
+SPEC_PLANNER_KWARGS = ARCHITECT_KWARGS = CODER_KWARGS = REPAIR_KWARGS = {}
+# Aider stage (litellm-prefixed model name):
+AIDER_MODEL = "openai/gpt-4o"
+```
+
+then export your key (the env-var name is historical — it accepts any
+OpenAI-compatible key):
+
+```bash
+export DASHSCOPE_API_KEY="sk-..."
+```
+
+> **About the model name `qwen3.7-max`** — it is simply the model ID served on
+> the configured endpoint, here the flagship reasoning model of Alibaba
+> DashScope. Every `*_MODEL` field accepts whatever model ID your provider
+> exposes; nothing in the code is Qwen-specific. The only Qwen-specific piece is
+> the `enable_thinking` toggle inside `*_KWARGS` — set `*_KWARGS = {}` for other
+> providers (more per-provider examples live in
+> [config.py](multi_agent_cad/config.py)).
+
 ### Run
 
 ```bash
@@ -398,10 +439,15 @@ The quantitative evaluation in this README uses [earthtojake/text-to-cad](https:
 
 MIT — see [LICENSE](LICENSE).
 
+The vendored [`packages/cadpy`](packages/cadpy) STEP/GLB runtime is derived from
+[earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) (CAD
+Skills) and is redistributed under its original MIT license — see
+[packages/cadpy/LICENSE](packages/cadpy/LICENSE).
+
 ## 🙏 Acknowledgements
 
 - [Tsinghua University, IEI Lab](https://maureenzou.github.io/lab.html) — the lab where this project was developed; provided the research environment and advisor guidance
-- [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) (CAD Skills) — source of the `cad skill` baseline used in the quantitative evaluation; the 10 benchmark prompts (P1–P10) are taken from the project's [benchmarks/](https://github.com/earthtojake/text-to-cad/tree/main/benchmarks) directory
+- [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) (CAD Skills) — source of the `cad skill` baseline used in the quantitative evaluation; the 10 benchmark prompts (P1–P10) are taken from the project's [benchmarks/](https://github.com/earthtojake/text-to-cad/tree/main/benchmarks) directory. The vendored [`packages/cadpy`](packages/cadpy) runtime is also derived from this project and retains its original MIT copyright
 - [build123d](https://github.com/gumyr/build123d) — algebraic B-rep CAD kernel
 - [LangGraph](https://langchain-ai.github.io/langgraph/) — stateful agent orchestration
 - [Aider](https://aider.chat/) — LLM-driven code repair
