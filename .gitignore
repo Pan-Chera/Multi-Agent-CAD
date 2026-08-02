@@ -58,6 +58,11 @@ tmp/
 # commit. Keep local copy for reference only.
 api.md
 
+# ── Local-only marketing / promo drafts ────────────────────────────────────
+# docs/promo*.md are social-platform copy drafts (Xiaohongshu / X). Keep
+# local-only -- not part of the project's public docs.
+docs/promo*.md
+
 # ── Logs & ad-hoc dumps ─────────────────────────────────────────────────────
 *.log
 *.jsonl
