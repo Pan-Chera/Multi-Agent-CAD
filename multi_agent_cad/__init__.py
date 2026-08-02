@@ -25,6 +25,23 @@ Quick start::
     result = app.invoke({"user_request": "Design an L-bracket ..."})
 """
 
+# --- Web UI config override (opt-in) ---------------------------------------
+# When MAC_CONFIG_FILE points to a JSON file, apply its keys to the config
+# module BEFORE nodes/graph are imported (they bind config values at import
+# time via `from multi_agent_cad.config import X`). This lets the web UI
+# (and any future CLI runner) inject per-job config without rewriting
+# config.py. No-op when the env var is unset.
+import os as _os
+import json as _json
+
+_mac_cfg_file = _os.environ.get("MAC_CONFIG_FILE")
+if _mac_cfg_file:
+    import multi_agent_cad.config as _mac_cfg
+    with open(_mac_cfg_file, "r", encoding="utf-8") as _f:
+        _mac_overrides = _json.load(_f)
+    for _k, _v in _mac_overrides.items():
+        setattr(_mac_cfg, _k, _v)
+
 from multi_agent_cad.schemas import (
     # Enums
     ErrorType,

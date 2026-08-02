@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MAC · Text-to-CAD</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>🛠️ MAC — Text-to-CAD</h1>
+</header>
+
+<main>
+  <section class="panel config">
+    <h2>Configuration</h2>
+
+    <details open>
+      <summary>Provider &amp; API key</summary>
+      <label>Provider preset
+        <select id="provider">
+          <option value="qwen">Qwen (DashScope, default)</option>
+          <option value="openai">OpenAI</option>
+          <option value="deepseek">DeepSeek</option>
+          <option value="gemini">Google Gemini</option>
+          <option value="ollama">Local Ollama</option>
+        </select>
+      </label>
+      <label>API key <input type="password" id="api_key" placeholder="sk-..." autocomplete="off" /></label>
+      <label>DS_BASE_URL <input type="text" id="DS_BASE_URL" /></label>
+      <p class="hint">Switching provider auto-fills DS_BASE_URL and a suggested model name. The thinking toggle (<code>*_KWARGS</code>) is Qwen-specific — leave it for Qwen, ignore for others.</p>
+    </details>
+
+    <details>
+      <summary>Models (per stage)</summary>
+      <table id="stage-table">
+        <thead><tr><th>Stage</th><th>Model</th><th>Temp</th><th>Max tokens</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </details>
+
+    <details open>
+      <summary>Prompt &amp; workflow</summary>
+      <label>Prompt (USER_REQUEST)<textarea id="prompt" rows="5"></textarea></label>
+      <label>Workflow
+        <select id="workflow">
+          <option value="original">original — deterministic coder first, Aider fallback</option>
+          <option value="aider">aider — modify an existing temp_design*.py</option>
+        </select>
+      </label>
+      <label>Output directory on server (optional)
+        <input type="text" id="dest_path" placeholder="/path/to/save/outputs (empty = keep in temp)" />
+      </label>
+      <p class="hint">If set, the runner copies STEP/STL/GLB/.py/QA there after a successful run.</p>
+    </details>
+
+    <details>
+      <summary>Advanced (retry budget)</summary>
+      <label>MAX_RETRIES <input type="number" id="MAX_RETRIES" /></label>
+      <label>MAX_EXEC_RETRIES <input type="number" id="MAX_EXEC_RETRIES" /></label>
+    </details>
+
+    <button id="run-btn">▶ Generate</button>
+  </section>
+
+  <section class="panel output">
+    <h2>Output</h2>
+    <div id="status" class="status">Idle.</div>
+    <pre id="log" class="log"></pre>
+    <div id="viewer-wrap">
+      <model-viewer id="mv" camera-controls auto-rotate rotation-per-second="8" shadow-intensity="1" environment-intensity="1" alt="Generated 3D model"></model-viewer>
+    </div>
+    <div id="downloads" class="downloads"></div>
+    <div id="stats" class="stats"></div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

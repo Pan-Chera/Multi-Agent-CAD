@@ -57,9 +57,14 @@ dev = [
     "ruff>=0.1",
 ]
 
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+]
+
 # Convenience: install everything for local dev
 all = [
-    "multi-agent-cad[mesh,science,dev]"
+    "multi-agent-cad[mesh,science,dev,web]"
 ]
 
 [project.scripts]
@@ -78,6 +83,7 @@ multi_agent_cad = [
     "prompts/*.md",
     "build123d_reference.md",
     "WORKFLOW.md",
+    "web/static/*",
 ]
 
 # ── Ruff config (optional — only used if ruff is installed) ─────────────────
