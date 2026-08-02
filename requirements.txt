@@ -11,7 +11,7 @@
 # On Windows, prefer conda — native wheels are unreliable.
 
 # ── Core scientific / math ─────────────────────────────────────────────
-numpy>=1.24,<2
+numpy>=1.24,<3
 scipy>=1.10
 scikit-learn>=1.3
 
@@ -20,8 +20,7 @@ trimesh>=4.0
 rtree>=1.1
 
 # ── CAD kernel ────────────────────────────────────────────────────────
-build123d>=0.8
-OCP>=7.7.0              # OpenCascade Python bindings (required by build123d)
+build123d>=0.8          # pulls in cadquery-ocp-novtk (provides `OCP`) transitively
 
 # ── LangGraph orchestration ───────────────────────────────────────────
 langgraph>=0.2,<0.3

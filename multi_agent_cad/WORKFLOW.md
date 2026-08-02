@@ -638,7 +638,7 @@ Multi-Agent CAD (多 Agent 流水线):
 ### A. 文件结构
 
 ```
-text-to-cad-main/
+Multi-Agent-CAD/
 ├── multi_agent_cad/              # 项目核心
 │   ├── nodes.py                  # 所有节点实现
 │   ├── schemas.py                # Pydantic 数据模型
@@ -663,7 +663,7 @@ text-to-cad-main/
 └── temp_missed_*.json            # 运行时诊断
 ```
 
-仓库只保留 `multi_agent_cad/` 核心代码 + `legacy_refs/check_mesh.py` + `packages/cadpy` 两个硬依赖，不包含 skills/plugins/viewer/docs/benchmarks/scripts/tests 等 skill 仓库基础设施。
+仓库只保留 `multi_agent_cad/` 核心代码 + `legacy_refs/check_mesh.py` + `packages/cadpy`（vendored runtime）。`packages/cadpy` 不是 pip 依赖——`nodes.py` 在运行时用 `sys.path.insert(0, _REPO_ROOT / "packages" / "cadpy" / "src")` 注入路径后 `from cadpy.generation import ...`，无需 `pip install -e packages/cadpy`。cadpy 自身的依赖（`build123d` / `cadquery-ocp`）由根 `pyproject.toml` + `build123d` 的 transitive 拉到。仓库不包含 skills/plugins/viewer/docs/benchmarks/scripts/tests 等 skill 仓库基础设施。
 
 ### B. 环境变量
 
@@ -675,17 +675,21 @@ text-to-cad-main/
 ```
 langgraph>=0.2,<0.3
 langgraph-checkpoint>=2.0,<3.0
-build123d>=0.8               # CAD 建模引擎
+build123d>=0.8               # CAD 建模引擎；transitive 拉到 cadquery-ocp-novtk（提供 `OCP`）
 pydantic>=2.5
 aider-chat>=0.50            # Aider 代码修复
-openai>=1.20.0              # DashScope API (Qwen)
+openai>=1.20.0              # DashScope API (Qwen，OpenAI 兼容端点)
 anthropic>=0.30             # Claude fallback (optional)
-numpy>=1.24,<2
+numpy>=1.24,<3
 trimesh>=4.0                # STL 网格分析 (Engine B)
 rtree>=1.1                 # trimesh 配套
-scipy>=1.10                 # 孔洞聚类检测 (可选)
+scipy>=1.10                 # 孔洞聚类检测（check_mesh.py 用 scipy.spatial.cKDTree）
 scikit-learn>=1.3
 ```
+
+> **cadpy 不在此列表中**：`packages/cadpy` 是 vendored runtime，由 `nodes.py` 在运行时通过 `sys.path.insert` 加载 `packages/cadpy/src`，无需 pip 安装。详见 §附录 A。
+
+> **`OCP` 不在此列表中**：`OCP` 是 import 名（`from OCP import ...`），不是 PyPI 包名。可安装的包是 `cadquery-ocp`（含 vtk）或 `cadquery-ocp-novtk`（不含 vtk），由 `build123d` 的依赖关系传递性拉入。
 
 > **注意**: `networkx` 不是必需依赖。连通性检查使用 Union-Find 算法。
 

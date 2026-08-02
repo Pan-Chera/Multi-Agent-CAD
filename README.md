@@ -96,14 +96,14 @@ Multi-body articulable models that print pre-assembled — multiple independent 
 
 ```bash
 git clone https://github.com/Pan-Chera/Multi-Agent-CAD
-cd text-to-cad-main
+cd Multi-Agent-CAD
 conda env create -f environment.yml
 conda activate multi_agent_cad
 ```
 
-> pip users see [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml).
+> pip users see [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml). To enable the `mac-config-reset` console script and run `python -m multi_agent_cad.graph` from any directory (not just the repo root), also do `pip install -e .` inside the activated env.
 
-> **Windows**: `conda env create -f environment.yml` works out of the box (conda-forge ships prebuilt `OCP` / `trimesh` / `rtree` — don't use pure pip for the CAD stack on Windows). Set the API key in PowerShell as `$env:DASHSCOPE_API_KEY = "sk-..."` (or `set DASHSCOPE_API_KEY=sk-...` in cmd.exe). The Web UI install (`pip install -e ".[web]"`) also works — `uvloop` auto-skips on Windows. Windows isn't in CI, but the code avoids Unix-only APIs and uses UTF-8 throughout; issues welcome.
+> **Windows**: `conda env create -f environment.yml` works out of the box — `trimesh` and `rtree` come from conda-forge prebuilt; `OCP` is pulled in transitively by `build123d` (via its PyPI dep `cadquery-ocp-novtk`). Don't use pure pip for the CAD stack on Windows — native wheels for `trimesh`/`rtree` can be unreliable. Set the API key in PowerShell as `$env:DASHSCOPE_API_KEY = "sk-..."` (or `set DASHSCOPE_API_KEY=sk-...` in cmd.exe). The Web UI install (`pip install -e ".[web]"`) also works — `uvloop` auto-skips on Windows. Windows isn't in CI, but the code avoids Unix-only APIs and uses UTF-8 throughout; issues welcome.
 
 ### Configuration
 
@@ -127,8 +127,10 @@ MAC calls models through an **OpenAI-compatible endpoint**. The repo defaults to
 Alibaba Cloud DashScope (`qwen3.7-max`). Point two config fields at any provider
 and the whole pipeline follows:
 
-> The model names and endpoints below are for reference only; consult each
-> provider's official docs.
+> **The model names and endpoints below are illustrative only.** Verify the
+> exact model ID with your provider's docs (DashScope console / OpenAI
+> models API / etc.) before use — names like `qwen3.7-max` may not match
+> what's currently served.
 
 | Provider | `DS_BASE_URL` | Example `*_MODEL` | Notes |
 |---|---|---|---|

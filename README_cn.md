@@ -96,14 +96,14 @@
 
 ```bash
 git clone https://github.com/Pan-Chera/Multi-Agent-CAD
-cd text-to-cad-main
+cd Multi-Agent-CAD
 conda env create -f environment.yml
 conda activate multi_agent_cad
 ```
 
-> pip 用户见 [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml)。
+> pip 用户见 [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml)。要启用 `mac-config-reset` console 脚本、并允许在任意目录（不只是仓库根）跑 `python -m multi_agent_cad.graph`，还需在已激活的 env 里 `pip install -e .`。
 
-> **Windows**：`conda env create -f environment.yml` 在 Windows 上开箱即用（conda-forge 提供 `OCP` / `trimesh` / `rtree` 预编译包——Windows 上不要用纯 pip 装 CAD 这套）。PowerShell 设 API key：`$env:DASHSCOPE_API_KEY = "sk-..."`（cmd.exe 用 `set DASHSCOPE_API_KEY=sk-...`）。Web UI 安装（`pip install -e ".[web]"`）同样可用——`uvloop` 在 Windows 上自动跳过。Windows 不在 CI 里，但代码避开 Unix 专属 API、全程 UTF-8；遇到问题欢迎反馈。
+> **Windows**：`conda env create -f environment.yml` 在 Windows 上开箱即用——`trimesh` 和 `rtree` 来自 conda-forge 预编译包；`OCP` 由 `build123d` 的 PyPI 依赖 `cadquery-ocp-novtk` 传递性拉入。Windows 上不要用纯 pip 装 CAD 这套——`trimesh`/`rtree` 的 native wheel 在 Windows 上不可靠。PowerShell 设 API key：`$env:DASHSCOPE_API_KEY = "sk-..."`（cmd.exe 用 `set DASHSCOPE_API_KEY=sk-...`）。Web UI 安装（`pip install -e ".[web]"`）同样可用——`uvloop` 在 Windows 上自动跳过。Windows 不在 CI 里，但代码避开 Unix 专属 API、全程 UTF-8；遇到问题欢迎反馈。
 
 ### 配置
 
@@ -125,7 +125,7 @@ python -m multi_agent_cad._config_defaults --reset
 
 MAC 通过 **OpenAI 兼容端点**调用模型。仓库默认指向阿里云百炼（`qwen3.7-max`）。把两个配置字段指向任意 provider，整条流水线随之切换：
 
-> 下表的模型名与端点地址仅为参考，请以各家官方文档为准。
+> **下表的模型名与端点地址仅为示例。** 实际使用前请到各家 provider 后台核对确切的 model ID（DashScope 控制台 / OpenAI models API 等）——像 `qwen3.7-max` 这样的名字未必与当前线上版本对得上。
 
 | Provider | `DS_BASE_URL` | `*_MODEL` 示例 | 说明 |
 |---|---|---|---|

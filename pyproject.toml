@@ -47,7 +47,7 @@ mesh = [
     "rtree>=1.1",
 ]
 science = [
-    "numpy>=1.24,<2",
+    "numpy>=1.24,<3",
     "scipy>=1.10",
     "scikit-learn>=1.3",
 ]

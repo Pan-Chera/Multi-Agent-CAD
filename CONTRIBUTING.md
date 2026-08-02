@@ -14,7 +14,7 @@ Thanks for your interest in improving MAC! This doc covers setup, conventions, a
 
 ```bash
 git clone <your-fork-url>
-cd text-to-cad-main
+cd Multi-Agent-CAD
 
 # Create the conda env (Python 3.11 + all native deps via conda-forge)
 conda env create -f environment.yml
