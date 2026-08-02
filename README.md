@@ -155,7 +155,8 @@ then export your key (the env-var name is historical — it accepts any
 OpenAI-compatible key):
 
 ```bash
-export DASHSCOPE_API_KEY="sk-..."
+export DASHSCOPE_API_KEY="sk-..."              # bash / zsh
+# PowerShell:  $env:DASHSCOPE_API_KEY = "sk-..."
 ```
 
 > **About the model name `qwen3.7-max`** — it is simply the model ID served on

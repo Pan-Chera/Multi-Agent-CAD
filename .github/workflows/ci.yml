@@ -64,8 +64,8 @@ jobs:
         if: ${{ env.DASHSCOPE_API_KEY != '' }}
         run: |
           set -e
-          step_count=$(find . -maxdepth 2 -name "temp_design*.step" -type f 2>/dev/null | wc -l)
-          stl_count=$(find . -maxdepth 2 -name "temp_design*.stl" -type f 2>/dev/null | wc -l)
+          step_count=$(find . -maxdepth 2 -name "temp_output*.step" -type f 2>/dev/null | wc -l)
+          stl_count=$(find . -maxdepth 2 -name "temp_output*.stl" -type f 2>/dev/null | wc -l)
           echo "STEP files generated: $step_count"
           echo "STL  files generated: $stl_count"
           if [ "$step_count" -lt 1 ] || [ "$stl_count" -lt 1 ]; then
@@ -79,8 +79,8 @@ jobs:
         with:
           name: cad-artifacts
           path: |
-            **/temp_design*.step
-            **/temp_design*.stl
+            **/temp_output*.step
+            **/temp_output*.stl
             pipeline_cache/*.json
           if-no-files-found: warn
           retention-days: 14

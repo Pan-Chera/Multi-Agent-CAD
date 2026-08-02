@@ -28,10 +28,15 @@ If you prefer pip, see [requirements.txt](requirements.txt) — but install `num
 **Do not put your API key in [multi_agent_cad/config.py](multi_agent_cad/config.py) and commit it.** Export it as an environment variable instead:
 
 ```bash
+# bash / zsh
 export DASHSCOPE_API_KEY="sk-..."   # Despite the name, works for any OpenAI-compatible key
+# PowerShell
+$env:DASHSCOPE_API_KEY = "sk-..."
 ```
 
-Add that line to `~/.zshrc` (or `~/.bashrc`) so it persists.
+To persist across sessions:
+- bash/zsh: add the `export` line to `~/.zshrc` (or `~/.bashrc`)
+- PowerShell (one-time, new shells pick it up): `setx DASHSCOPE_API_KEY "sk-..."`, or set it via System Properties → Environment Variables
 
 If you ever need to reset [multi_agent_cad/config.py](multi_agent_cad/config.py) to defaults (e.g. after a bad edit):
 
@@ -104,7 +109,10 @@ No formal commit message convention enforced — just make it descriptive.
 1. Run a smoke test: `python -m multi_agent_cad.graph` on the default prompt. It should finish without crashing.
 2. Verify you haven't accidentally committed secrets:
    ```bash
-   git diff --cached | grep -iE "(api[_-]?key|sk-sp|sk-proj|sk-svcacct)" 
+   # bash / zsh
+   git diff --cached | grep -iE "(api[_-]?key|sk-sp|sk-proj|sk-svcacct)"
+   # PowerShell (no grep — use Select-String)
+   git diff --cached | Select-String -Pattern 'api[_-]?key|sk-sp|sk-proj|sk-svcacct' -AllMatches
    ```
    If that returns anything, you're about to commit a key — remove it first.
 3. Verify [multi_agent_cad/config.py](multi_agent_cad/config.py) has `DS_API_KEY = ""` (not a real key).

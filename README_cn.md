@@ -149,7 +149,8 @@ AIDER_MODEL = "openai/gpt-5.6"
 然后导出 key（环境变量名是历史遗留——接受任意 OpenAI 兼容 key）：
 
 ```bash
-export DASHSCOPE_API_KEY="sk-..."
+export DASHSCOPE_API_KEY="sk-..."              # bash / zsh
+# PowerShell:  $env:DASHSCOPE_API_KEY = "sk-..."
 ```
 
 > **关于模型名 `qwen3.7-max`**——它只是所配置端点上的模型 ID，此处指阿里云百炼的旗舰推理模型。每个 `*_MODEL` 字段都接受你所选 provider 暴露的任意模型 ID，代码中没有任何 Qwen 专属逻辑。唯一的 Qwen 专属项是 `*_KWARGS` 里的 `enable_thinking` 开关——换其它 provider 时设 `*_KWARGS = {}`（[config.py](multi_agent_cad/config.py) 内附更多 provider 示例）。

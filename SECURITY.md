@@ -8,7 +8,13 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in MAC, please report it privately via email to the project maintainers rather than opening a public issue.
+If you discover a security vulnerability in MAC, please report it via GitHub's Private Vulnerability Reporting feature rather than opening a public issue:
+
+➜ Go to **[Security tab](https://github.com/Pan-Chera/Multi-Agent-CAD/security)** → **"Report a vulnerability"**
+
+This keeps your report private and visible only to the repository maintainers. If you prefer not to use the GitHub flow, you can also email the maintainers directly at the address listed in the project profile.
+
+> **Note to maintainers**: the GitHub Private Vulnerability Reporting feature must be enabled in repo settings: **Settings → Security → Code security → Private vulnerability reporting → Enable**.
 
 We will acknowledge your report as soon as possible and work to resolve confirmed vulnerabilities promptly.
 
