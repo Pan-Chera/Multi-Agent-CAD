@@ -96,8 +96,8 @@ INTERVENTION_INPUT_TIMEOUT = 3600
 #
 # Model names: every *_MODEL below is just the model ID served on DS_BASE_URL.
 # The default "qwen3.7-max" is the flagship model of Alibaba DashScope. Swap in
-# "gpt-4o", "deepseek-chat", "gemini-2.0-flash", a local Ollama model, etc. --
-# nothing in the code is Qwen-specific except the `enable_thinking` toggle in
+# "gpt-5.6", "deepseek-v4-pro", "gemini-3.6-flash", a local Ollama model, etc.
+# Nothing in the code is Qwen-specific except the `enable_thinking` toggle in
 # *_KWARGS (set *_KWARGS = {} for providers without such a toggle). See the
 # "Use any LLM provider" section in README.md for full per-provider setup.
 
@@ -128,9 +128,9 @@ CODER_KWARGS = {"extra_body": {"enable_thinking": True}}
 # Switch providers by changing AIDER_MODEL:
 #   OpenAI:        "openai/qwen3.7-max"        (current)
 #   Qwen:          "openai/qwen3.7-max"
-#   Anthropic:     "anthropic/claude-3-5-sonnet-20241022"
-#   DeepSeek:      "deepseek/deepseek-chat"
-#   Gemini:        "gemini/gemini-2.0-flash-exp"
+#   Anthropic:     "anthropic/claude-sonnet-4-6"
+#   DeepSeek:      "deepseek/deepseek-v4-pro"
+#   Gemini:        "gemini/gemini-3.6-flash"
 AIDER_MODEL = "openai/qwen3.7-max"
 AIDER_MAX_TOKENS = 65536
 

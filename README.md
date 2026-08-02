@@ -101,7 +101,9 @@ conda env create -f environment.yml
 conda activate multi_agent_cad
 ```
 
-> pip users see [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml). On Windows, the `trimesh`, `rtree`, and `OCP` C extensions are best installed from conda-forge.
+> pip users see [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml).
+
+> **Windows**: `conda env create -f environment.yml` works out of the box (conda-forge ships prebuilt `OCP` / `trimesh` / `rtree` — don't use pure pip for the CAD stack on Windows). Set the API key in PowerShell as `$env:DASHSCOPE_API_KEY = "sk-..."` (or `set DASHSCOPE_API_KEY=sk-...` in cmd.exe). The Web UI install (`pip install -e ".[web]"`) also works — `uvloop` auto-skips on Windows. Windows isn't in CI, but the code avoids Unix-only APIs and uses UTF-8 throughout; issues welcome.
 
 ### Configuration
 
@@ -122,27 +124,29 @@ python -m multi_agent_cad._config_defaults --reset
 ### 🔌 Use any LLM provider (not locked to Alibaba Cloud)
 
 MAC calls models through an **OpenAI-compatible endpoint**. The repo defaults to
-Alibaba Cloud DashScope (`qwen3.7-max`) only because that is what the benchmark
-uses — it is **not required**. Point two config fields at any provider and the
-whole pipeline follows:
+Alibaba Cloud DashScope (`qwen3.7-max`). Point two config fields at any provider
+and the whole pipeline follows:
+
+> The model names and endpoints below are for reference only; consult each
+> provider's official docs.
 
 | Provider | `DS_BASE_URL` | Example `*_MODEL` | Notes |
 |---|---|---|---|
-| OpenAI | `https://api.openai.com/v1` | `gpt-4o`, `o3` | `DASHSCOPE_API_KEY` = your OpenAI key; set `*_KWARGS = {}` |
-| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` | OpenAI-compatible |
-| Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.0-flash` | OpenAI-compatible endpoint |
-| Local (Ollama) | `http://localhost:11434/v1` | `qwen2.5-coder:32b` | no API key needed |
-| Anthropic Claude | via an OpenAI-compatible gateway (OpenRouter / LiteLLM proxy) | `claude-3-5-sonnet` | the Aider repair stage supports Claude natively via litellm |
+| OpenAI | `https://api.openai.com/v1` | `gpt-5.6` | `DASHSCOPE_API_KEY` = your OpenAI key; set `*_KWARGS = {}` |
+| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-v4-pro` | OpenAI-compatible |
+| Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-3.6-flash` | OpenAI-compatible endpoint |
+| Local (Ollama) | `http://localhost:11434/v1` | `qwen3-coder:32b` | no API key needed |
+| Anthropic Claude | via an OpenAI-compatible gateway (OpenRouter / LiteLLM proxy) | `claude-sonnet-4-6` | the Aider repair stage supports Claude natively via litellm |
 
 For OpenAI, edit [config.py](multi_agent_cad/config.py):
 
 ```python
 DS_BASE_URL = "https://api.openai.com/v1"
-SPEC_PLANNER_MODEL = ARCHITECT_MODEL = CODER_MODEL = REPAIR_MODEL = "gpt-4o"
+SPEC_PLANNER_MODEL = ARCHITECT_MODEL = CODER_MODEL = REPAIR_MODEL = "gpt-5.6"
 # disable the Qwen-only thinking toggle:
 SPEC_PLANNER_KWARGS = ARCHITECT_KWARGS = CODER_KWARGS = REPAIR_KWARGS = {}
 # Aider stage (litellm-prefixed model name):
-AIDER_MODEL = "openai/gpt-4o"
+AIDER_MODEL = "openai/gpt-5.6"
 ```
 
 then export your key (the env-var name is historical — it accepts any
@@ -160,7 +164,22 @@ export DASHSCOPE_API_KEY="sk-..."
 > providers (more per-provider examples live in
 > [config.py](multi_agent_cad/config.py)).
 
-### Run
+### Two ways to run
+
+MAC runs the same pipeline from the terminal or from a browser UI. Same outputs,
+different ergonomics — pick by what you need:
+
+| | Terminal | Web UI |
+|---|---|---|
+| Best for | Mid-run steering | Visual feedback, easier to grasp |
+| Mid-run inject change / halt | ✅ 10s checkpoint per QA (`1` auto / `2` inject / `3` halt) | ❌ auto-iterates only |
+| 3D preview of result | ❌ open STEP/STL in an external viewer | ✅ in-browser `<model-viewer>` + one-click downloads |
+| Config editing | edit [config.py](multi_agent_cad/config.py) | fill a form |
+| Output location | repo root (`temp_*`) | per-job tempdir (optional copy to a path you specify) |
+
+See [Terminal](#terminal) and [Web UI](#-web-ui) below.
+
+### Terminal
 
 ```bash
 python -m multi_agent_cad.graph          # original workflow: deterministic coder first, Aider fallback
@@ -179,6 +198,22 @@ Output files (written to the repo root):
 | `temp_missed_0.json` | Runtime diagnostics |
 
 For more complex example prompts see [§1 Gallery](#1-real-world-gallery).
+
+### 🖥️ Web UI
+
+A browser UI for the pipeline — fill the config form, run, preview the GLB in 3D,
+and download the artifacts. The UI runs in your browser; the pipeline runs on the
+server (single-user, trusted-network only — generated `.py` is executed
+server-side).
+
+```bash
+pip install -e ".[web]"                       # adds fastapi + uvicorn
+python -m multi_agent_cad.web                 # serves on http://0.0.0.0:8000
+```
+
+Open `http://<server>:8000` from your laptop. For remote access over an untrusted
+network, tunnel via SSH: `ssh -L 8000:localhost:8000 user@server`, then open
+`http://localhost:8000` locally.
 
 ### Cache mechanism
 

@@ -101,7 +101,9 @@ conda env create -f environment.yml
 conda activate multi_agent_cad
 ```
 
-> pip 用户见 [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml)。Windows 上 `trimesh`、`rtree`、`OCP` 的 C 扩展建议从 conda-forge 装。
+> pip 用户见 [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml)。
+
+> **Windows**：`conda env create -f environment.yml` 在 Windows 上开箱即用（conda-forge 提供 `OCP` / `trimesh` / `rtree` 预编译包——Windows 上不要用纯 pip 装 CAD 这套）。PowerShell 设 API key：`$env:DASHSCOPE_API_KEY = "sk-..."`（cmd.exe 用 `set DASHSCOPE_API_KEY=sk-...`）。Web UI 安装（`pip install -e ".[web]"`）同样可用——`uvloop` 在 Windows 上自动跳过。Windows 不在 CI 里，但代码避开 Unix 专属 API、全程 UTF-8；遇到问题欢迎反馈。
 
 ### 配置
 
@@ -119,27 +121,29 @@ conda activate multi_agent_cad
 python -m multi_agent_cad._config_defaults --reset
 ```
 
-### 🔌 可接入任意 LLM provider（不绑定阿里云）
+### 🔌 可接入任意 LLM provider
 
-MAC 通过 **OpenAI 兼容端点**调用模型。仓库默认指向阿里云百炼（`qwen3.7-max`），只是因为基准测试用了它——**并非强制**。把两个配置字段指向任意 provider，整条流水线随之切换：
+MAC 通过 **OpenAI 兼容端点**调用模型。仓库默认指向阿里云百炼（`qwen3.7-max`）。把两个配置字段指向任意 provider，整条流水线随之切换：
+
+> 下表的模型名与端点地址仅为参考，请以各家官方文档为准。
 
 | Provider | `DS_BASE_URL` | `*_MODEL` 示例 | 说明 |
 |---|---|---|---|
-| OpenAI | `https://api.openai.com/v1` | `gpt-4o`、`o3` | `DASHSCOPE_API_KEY` 填 OpenAI key；`*_KWARGS = {}` |
-| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` | OpenAI 兼容 |
-| Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.0-flash` | OpenAI 兼容端点 |
-| 本地（Ollama） | `http://localhost:11434/v1` | `qwen2.5-coder:32b` | 无需 API key |
-| Anthropic Claude | 经 OpenAI 兼容网关（OpenRouter / LiteLLM 代理） | `claude-3-5-sonnet` | Aider 修复阶段可经 litellm 原生支持 Claude |
+| OpenAI | `https://api.openai.com/v1` | `gpt-5.6` | `DASHSCOPE_API_KEY` 填 OpenAI key；`*_KWARGS = {}` |
+| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-v4-pro` | OpenAI 兼容 |
+| Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-3.6-flash` | OpenAI 兼容端点 |
+| 本地（Ollama） | `http://localhost:11434/v1` | `qwen3-coder:32b` | 无需 API key |
+| Anthropic Claude | 经 OpenAI 兼容网关（OpenRouter / LiteLLM 代理） | `claude-sonnet-4-6` | Aider 修复阶段可经 litellm 原生支持 Claude |
 
 以 OpenAI 为例，编辑 [config.py](multi_agent_cad/config.py)：
 
 ```python
 DS_BASE_URL = "https://api.openai.com/v1"
-SPEC_PLANNER_MODEL = ARCHITECT_MODEL = CODER_MODEL = REPAIR_MODEL = "gpt-4o"
+SPEC_PLANNER_MODEL = ARCHITECT_MODEL = CODER_MODEL = REPAIR_MODEL = "gpt-5.6"
 # 关闭 Qwen 专属的思维链开关：
 SPEC_PLANNER_KWARGS = ARCHITECT_KWARGS = CODER_KWARGS = REPAIR_KWARGS = {}
 # Aider 阶段（litellm 前缀模型名）：
-AIDER_MODEL = "openai/gpt-4o"
+AIDER_MODEL = "openai/gpt-5.6"
 ```
 
 然后导出 key（环境变量名是历史遗留——接受任意 OpenAI 兼容 key）：
@@ -150,7 +154,21 @@ export DASHSCOPE_API_KEY="sk-..."
 
 > **关于模型名 `qwen3.7-max`**——它只是所配置端点上的模型 ID，此处指阿里云百炼的旗舰推理模型。每个 `*_MODEL` 字段都接受你所选 provider 暴露的任意模型 ID，代码中没有任何 Qwen 专属逻辑。唯一的 Qwen 专属项是 `*_KWARGS` 里的 `enable_thinking` 开关——换其它 provider 时设 `*_KWARGS = {}`（[config.py](multi_agent_cad/config.py) 内附更多 provider 示例）。
 
-### 运行
+### 两种运行方式
+
+MAC 的同一套流水线既可从终端、也可从浏览器 UI 驱动。产出相同，体验不同——按需选择：
+
+| | 终端 | Web UI |
+|---|---|---|
+| 适用场景 | 中途介入修改 | 直观预览、更好上手 |
+| 中途注入修改 / 停止 | ✅ 每次 QA 后 10s checkpoint（`1` 自动 / `2` 注入 / `3` 停止） | ❌ 仅自动迭代 |
+| 3D 预览结果 | ❌ 需外部工具打开 STEP/STL | ✅ 浏览器内 `<model-viewer>` + 一键下载 |
+| 配置方式 | 编辑 [config.py](multi_agent_cad/config.py) | 表单填写 |
+| 输出位置 | 仓库根目录（`temp_*`） | 每任务临时目录（可选拷到指定路径） |
+
+详见下方 [终端](#终端) 与 [Web UI](#-web-ui)。
+
+### 终端
 
 ```bash
 python -m multi_agent_cad.graph          # 原始工作流：确定性 coder 优先，Aider 兜底
@@ -169,6 +187,17 @@ python -m multi_agent_cad.graph_aider    # 修改工作流：在已有 temp_desi
 | `temp_missed_0.json` | 运行时诊断 |
 
 更复杂示例 prompt 见 [§1 画廊](#1-实物打印画廊)。
+
+### 🖥️ Web UI
+
+浏览器的图形界面——填配置表单、运行、3D 预览 GLB、下载产物。UI 跑在浏览器里，流水线跑在服务器上（单用户、受信网络——生成的 `.py` 会在服务器端执行）。
+
+```bash
+pip install -e ".[web]"                       # 安装 fastapi + uvicorn
+python -m multi_agent_cad.web                 # 监听 http://0.0.0.0:8000
+```
+
+从本机浏览器打开 `http://<服务器>:8000`。若在不受信网络远程访问，用 SSH 隧道：`ssh -L 8000:localhost:8000 user@server`，然后本机打开 `http://localhost:8000`。
 
 ### 缓存机制
 
