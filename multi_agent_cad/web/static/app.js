@@ -9,6 +9,7 @@ const STAGES = [
 ];
 
 let providers = {};
+let currentJobId = null;
 
 async function loadSchema() {
   const r = await fetch("/api/config/schema");
@@ -76,11 +77,17 @@ document.getElementById("run-btn").addEventListener("click", async () => {
   const log = document.getElementById("log");
   const status = document.getElementById("status");
   const mv = document.getElementById("mv");
+  const runBtn = document.getElementById("run-btn");
+  const stopBtn = document.getElementById("stop-btn");
   log.textContent = "";
   status.textContent = "Submitting...";
   document.getElementById("downloads").innerHTML = "";
   document.getElementById("stats").textContent = "";
   mv.removeAttribute("src");
+
+  runBtn.disabled = true;
+  stopBtn.disabled = true;
+  stopBtn.textContent = "■ Stop";
 
   const r = await fetch("/api/run", {
     method: "POST",
@@ -90,17 +97,47 @@ document.getElementById("run-btn").addEventListener("click", async () => {
   if (!r.ok) {
     const t = await r.text();
     status.textContent = "Error: " + t;
+    runBtn.disabled = false;
     return;
   }
   const { job_id } = await r.json();
+  stopBtn.disabled = false;
   streamEvents(job_id);
 });
 
+document.getElementById("stop-btn").addEventListener("click", async () => {
+  const stopBtn = document.getElementById("stop-btn");
+  const status = document.getElementById("status");
+  if (!currentJobId) return;
+  stopBtn.disabled = true;
+  stopBtn.textContent = "Cancelling...";
+  status.textContent = "Cancelling — waiting for subprocess to exit...";
+  try {
+    await fetch(`/api/jobs/${currentJobId}/cancel`, { method: "POST" });
+  } catch (e) {
+    status.textContent = "Cancel request failed: " + e;
+    stopBtn.disabled = false;
+    stopBtn.textContent = "■ Stop";
+  }
+  // SSE will deliver the synthetic 'done' next; the onmessage handler
+  // re-enables the run button and shows partial downloads.
+});
+
 function streamEvents(jobId) {
+  currentJobId = jobId;
   const log = document.getElementById("log");
   const status = document.getElementById("status");
   const mv = document.getElementById("mv");
+  const runBtn = document.getElementById("run-btn");
+  const stopBtn = document.getElementById("stop-btn");
   const es = new EventSource(`/api/jobs/${jobId}/events`);
+
+  function finishStream() {
+    runBtn.disabled = false;
+    stopBtn.disabled = true;
+    stopBtn.textContent = "■ Stop";
+    currentJobId = null;
+  }
 
   es.onmessage = (ev) => {
     let msg;
@@ -120,41 +157,54 @@ function streamEvents(jobId) {
       status.textContent = "Live: intermediate model updated";
     }
     if (msg.done) {
-      status.textContent = `Done — error_type: ${msg.error_type} · tokens: ${msg.tokens} · API calls: ${msg.api_calls}`;
+      const tokenStr = msg.tokens != null ? ` · tokens: ${msg.tokens}` : "";
+      const apiStr = msg.api_calls != null ? ` · API calls: ${msg.api_calls}` : "";
+      if (msg.cancelled) {
+        status.textContent = `Cancelled — partial artifacts available for download${tokenStr}${apiStr}`;
+      } else {
+        status.textContent = `Done — error_type: ${msg.error_type}${tokenStr}${apiStr}`;
+      }
       es.close();
+      finishStream();
       showResult(jobId, msg);
     }
     if (msg.error) {
       status.textContent = "Error: " + msg.error;
       log.textContent += "✗ " + msg.error + "\n";
       es.close();
+      finishStream();
     }
   };
 
   es.onerror = () => {
     status.textContent = "Connection lost.";
     es.close();
+    finishStream();
   };
 }
 
 function showResult(jobId, msg) {
   const mv = document.getElementById("mv");
+  const dl = document.getElementById("downloads");
+  dl.innerHTML = "";
+
   if (msg.glb) {
     mv.setAttribute("src", `/api/jobs/${jobId}/files/model.glb`);
   } else {
     mv.setAttribute("alt", "No GLB available — try downloading the STEP/STL");
   }
 
-  const dl = document.getElementById("downloads");
-  dl.innerHTML = "";
+  // Only show download buttons for artifacts that actually exist on disk.
   const files = [
-    ["STEP", "model.step"],
-    ["STL", "model.stl"],
-    ["Python source", "source.py"],
-    ["Measurements", "measurements.json"],
-    ["Runtime diagnostics", "missed.json"],
+    ["GLB (preview)", "model.glb", msg.glb],
+    ["STEP", "model.step", msg.step],
+    ["STL", "model.stl", msg.stl],
+    ["Python source", "source.py", msg.py],
+    ["Measurements", "measurements.json", msg.measurements],
+    ["Runtime diagnostics", "missed.json", msg.missed],
   ];
-  for (const [label, fname] of files) {
+  for (const [label, fname, path] of files) {
+    if (!path) continue;
     const a = document.createElement("a");
     a.href = `/api/jobs/${jobId}/files/${fname}`;
     a.textContent = `⬇ ${label}`;
@@ -162,8 +212,10 @@ function showResult(jobId, msg) {
     dl.appendChild(a);
   }
 
-  document.getElementById("stats").textContent =
-    `Tokens: ${msg.tokens} · API calls: ${msg.api_calls}`;
+  const statsStr = [];
+  if (msg.tokens != null) statsStr.push(`Tokens: ${msg.tokens}`);
+  if (msg.api_calls != null) statsStr.push(`API calls: ${msg.api_calls}`);
+  document.getElementById("stats").textContent = statsStr.join(" · ");
 }
 
 loadSchema();

@@ -252,6 +252,43 @@ async def run(req: Request) -> dict:
     return {"job_id": job_id}
 
 
+@app.post("/api/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str) -> dict:
+    """Terminate a running job. Whatever artifacts exist on disk become
+    downloadable — the reader task will emit a synthetic 'done' with the
+    harvested file paths once the subprocess exits."""
+    if job_id not in _JOBS:
+        raise HTTPException(404, "job not found")
+    job = _JOBS[job_id]
+    proc = job.get("proc")
+    if proc is None or proc.returncode is not None:
+        return {"status": "already_done", "rc": proc.returncode if proc else None}
+    if job.get("cancelled"):
+        return {"status": "already_cancelling"}
+    job["cancelled"] = True
+    asyncio.create_task(_terminate_job(job))
+    return {"status": "cancelling"}
+
+
+async def _terminate_job(job: dict) -> None:
+    """Send SIGTERM, wait up to 5s, escalate to SIGKILL if the runner
+    hasn't exited (e.g. stuck inside a subprocess.run for the CAD script).
+    The reader task observes the proc exit and emits the synthetic 'done'."""
+    proc = job["proc"]
+    try:
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+    except ProcessLookupError:
+        pass
+
+
 async def _reader_task(job_id: str, job: dict) -> None:
     proc = job["proc"]
     queue: asyncio.Queue = job["queue"]
@@ -276,9 +313,18 @@ async def _reader_task(job_id: str, job: dict) -> None:
 
         rc = await proc.wait()
         if job.get("result") is None:
-            err = {"error": f"runner exited (rc={rc}) without 'done'", "rc": rc}
-            job["result"] = err
-            await queue.put(err)
+            if job.get("cancelled"):
+                # User clicked Stop — emit a synthetic 'done' from whatever's
+                # on disk so the UI can offer downloads of half-finished work.
+                msg = _harvest_intermediate(job)
+                if job.get("dest_path"):
+                    _copy_artifacts(msg, job["dest_path"])
+                job["result"] = msg
+                await queue.put(msg)
+            else:
+                err = {"error": f"runner exited (rc={rc}) without 'done'", "rc": rc}
+                job["result"] = err
+                await queue.put(err)
     except Exception as exc:  # pragma: no cover
         err = {"error": f"reader task crashed: {exc}"}
         job["result"] = err
@@ -358,6 +404,51 @@ def _copy_artifacts(result: dict, dest: str) -> None:
         print(f"[web] copy artifacts to {dest} failed: {exc}", file=sys.stderr)
 
 
+def _harvest_intermediate(job: dict) -> dict:
+    """Build a synthetic 'done' message from whatever files exist in tempdir.
+
+    Called when the user cancels mid-run — the runner subprocess didn't emit
+    a 'done' record, so we assemble one from disk state so the UI can show
+    download buttons for the half-finished artifacts.
+    """
+    tempdir: Path = job["tempdir"]
+
+    def _find(pattern: str) -> str | None:
+        matches = sorted(
+            tempdir.rglob(pattern),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        return str(matches[0]) if matches else None
+
+    step = _find("temp_output_*.step")
+    stl = _find("temp_output_*.stl")
+    py = _find("temp_design_*.py")
+    measurements = _find("temp_measurements_*.json")
+    missed = _find("temp_missed_*.json")
+    glb = _find("*.glb")
+    # No GLB yet but STL exists — convert now so the browser preview works
+    # for the cancelled-state artifacts.
+    if not glb and stl:
+        live_glb = tempdir / "temp_output_0.live.glb"
+        if _stl_to_glb(stl, str(live_glb)):
+            glb = str(live_glb)
+
+    return {
+        "done": True,
+        "cancelled": True,
+        "error_type": "CANCELLED_BY_USER",
+        "step": step,
+        "stl": stl,
+        "glb": glb,
+        "py": py,
+        "measurements": measurements,
+        "missed": missed,
+        "tokens": None,
+        "api_calls": None,
+    }
+
+
 @app.get("/api/jobs/{job_id}/events")
 async def job_events(job_id: str) -> StreamingResponse:
     if job_id not in _JOBS:
@@ -404,14 +495,27 @@ async def job_file(job_id: str, name: str) -> FileResponse:
     job = _JOBS[job_id]
     result = job.get("result") or {}
     tempdir = job.get("tempdir")
+
+    def _find_in_tempdir(pattern: str) -> str | None:
+        if not tempdir:
+            return None
+        matches = sorted(
+            Path(tempdir).rglob(pattern),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        return str(matches[0]) if matches else None
+
     name_map = {
-        "model.glb": result.get("glb"),
+        "model.glb": result.get("glb") or _find_in_tempdir("*.glb"),
         "live.glb": str(tempdir / "temp_output_0.live.glb") if tempdir else None,
-        "model.step": result.get("step"),
-        "model.stl": result.get("stl"),
-        "source.py": result.get("py"),
-        "measurements.json": result.get("measurements"),
-        "missed.json": result.get("missed"),
+        "model.step": result.get("step") or _find_in_tempdir("temp_output_*.step"),
+        "model.stl": result.get("stl") or _find_in_tempdir("temp_output_*.stl"),
+        "source.py": result.get("py") or _find_in_tempdir("temp_design_*.py"),
+        "measurements.json": result.get("measurements")
+            or _find_in_tempdir("temp_measurements_*.json"),
+        "missed.json": result.get("missed")
+            or _find_in_tempdir("temp_missed_*.json"),
     }
     path = name_map.get(name)
     if not path or not Path(path).is_file():

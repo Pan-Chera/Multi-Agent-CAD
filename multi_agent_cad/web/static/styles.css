@@ -62,10 +62,18 @@ th { color: #8b949e; font-weight: 500; }
 .hint { font-size: 11px; color: #8b949e; margin: 4px 0; }
 code { background: #0f1115; padding: 1px 4px; border-radius: 3px; font-size: 11px; }
 
-#run-btn {
-  width: 100%;
-  padding: 10px;
+.actions {
+  display: flex;
+  gap: 8px;
   margin-top: 12px;
+}
+.actions #run-btn {
+  flex: 1;
+  margin-top: 0;
+  width: auto;
+}
+#run-btn {
+  padding: 10px;
   background: #238636;
   color: white;
   border: none;
@@ -74,7 +82,23 @@ code { background: #0f1115; padding: 1px 4px; border-radius: 3px; font-size: 11p
   font-weight: 600;
   cursor: pointer;
 }
-#run-btn:hover { background: #2ea043; }
+#run-btn:hover:not(:disabled) { background: #2ea043; }
+#stop-btn {
+  width: 100px;
+  padding: 10px;
+  background: #6d2a2a;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#stop-btn:hover:not(:disabled) { background: #8b3434; }
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 .status {
   padding: 8px 10px;
