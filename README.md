@@ -253,7 +253,7 @@ Then clear the cache per [Cache mechanism](#cache-mechanism) above and re-run `p
 
 Recent LLM-based text-to-CAD agents can already generate complex models, but their reasoning process is expensive: long-context interaction repeatedly consumes tokens on documentation, conversation history, and debugging traces.
 
-**The bottleneck is not CAD capability, but inefficient reasoning organization.** A single agent on a 10-prompt benchmark burns **103M tokens and 1,307 API calls** for a 97.9% pass rate.
+**The bottleneck is not CAD capability, but inefficient reasoning organization.** A single agent on a 10-prompt benchmark burns **103M tokens and 1,307 API calls**.
 
 **MAC** splits the generation process into 4 agents wired together by a LangGraph state machine. Agents pass only compact structured states (`CADBrief`, `ArchitectPlan`, QA reports) instead of raw conversation, compressing token usage to 1/116:
 
@@ -335,6 +335,12 @@ The `cad skill` baseline is the [`cad` skill](https://github.com/earthtojake/tex
 | Defensive corrections | 0 | 1 | — |
 
 Across 10 prompts / 141 features, MAC hits **99.3% pass rate** at **13× lower cost** and **116× fewer tokens**, while also producing one **defensive correction** — on P9, MAC proactively recognized that the original "tread inner end approaches column" spec would produce point-tangent-only geometry (no solid connection, the model would fracture during 3D printing) and automatically adjusted to a safe overlap based on physical common sense. This is the system going beyond literal execution of the spec and prioritizing physical constraints.
+
+P9 spiral staircase comparison:
+
+| text-to-cad skill (treads disconnected from column) | MAC (safe overlap) |
+|---|---|
+| ![skill P9](assets/benchmark_skill09.gif) | ![MAC P9](assets/benchmark09.gif) |
 
 ### Token Information Density (output / input ratio)
 

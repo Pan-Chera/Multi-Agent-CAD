@@ -235,7 +235,7 @@ USER_REQUEST = "Create a single solid circular flange as a STEP model in millime
 
 近期基于 LLM 的 text-to-CAD agent 已能生成复杂模型，但推理成本高昂：长上下文交互反复消费文档、对话历史和调试栈。
 
-**瓶颈不是 CAD 能力，而是低效的推理组织。** 单 agent 跑 10 prompt 基准测试消耗 **103M tokens、1,307 次 API 调用**，仅换来 97.9% 通过率。
+**瓶颈不是 CAD 能力，而是低效的推理组织。** 单 agent 跑 10 prompt 基准测试消耗 **103M tokens、1,307 次 API 调用**。
 
 **MAC** 把生成过程拆成 4 个 agent，由 LangGraph 状态机串联。agent 之间只传紧凑结构化状态（`CADBrief`、`ArchitectPlan`、QA 报告），不传对话原文，把 token 用量压到 1/116：
 
@@ -317,6 +317,12 @@ LLM-only CAD agent 每次生成代码都要烧 token。MAC 反其道而行：用
 | 防御性修正数 | 0 | 1 | — |
 
 MAC 在 10 个 prompt、141 个特征上达到 **99.3% 通过率**，**13× 成本优势**和 **116× token 优势**的同时还产生了一次**防御性修正** —— P9 中 MAC 主动识别出原需求会导致踏步与立柱无实体连接，3D 打印会断裂，基于物理常识自动调整为安全重叠，避免了模型失效。这是系统超越字面执行、优先满足物理条件的典型表现。
+
+P9 旋转楼梯对比：
+
+| text-to-cad skill（踏步与立柱断开） | MAC（安全重叠） |
+|---|---|
+| ![skill P9](assets/benchmark_skill09.gif) | ![MAC P9](assets/benchmark09.gif) |
 
 ### token 信息密度（output / input 比率）
 
