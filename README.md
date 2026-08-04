@@ -34,7 +34,7 @@
 
 Below is a screen recording of one full pipeline run through the Web UI.
 
-<video src="assets/ui_demo.mov" controls width="100%"></video>
+<video src="assets/ui_demo.mp4" controls width="100%"></video>
 
 ## 📖 Table of Contents
 - [1. 📸 Real-World Gallery](#1-real-world-gallery)
