@@ -34,7 +34,7 @@
 
 Below is a screen recording of one full pipeline run through the Web UI.
 
-[![Web UI walkthrough video — click to play](assets/ui_demo_thumb.jpg)](https://github.com/Pan-Chera/Multi-Agent-CAD/releases/tag/ui-demo-v1)
+<video src="assets/ui_demo.mp4" controls></video>
 
 ## 📖 Table of Contents
 - [1. 📸 Real-World Gallery](#1-real-world-gallery)
