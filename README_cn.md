@@ -34,7 +34,9 @@
 
 下面是 Web UI 一次完整 pipeline 运行的录屏。
 
-<video src="https://github.com/Pan-Chera/Multi-Agent-CAD/releases/download/ui-demo-v1/ui_demo.mp4" controls></video>
+<video controls>
+  <source src="https://github.com/Pan-Chera/Multi-Agent-CAD/releases/download/ui-demo-v1/ui_demo.mp4" type="video/mp4">
+</video>
 
 ## 📖 目录
 - [1. 📸 实物打印画廊](#1-实物打印画廊)
