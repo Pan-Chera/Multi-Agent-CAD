@@ -6,8 +6,11 @@
 #     conda env create -f environment.yml
 #     conda activate multi_agent_cad
 #
-# Use this file only if you prefer pip. On Linux/macOS you may need system
-# libraries for `rtree` (libspatialindex) and `trimesh` (libembree optional).
+# This file is a reference list of dependencies — do NOT run
+# `pip install -r requirements.txt` directly. `aider-chat` pins
+# `numpy==1.26.4` while `build123d>=0.8` requires `numpy>=2,<3`, which
+# makes pure pip fail with ResolutionImpossible. See README §2 for the
+# conda path (recommended) or the verified pip workaround.
 # On Windows, prefer conda — native wheels are unreliable.
 
 # ── Core scientific / math ─────────────────────────────────────────────

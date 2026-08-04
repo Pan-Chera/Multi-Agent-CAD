@@ -153,6 +153,13 @@ function streamEvents(jobId) {
       log.textContent += "⚠ " + msg.warn + "\n";
     }
     if (msg.intermediate) {
+      // <model-viewer> doesn't reliably reload when only the query string
+      // changes (server appends ?t=<ts> for cache-busting, but the element
+      // may keep the old scene around and the new model renders on top of it,
+      // looking like "another model" instead of replacing it). Force a clean
+      // reload by clearing src, flushing layout, then setting the new URL.
+      mv.removeAttribute("src");
+      void mv.offsetWidth; // force reflow so model-viewer tears down the scene
       mv.setAttribute("src", msg.glb);
       status.textContent = "Live: intermediate model updated";
     }

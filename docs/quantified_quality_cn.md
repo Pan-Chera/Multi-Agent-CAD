@@ -7,6 +7,12 @@
 
 ---
 
+对比基线 `cad skill` 即 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD Skills，[文档](https://www.cadskills.xyz)）项目的 [`cad` skill](https://github.com/earthtojake/text-to-cad/tree/main/skills/cad) —— 一个基于 Claude Code skill 的单体 agent 文本到 CAD 生成器。
+
+> **公平性说明**：MAC 与基线 `cad skill` 使用**相同 prompt 集**（P1–P10，取自 [该项目 benchmarks/](https://github.com/earthtojake/text-to-cad/tree/main/benchmarks)）、**相同测试集**、**相同几何评估标准**（141 特征二元通过/失败），唯一变量是 agent 架构。
+
+> **关于基线 97.9%**：原 `cad skill` 通过率只有 97.9%。原因：原作者测试时用 Claude 与 ChatGPT，本测试用的是更弱的 Qwen 3.7-max。基线与 MAC 同一 LLM、唯一变量是 agent 架构 —— MAC 跑出 99.3%，优势完全来自架构。
+
 ## 1. 执行摘要
 
 | 指标 | cad skill | MAC | 比率（skill / MAC） |
@@ -132,6 +138,12 @@
 | 防御性修正 | 0 | 1（P9 第 8 条 —— 物理合理性） |
 
 **P9 第 8 条的防御性修正实例**：原需求中"踏步内端接近立柱"的设计会导致几何悬空（踏步与立柱只在一点相切，没有任何实体连接），3D 打印时模型会从该处断裂。MAC 系统基于物理常识主动修正了该参数（让踏步内端与立柱保持安全重叠），避免了模型断裂 —— 这就是"防御性修正"的典型场景：系统超越了原始指令的字面执行，优先满足物理条件，主动规避了会导致物理失效的设计。
+
+P9 旋转楼梯对比：
+
+| text-to-cad skill（踏步与立柱断开） | MAC（安全重叠） |
+|---|---|
+| ![skill P9](../assets/benchmark_skill09.gif) | ![MAC P9](../assets/benchmark09.gif) |
 
 ---
 

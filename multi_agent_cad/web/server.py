@@ -303,6 +303,15 @@ async def _reader_task(job_id: str, job: dict) -> None:
             except json.JSONDecodeError:
                 await queue.put({"log": line})
                 continue
+            if not isinstance(msg, dict):
+                # The subprocess (web_runner + LangGraph / aider / build123d)
+                # sometimes prints lines that happen to parse as valid JSON
+                # but aren't objects (quoted strings, numbers, arrays) — e.g.
+                # aider echoing a JSON literal mid-repair. Treat them as log
+                # lines so the SSE stream keeps flowing instead of crashing
+                # the reader on `msg.get("done")`.
+                await queue.put({"log": line})
+                continue
             if msg.get("done"):
                 if job.get("dest_path"):
                     _copy_artifacts(msg, job["dest_path"])
@@ -349,24 +358,41 @@ async def _watcher_task(job_id: str, job: dict) -> None:
     """Poll the job's STL; whenever it changes, convert to a live-preview GLB
     and push an event to the SSE stream. Lets the browser show each
     intermediate model as the autonomous loop iterates (Aider repair →
-    re-execute → new STL). Stops when the subprocess exits or 'done' is sent."""
+    re-execute → new STL). Stops when the subprocess exits or 'done' is sent.
+
+    The autonomous loop writes a *new* file per iteration rather than
+    overwriting in place:
+      - first attempt:  temp_output_0.stl
+      - aider retry:     temp_output_aider_autonomous_0.stl
+      - plain retry:     temp_output_autonomous_0.stl
+      - iteration N:     temp_output_N.stl
+    So we glob all ``temp_output_*.stl`` and track the newest by mtime —
+    a new file appearing OR an existing file's mtime changing both trigger
+    a fresh live preview.
+    """
     tempdir = job["tempdir"]
     proc = job["proc"]
     queue: asyncio.Queue = job["queue"]
-    stl_path = tempdir / "temp_output_0.stl"
     live_glb = tempdir / "temp_output_0.live.glb"
-    last_mtime: float | None = None
+    last_sig: tuple[str, float] | None = None  # (path, mtime) of last converted STL
     while proc.returncode is None:
         if job.get("result") is not None:
             break  # reader task already emitted 'done'; stop pushing intermediates
         await asyncio.sleep(1.0)
         try:
-            if not stl_path.is_file():
+            stls = sorted(
+                tempdir.glob("temp_output_*.stl"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if not stls:
                 continue
+            stl_path = stls[0]
             mtime = stl_path.stat().st_mtime
-            if mtime == last_mtime:
+            sig = (str(stl_path), mtime)
+            if sig == last_sig:
                 continue
-            last_mtime = mtime
+            last_sig = sig
         except OSError:
             continue
         # Wait for the write to complete + size to stabilize (avoid half-written reads)
@@ -529,7 +555,17 @@ async def job_file(job_id: str, name: str) -> FileResponse:
         "measurements.json": "application/json",
         "missed.json": "application/json",
     }
-    return FileResponse(path, media_type=media_types.get(name, "application/octet-stream"))
+    # `live.glb` is overwritten in-place by the watcher task as the autonomous
+    # loop iterates. Without no-cache, browsers may serve a stale copy from
+    # heuristic caching even when the URL's `?t=<ts>` query changes — the
+    # model-viewer then renders the old scene, not the new one. Setting this
+    # on every file is harmless (each job has a unique job_id path segment).
+    headers = {"Cache-Control": "no-cache, must-revalidate"}
+    return FileResponse(
+        path,
+        media_type=media_types.get(name, "application/octet-stream"),
+        headers=headers,
+    )
 
 
 # Static frontend — mounted LAST so /api/* routes take precedence.

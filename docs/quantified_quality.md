@@ -7,6 +7,12 @@
 
 ---
 
+The `cad skill` baseline is the [`cad` skill](https://github.com/earthtojake/text-to-cad/tree/main/skills/cad) from [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) (CAD Skills, [docs](https://www.cadskills.xyz)) — a single-agent text-to-CAD generator built on Claude Code skills.
+
+> **Fairness note**: MAC and the `cad skill` baseline use **the same prompt set** (P1–P10, sourced from [that project's benchmarks/](https://github.com/earthtojake/text-to-cad/tree/main/benchmarks)), **the same test set**, and **the same geometric evaluation criteria** (141 features, binary pass/fail). The only variable is the agent architecture.
+
+> **About the baseline 97.9%**: the original `cad skill` only achieves 97.9%. Reason: the original author tested with Claude and ChatGPT, while this round uses the weaker Qwen 3.7-max. Baseline and MAC share the same LLM, with agent architecture as the only variable — MAC hits 99.3%, edge entirely from architecture.
+
 ## 1. Executive Summary
 
 | Metric | cad skill | MAC | Ratio (skill / MAC) |
@@ -132,6 +138,12 @@ Feature counts per prompt:
 | Defensive corrections | 0 | 1 (P9 item 8 —— physical plausibility) |
 
 **P9 item 8 defensive-correction instance**: The original "tread inner end approaches column" design causes floating geometry (the tread and column are only tangent at a single point, with no solid connection), and the model would fracture at that point during 3D printing. MAC proactively corrected this parameter based on physical common sense (keeping a safe overlap between the tread inner end and the column), avoiding model fracture. This is a typical "defensive correction" scenario: the system goes beyond literal execution of the original instruction, prioritizes physical constraints, and proactively avoids designs that would lead to physical failure.
+
+P9 spiral staircase comparison:
+
+| text-to-cad skill (treads disconnected from column) | MAC (safe overlap) |
+|---|---|
+| ![skill P9](../assets/benchmark_skill09.gif) | ![MAC P9](../assets/benchmark09.gif) |
 
 ---
 

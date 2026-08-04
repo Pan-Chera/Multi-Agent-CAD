@@ -30,14 +30,18 @@
 
 ---
 
+**🎬 Web UI 全流程演示**
+
+下面是 Web UI 一次完整 pipeline 运行的录屏。
+
+<video src="assets/ui_demo.mov" controls width="100%"></video>
+
 ## 📖 目录
 - [1. 📸 实物打印画廊](#1-实物打印画廊)
 - [2. 🚀 快速上手](#2-快速上手)
 - [3. 💡 项目简介](#3-项目简介)
 - [4. ✨ 核心优势](#4-核心优势)
-- [5. 📊 量化评测](#5-量化评测)
-- [6. 🧠 系统架构](#6-系统架构)
-- [7. 📝 学术引用](#7-学术引用)
+- [5. 📝 学术引用](#5-学术引用)
 
 ---
 
@@ -45,7 +49,7 @@
 
 ![3D打印模型实物总览](assets/overview.jpg)
 
-下方 10 个基准测试零件（P1–P10，与 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) 同源 prompt）与 1 个可动演示均由 MAC 流水线生成。上图实物打印模型的 3D 旋转视图与 prompt 见 [qwen3.7_token.md](docs/qwen3.7_token.md)。
+下方 10 个基准测试零件（P1–P10，与 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) 同源 prompt）、10 件演示画廊（S1–S10，原创 prompt）与 1 个可动演示均由 MAC 流水线生成。上图实物打印模型的 3D 旋转视图与 prompt 见 [qwen3.7_token.md](docs/qwen3.7_token.md)。
 
 ### 🤖 可动样例（print-in-place articulable）
 
@@ -55,32 +59,35 @@
 |---|---|
 | **笼中小球玩具（Ball-in-Cage Fidget Toy）**<br>经典一体化打印解压玩具：实心球被关在立方笼内，一次打印成形 —— 球可自由滚动但无法脱出。<br>• 40×40×40 mm 立方笼，内部 16 mm 半径球形空腔，居中于原点<br>• 15 mm 半径实心球，与笼内壁四周保持 1 mm 间隙<br>• 六面各开一个 12 mm 半径通孔，便于观察和触摸小球<br><br>**可动陀螺仪玩具（Articulable Gyroscope Toy）**<br>一体化打印的旋转结构：内环通过两根 pivot pin 在外环内自由旋转。<br>• 外环：30 mm 外 / 23 mm 内半径，高 10 mm，居中于 XY 平面<br>• 外环上沿 X 轴开两个 2.4 mm 半径的 pivot 孔<br>• 内旋转体：22 mm 外 / 15 mm 内半径，高 10 mm，内壁 8 个凹槽<br>• 两根 pivot pin（半径 2.0 mm，长 6 mm）向外伸入外环孔内<br>• 0.4 mm 径向间隙使内环绕 X 轴 360° 自由旋转 | <img src="assets/articulable.gif" width="320" alt="可动模型实拍图"> |
 
+### 🎨 演示画廊（S1–S10）
+
+10 个演示零件，展示 MAC 在创意打印品上的能力 —— 装饰摆件、可动玩具、机械机构等。与 P1–P10（同源 prompt）不同，这些 prompt 为本项目原创。详细 prompt 与 3D 旋转视图见 [qwen3.7_token.md](docs/qwen3.7_token.md)。
+
+| S1 | S2 | S3 | S4 | S5 |
+|---|---|---|---|---|
+| 蜂巢收纳座 | 陀螺仪摆件 | 灯塔摆件 | 手机支架 | 笼中小球 |
+| ![S1](assets/show1.gif) | ![S2](assets/show2.gif) | ![S3](assets/show3.gif) | ![S4](assets/show4.gif) | ![S5](assets/show5.gif) |
+
+| S6 | S7 | S8 | S9 | S10 |
+|---|---|---|---|---|
+| 可动陀螺仪 | 多环链 | 马尔他机构 | 等离子反应堆 | 通风刹车盘 |
+| ![S6](assets/show6.gif) | ![S7](assets/show7.gif) | ![S8](assets/show8.gif) | ![S9](assets/show9.gif) | ![S10](assets/show10.gif) |
+
 ### 📐 基准测试零件（P1–P10）
 
 10 个机械零件涵盖阵列特征、布尔运算、旋转阵列、螺旋扫掠、多体装配等典型 CAD 操作。下方演示模型均由本项目根据 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD skill）提供的 prompt 生成。详细 prompt 与每条几何特征通过率见 [qwen3.7_token.md](docs/qwen3.7_token.md)。
-
-| # | 零件 | 主要几何特征 |
-|---|---|---|
-| P1 | 矩形块带 4 通孔 | 2×2 阵列、顶面倒角 |
-| P2 | 圆形法兰 | 6 重旋转对称、内孔 + 螺栓孔 |
-| P3 | L 形支架 | 底板 + 背板 + 加强筋 + 多方向通孔 |
-| P4 | 阶梯轴 | 三段同轴圆柱 + 键槽 + 端面倒角 |
-| P5 | 顶部开放外壳 | 4 内部支柱 + 盲孔 + 垂直角圆角 |
-| P6 | 航空 U 形支架 | 双耳 + 横孔 + 减重切口 + 加强筋 |
-| P7 | 径向发动机气缸 | 12 冷却翅片 + 法兰 + 倾斜火花塞凸台 |
-| P8 | 离心叶轮 | 12 后弯叶片 + 背板 + 中心轮毂 |
-| P9 | 微型螺旋楼梯 | 20 楔形踏步 + 螺旋扶手 + 20 栏杆 |
-| P10 | 行星齿轮组件 | 太阳齿 + 3 行星齿 + 内齿圈 + 行星架 |
 
 #### Benchmark 模型视图
 
 | P1 | P2 | P3 | P4 | P5 |
 |---|---|---|---|---|
+| 带通孔的矩形块 | 圆形法兰 | L 形支架 | 阶梯轴 | 顶部开放外壳 |
 | ![P1](assets/benchmark01.gif) | ![P2](assets/benchmark02.gif) | ![P3](assets/benchmark03.gif) | ![P4](assets/benchmark04.gif) | ![P5](assets/benchmark05.gif) |
 | ¥5.53 → **¥0.31** (17.8×) | ¥8.07 → **¥0.34** (23.7×) | ¥13.07 → **¥1.08** (12.1×) | ¥6.53 → **¥0.57** (11.5×) | ¥2.88 → **¥0.36** (8.0×) |
 
 | P6 | P7 | P8 | P9 | P10 |
 |---|---|---|---|---|
+| 航空 U 形支架 | 径向发动机气缸 | 离心叶轮 | 微型螺旋楼梯 | 行星齿轮组件 |
 | ![P6](assets/benchmark06.gif) | ![P7](assets/benchmark07.gif) | ![P8](assets/benchmark08.gif) | ![P9](assets/benchmark09.gif) | ![P10](assets/benchmark10.gif) |
 | ¥15.21 → **¥3.10** (4.9×) | ¥17.42 → **¥0.53** (32.9×) | ¥32.75 → **¥1.20** (27.3×) | ¥12.80 → **¥1.45** (8.8×) | ¥11.43 → **¥0.73** (15.7×) |
 
@@ -101,9 +108,27 @@ conda env create -f environment.yml
 conda activate multi_agent_cad
 ```
 
-> pip 用户见 [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml)。要启用 `mac-config-reset` console 脚本、并允许在任意目录（不只是仓库根）跑 `python -m multi_agent_cad.graph`，还需在已激活的 env 里 `pip install -e .`。
+> **pip 用户（无 conda）**：`aider-chat` 锁定 `numpy==1.26.4`，与 `build123d>=0.8` 要求的 `numpy>=2,<3` 冲突，纯 pip 直接装失败。走以下 workaround（已在 macOS arm64 + Python 3.11 验证）：
+>
+> ```bash
+> python3.11 -m venv .venv
+> source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\activate
+> pip install --upgrade pip
+> # 先装 aider（会拉 numpy 1.26.4 + 一堆传递依赖），再强制覆盖 numpy 到 2.x。
+> # 已验证 aider 0.82.3 在 numpy 2.x 上能正常 import——上游的 pin 是过度保守。
+> pip install "aider-chat==0.82.3"
+> pip install --no-deps --force-reinstall "numpy>=2,<3"
+> pip install "build123d>=0.8" "langgraph>=0.2,<0.3" "langgraph-checkpoint>=2.0,<3.0" \
+>             "pydantic>=2.5" "openai>=1.20.0" "anthropic>=0.30" \
+>             "trimesh>=4.0" "rtree>=1.1" "scipy>=1.10" "scikit-learn>=1.3" \
+>             "fastapi>=0.110" "uvicorn[standard]>=0.27" "ipython>=8.15" "pytest>=7.4"
+> # --no-deps 跳过 pyproject.toml 的 numpy pin 重新检查；fastapi+uvicorn 已由上一步装好。
+> pip install --no-deps -e .
+> ```
+>
+> 最后一步同时注册 `mac-config-reset` 命令行脚本、并允许在任意目录（不只是仓库根）跑 `python -m multi_agent_cad.graph`。完整依赖清单见 [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml)。
 
-> **Windows**：`conda env create -f environment.yml` 在 Windows 上开箱即用——`trimesh` 和 `rtree` 来自 conda-forge 预编译包；`OCP` 由 `build123d` 的 PyPI 依赖 `cadquery-ocp-novtk` 传递性拉入。Windows 上不要用纯 pip 装 CAD 这套——`trimesh`/`rtree` 的 native wheel 在 Windows 上不可靠。PowerShell 设 API key：`$env:DASHSCOPE_API_KEY = "sk-..."`（cmd.exe 用 `set DASHSCOPE_API_KEY=sk-...`）。Web UI 安装（`pip install -e ".[web]"`）同样可用——`uvloop` 在 Windows 上自动跳过。Windows 不在 CI 里，但代码避开 Unix 专属 API、全程 UTF-8；遇到问题欢迎反馈。
+> **Windows**：`conda env create -f environment.yml` 在 Windows 上开箱即用——`trimesh` 和 `rtree` 来自 conda-forge 预编译包；`OCP` 由 `build123d` 的 PyPI 依赖 `cadquery-ocp-novtk` 传递性拉入。Windows 上不要走上面的纯 pip workaround——`trimesh`/`rtree` 的 native wheel 在 Windows 上不可靠。PowerShell 设 API key：`$env:DASHSCOPE_API_KEY = "sk-..."`（cmd.exe 用 `set DASHSCOPE_API_KEY=sk-...`）。conda 环境内跑 Web UI 用 `pip install -e ".[web]"`——`uvloop` 在 Windows 上自动跳过。Windows 不在 CI 里，但代码避开 Unix 专属 API、全程 UTF-8；遇到问题欢迎反馈。
 
 ### 配置
 
@@ -259,6 +284,8 @@ USER_REQUEST = "Create a single solid circular flange as a STEP model in millime
 
 MAC 同时是一个白盒系统：每个中间产物（`CADBrief`、`ArchitectPlan`、`temp_design.py`、`temp_measurements_*.json`、`temp_missed_*.json`、QA 报告）都序列化到磁盘，可供人工审计。你可以在每次迭代的 checkpoint 处介入，覆盖通过的结果，并直接把额外的修改需求喂给 Aider 修复 prompt。
 
+完整基准方法论、每 prompt 的 token/成本明细、公平性分析与失败模式分析见 [quantified_quality.md](docs/quantified_quality.md) / [quantified_quality_cn.md](docs/quantified_quality_cn.md)。
+
 ---
 
 ## 4. ✨ 核心优势
@@ -290,148 +317,15 @@ LLM-only CAD agent 每次生成代码都要烧 token。MAC 反其道而行：用
 
 默认配置：Qwen 3.7-max，Planner/Coder/Repair 开启 thinking，Architect 关闭 thinking 以保证 JSON 确定性。
 
----
+### ⏱️ 时间更快 —— 约 10×
 
-## 5. 📊 量化评测
+Token 效率（116×）和 API 调用次数减少（26×）直接转化为时间优势：要生成的内容更少、与 LLM 的往返次数更少。未做正式 benchmark，但在 10 个 prompt 上 MAC 的总耗时大约是单 agent 基线的 1/10。10× 仅作量级估计，非实测数据。
 
-基准测试：10 个 prompt（P1–P10），共 141 个几何特征。每个特征为二元通过/失败项，对照生成的 STEP 验证。通过率 = 通过特征数 / 特征总数。完整方法论、每 prompt 明细及失败模式分解见 [quantified_quality.md](docs/quantified_quality.md) / [quantified_quality_cn.md](docs/quantified_quality_cn.md)。原始 token / API / 成本数据见 [qwen3.7_token.md](docs/qwen3.7_token.md)。
-
-对比基线 `cad skill` 即 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD Skills，[文档](https://www.cadskills.xyz)）项目的 [`cad` skill](https://github.com/earthtojake/text-to-cad/tree/main/skills/cad) —— 一个基于 Claude Code skill 的单体 agent 文本到 CAD 生成器。
-
-> **公平性说明**：MAC 与基线 `cad skill` 使用**相同 prompt 集**（P1–P10，取自 [该项目 benchmarks/](https://github.com/earthtojake/text-to-cad/tree/main/benchmarks)）、**相同测试集**、**相同几何评估标准**（141 特征二元通过/失败），唯一变量是 agent 架构。
-
-> **关于基线 97.9%**：原 `cad skill` 通过率只有 97.9%。原因：原作者测试时用 Claude 与 ChatGPT，本测试用的是更弱的 Qwen 3.7-max。基线与 MAC 同一 LLM、唯一变量是 agent 架构 —— MAC 跑出 99.3%，优势完全来自架构。
-
-### 核心数据
-
-| 指标 | [cad skill](https://github.com/earthtojake/text-to-cad)（text to cad，Claude Code skill） | **MAC（本流水线）** | 比率（skill / MAC） |
-|---|---:|---:|---:|
-| 总成本（CNY） | 125.69 | **9.67** | **13.0×** |
-| 总 token 数 | 103,950,189 | **896,340** | **116.0×** |
-| 总输入 token | 5,971,566 | 523,924 | 11.4× |
-| 总 cache_read token | 96,192,896 | 10,496 | 9,165× |
-| 总输出 token | 1,785,727 | 361,920 | 4.93× |
-| 总 API 调用次数 | 1,307 | **50** | **26.1×** |
-| 通过特征 / 总特征 | 138 / 141 | **140 / 141** | — |
-| 特征通过率 | 97.9% | **99.3%** | — |
-| 防御性修正数 | 0 | 1 | — |
-
-MAC 在 10 个 prompt、141 个特征上达到 **99.3% 通过率**，**13× 成本优势**和 **116× token 优势**的同时还产生了一次**防御性修正** —— P9 中 MAC 主动识别出原需求会导致踏步与立柱无实体连接，3D 打印会断裂，基于物理常识自动调整为安全重叠，避免了模型失效。这是系统超越字面执行、优先满足物理条件的典型表现。
-
-P9 旋转楼梯对比：
-
-| text-to-cad skill（踏步与立柱断开） | MAC（安全重叠） |
-|---|---|
-| ![skill P9](assets/benchmark_skill09.gif) | ![MAC P9](assets/benchmark09.gif) |
-
-### token 信息密度（output / input 比率）
-
-| | cad skill | MAC | MAC 优势 |
-|---|---:|---:|---:|
-| 平均 output/input | 0.332 | 0.659 | **1.98×** |
-
-这里比率更高意味着 LLM 的输出算力聚焦在实际代码生成上，而非浪费在反复阅读历史错误栈、build123d 参考文档和冗长对话历史上。该比率的提升来自**分母的精简**（输入极小化），而非分子膨胀 —— 与 [quantified_quality.md](docs/quantified_quality.md) §5 的架构结论一致。
+完整流水线图（Mermaid）、GraphState 定义、各阶段设计理据与关键实现特性见 [multi_agent_cad/WORKFLOW.md](multi_agent_cad/WORKFLOW.md)。
 
 ---
 
-## 6. 🧠 系统架构
-
-### 核心思路：信息压缩，而非单纯多 agent
-
-普通 multi-agent 流水线只是把任务拆给多个 agent，但每个 agent 仍然反复阅读完整对话历史 —— token 节省有限。MAC 的关键不是"有 4 个 agent"，而是 **agent 之间只传递紧凑的结构化状态**（`CADBrief` 几十字段、`ArchitectPlan` 几百字段），不传任何对话原文：
-
-```mermaid
-flowchart LR
-    subgraph W["Without MAC：单 agent 反复阅读完整上下文"]
-        direction TB
-        WA["Prompt + build123d 文档<br/>+ 完整对话历史 + 错误栈"] --> WB["Agent A"]
-        WB --> WC["Full history 透传"]
-        WC --> WD["Agent B"]
-        WD --> WE["Full history 透传"]
-        WE --> WF["Agent C"]
-        WF --> WG["100M+ tokens"]
-    end
-    subgraph M["MAC：4 个 agent 只传紧凑结构化状态"]
-        direction TB
-        MA["Prompt"] --> MB["Planner<br/>→ CADBrief JSON"]
-        MB --> MC["compact spec"]
-        MC --> MD["Architect<br/>→ ArchitectPlan JSON"]
-        MD --> ME["compact plan"]
-        ME --> MF["Coder<br/>→ build123d code"]
-        MF --> MG["geometry + QA"]
-        MG --> MH["<1M tokens"]
-    end
-```
-
-### MAC 流水线全图
-
-```mermaid
-flowchart TD
-    A["user_request（自然语言）"] --> B["Spec Planner<br/><i>LLM</i>"]
-    B --> C["CADBrief JSON<br/>3 类验证目标：overall_dimension · single_body · water_tightness"]
-    C --> D["Geometric Architect<br/><i>LLM</i>"]
-    D --> E["ArchitectPlan JSON<br/>sketches · steps · selector_map · key_dimensions<br/>4 条 Iron Rules · _normalize_architect_plan"]
-    E --> F["Python Coder<br/>确定性翻译器 + Aider 兜底<br/>（LLM 全量生成仅当翻译器崩溃）"]
-    F --> G["temp_design_*.py"]
-    G --> H
-
-    subgraph H["Autonomous Skill Loop（≤5 次重试）"]
-        direction TB
-        P1["Phase 1: 双引擎 QA<br/>Engine A: cadpy STEP<br/>Engine B: check_mesh STL<br/>Union-Find 连通性兜底"]
-        P1_9["Phase 1.9: 迭代 checkpoint<br/>10s 超时，默认选 1（自动迭代）"]
-        P2{"Phase 2: QA 通过?"}
-        P3["Phase 3: 构建修复 prompt<br/>QA 错误 + 白盒测量 + 运行时诊断"]
-        P4["Phase 4: Aider 修复"]
-        P5["Phase 5: 重新执行<br/>内层 ≤3 次即时重修复"]
-
-        P1 --> P1_9 --> P2
-        P2 -- yes --> R["优化打印方向 → END"]
-        P2 -- no --> P3 --> P4 --> P5 --> P1
-    end
-
-    R --> Z["最终 STEP + STL + QA 报告"]
-```
-
-### 关键设计选择
-
-- **结构化交接，不共享上下文。** 每个 agent 只读上一阶段的 JSON 输出。没有任何 agent 反复阅读完整对话。架构差异如何阻断上下文幻觉累积的分析详见 [multi_agent_cad/WORKFLOW.md](multi_agent_cad/WORKFLOW.md) §5。
-- **确定性翻译器优先。** [_plan_to_code](multi_agent_cad/nodes.py) 直接从 `ArchitectPlan` 生成 build123d 代码，支持 `extrude`、`revolve`、`hole`、`boolean_union/cut`、`pattern_linear/circular`、`mirror`、`fillet`、`chamfer`、`shell` 等。不支持的类型生成 `# TODO_AIDER` —— Aider 只填充这些空缺。
-- **双引擎 QA。** Engine A（[packages/cadpy](packages/cadpy)）检查 STEP 拓扑；Engine B（[legacy_refs/check_mesh.py](legacy_refs/check_mesh.py)）检查 STL 网格 + 连通性。当 Engine B 超时或崩溃时，Union-Find 兜底连通性检查（不依赖 `networkx`）启动。
-- **白盒插桩。** `_measure_feature` 在布尔合并前记录每个特征的精确尺寸到 `temp_measurements_{iter}.json`。QA 不读这些数据 —— 仅在修复 prompt 中喂给 Aider，让 LLM 看到代码实际产出了什么，而不是它原本想产出的。
-- **安全圆角/倒角。** [_safe_fillet](multi_agent_cad/nodes.py) 自动降级 R → R/2 → R/4 → R/8，并用 lambda 边选择器强制每次调用重新求值（防止 stale-edges 覆盖 bug）。
-- **每阶段独立模型配置。** [config.py](multi_agent_cad/config.py) 暴露 `SPEC_PLANNER_*`、`ARCHITECT_*`、`CODER_*`、`AIDER_*`、`REPAIR_*` 块 —— 每块都有独立的 `MODEL`、`TEMPERATURE`、`MAX_TOKENS` 和 `KWARGS`（如 `{"extra_body": {"enable_thinking": True}}`）。
-- **迭代 checkpoint。** [_prompt_iteration_choice](multi_agent_cad/nodes.py) 打印 STEP/STL 路径 + QA 状态，然后提供自动迭代 / 用户介入 / 停止三个选项，10 秒超时。用户输入的修改需求会前置到 Aider 修复 prompt。
-
-<details>
-<summary><b>状态流（LangGraph <code>GraphState</code>）与路由函数</b> —— 点击展开</summary>
-
-```python
-GraphState = {
-    "user_request":             str,            # ground truth
-    "cad_brief":                CADBrief,       # 阶段 1 输出
-    "architect_plan":           ArchitectPlan,  # 阶段 2 输出
-    "current_python_code":      str,
-    "current_python_code_path": str,
-    "current_step_path":        str,
-    "current_stl_path":         str,
-    "qa_report":                QAReport,
-    "error_type":               ErrorType,      # NONE / DIMENSION / TOPOLOGY / FATAL
-    "iteration_count":          int,
-    "max_iterations":           int,            # 5
-    "force_refresh":            bool,
-    "workflow_id":              str,            # "original" 或 "aider"
-    "node_history":             list[str],
-    "execution_log":            list[str],
-}
-```
-
-路由函数：`route_after_planner`、`route_after_architect`、`route_after_coder`（每个最多重试 `_MAX_SELF_RETRIES=3` 次后放行；`route_after_coder` 放行到 `autonomous_skill_loop`，让 Aider 有机会修复确定性 coder 生成不出来的代码）。
-
-</details>
-
----
-
-## 7. 📝 学术引用
+## 5. 📝 学术引用
 
 如果你觉得本项目对你的研究有帮助，请考虑引用：
 

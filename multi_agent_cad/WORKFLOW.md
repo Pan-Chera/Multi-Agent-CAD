@@ -36,40 +36,60 @@
 
 ## 系统架构
 
+### 核心思路：信息压缩，而非单纯多 agent
+
+普通 multi-agent 流水线只是把任务拆给多个 agent，但每个 agent 仍然反复阅读完整对话历史 —— token 节省有限。MAC 的关键不是"有 4 个 agent"，而是 **agent 之间只传递紧凑的结构化状态**（`CADBrief` 几十字段、`ArchitectPlan` 几百字段），不传任何对话原文：
+
+```mermaid
+flowchart LR
+    subgraph W["Without MAC：单 agent 反复阅读完整上下文"]
+        direction TB
+        WA["Prompt + build123d 文档<br/>+ 完整对话历史 + 错误栈"] --> WB["Agent A"]
+        WB --> WC["Full history 透传"]
+        WC --> WD["Agent B"]
+        WD --> WE["Full history 透传"]
+        WE --> WF["Agent C"]
+        WF --> WG["100M+ tokens"]
+    end
+    subgraph M["MAC：4 个 agent 只传紧凑结构化状态"]
+        direction TB
+        MA["Prompt"] --> MB["Planner<br/>→ CADBrief JSON"]
+        MB --> MC["compact spec"]
+        MC --> MD["Architect<br/>→ ArchitectPlan JSON"]
+        MD --> ME["compact plan"]
+        ME --> MF["Coder<br/>→ build123d code"]
+        MF --> MG["geometry + QA"]
+        MG --> MH["<1M tokens"]
+    end
+```
+
 ### 整体流程图
 
-```
-用户自然语言请求
-        ↓
-┌─────────────────┐
-│  Spec Planner   │  解析需求 → CADBrief (仅 3 类验证目标)
-└────────┬────────┘
-         ↓
-┌─────────────────────┐
-│ Geometric Architect │  设计几何方案 → ArchitectPlan (草图、步骤、选择器)
-└────────┬────────────┘
-         ↓
-┌─────────────────┐
-│  Python Coder   │  生成 build123d 代码 → temp_design_{iter}.py
-└────────┬────────┘
-         ↓
-┌───────────────────────────────────┐
-│ Autonomous Skill Loop             │  QA + 修复循环 (最多 5 次)
-│  ┌────────────────────────────┐   │
-│  │ 双引擎 QA (Engine A + B)    │   │
-│  │ + fallback 连通性检查        │   │
-│  └──────────┬─────────────────┘   │
-│             ↓                     │
-│  ┌────────────────────────────┐   │
-│  │ 通过? → 优化打印方向 → END   │   │
-│  │ 失败? → Aider 修复代码       │   │
-│  │        → 重新执行           │   │
-│  │        → 下一轮 QA          │   │
-│  └────────────────────────────┘   │
-│  (内层: 执行失败时 3 次即时重试)      │
-└───────────────────────────────────┘
-         ↓
-最终 STEP 文件 + 验证报告
+```mermaid
+flowchart TD
+    A["user_request（自然语言）"] --> B["Spec Planner<br/><i>LLM</i>"]
+    B --> C["CADBrief JSON<br/>3 类验证目标：overall_dimension · single_body · water_tightness"]
+    C --> D["Geometric Architect<br/><i>LLM</i>"]
+    D --> E["ArchitectPlan JSON<br/>sketches · steps · selector_map · key_dimensions<br/>4 条 Iron Rules · _normalize_architect_plan"]
+    E --> F["Python Coder<br/>确定性翻译器 + Aider 兜底<br/>（LLM 全量生成仅当翻译器崩溃）"]
+    F --> G["temp_design_*.py"]
+    G --> H
+
+    subgraph H["Autonomous Skill Loop（≤5 次重试）"]
+        direction TB
+        P1["Phase 1: 双引擎 QA<br/>Engine A: cadpy STEP<br/>Engine B: check_mesh STL<br/>Union-Find 连通性兜底"]
+        P1_9["Phase 1.9: 迭代 checkpoint<br/>10s 超时，默认选 1（自动迭代）"]
+        P2{"Phase 2: QA 通过?"}
+        P3["Phase 3: 构建修复 prompt<br/>QA 错误 + 白盒测量 + 运行时诊断"]
+        P4["Phase 4: Aider 修复"]
+        P5["Phase 5: 重新执行<br/>内层 ≤3 次即时重修复"]
+
+        P1 --> P1_9 --> P2
+        P2 -- yes --> R["优化打印方向 → END"]
+        P2 -- no --> P3 --> P4 --> P5 --> P1
+    end
+
+    R --> Z["最终 STEP + STL + QA 报告"]
 ```
 
 ### LangGraph 状态流

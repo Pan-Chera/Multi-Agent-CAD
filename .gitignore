@@ -27,6 +27,12 @@ __pycache__/
 htmlcov/
 .python-version
 
+# Aider runtime cache (tags index for code repair). Auto-generated per run.
+.aider.tags.cache.v4/
+.aider.chat.history.md
+.aider.input.history
+.aider.editor.py
+
 # ── Virtual environments ───────────────────────────────────────────────────
 .venv/
 .venv_311/
