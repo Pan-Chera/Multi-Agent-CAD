@@ -2,15 +2,6 @@
 
 > Tsinghua University · IEI Lab
 
-```
-███╗   ███╗ █████╗  ██████╗
-████╗ ████║██╔══██╗██╔════╝
-██╔████╔██║███████║██║
-██║╚██╔╝██║██╔══██║██║
-██║ ╚═╝ ██║██║  ██║╚██████╗
-╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝
-```
-
 > 4 个 agent 协作 · token 砍 116× · 特征通过率 99.3% —— 把简洁的自然语言直接变成可打印的 3D 模型。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)

@@ -2,15 +2,6 @@
 
 > Tsinghua University · IEI Lab
 
-```
-███╗   ███╗ █████╗  ██████╗
-████╗ ████║██╔══██╗██╔════╝
-██╔████╔██║███████║██║
-██║╚██╔╝██║██╔══██║██║
-██║ ╚═╝ ██║██║  ██║╚██████╗
-╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝
-```
-
 > 4 agents collaborating · 116× fewer tokens · 99.3% feature pass rate — turn concise natural language directly into printable 3D models.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
