@@ -35,6 +35,8 @@ from multi_agent_cad.schemas import (
     ErrorType,
     EngineReport,
     GraphState,
+    JudgeAction,
+    JudgeDecision,
     QAReport,
     VerificationResult,
     VerificationTarget,
@@ -81,6 +83,12 @@ from multi_agent_cad.config import (
     SPEC_PLANNER_TEMPERATURE as _SP_TEMP,
     SPEC_PLANNER_MAX_TOKENS as _SP_MAX_TOKENS,
     SPEC_PLANNER_KWARGS as _SPEC_PLANNER_KWARGS,
+    # Stage 1b: Spec Planner multimodal mode (user-provided reference images)
+    SPEC_PLANNER_MULTIMODAL as _CFG_SP_MULTIMODAL,
+    # Stage 0: User input images (shared by Spec Planner + Judge)
+    USER_IMAGES_DIR as _CFG_USER_IMAGES_DIR,
+    USER_IMAGE_MAX_SIZE as _CFG_USER_IMAGE_MAX_SIZE,
+    USER_IMAGE_JPEG_QUALITY as _CFG_USER_IMAGE_JPEG_QUALITY,
     # Stage 2: Geometric Architect
     ARCHITECT_MODEL as _ARCH_MODEL,
     ARCHITECT_TEMPERATURE as _ARCH_TEMP,
@@ -98,6 +106,18 @@ from multi_agent_cad.config import (
     REPAIR_TEMPERATURE as _REPAIR_TEMP,
     REPAIR_MAX_TOKENS as _REPAIR_MAX_TOKENS,
     REPAIR_KWARGS as _REPAIR_KWARGS,
+    # Stage 5: QA Judge (Phase 2.5 in autonomous_skill_loop)
+    JUDGE_ENABLED as _CFG_JUDGE_ENABLED,
+    JUDGE_MIN_RETRY as _CFG_JUDGE_MIN_RETRY,
+    JUDGE_MODEL as _JUDGE_MODEL,
+    JUDGE_TEMPERATURE as _JUDGE_TEMP,
+    JUDGE_MAX_TOKENS as _JUDGE_MAX_TOKENS,
+    JUDGE_KWARGS as _JUDGE_KWARGS,
+    # Stage 5b: QA Judge visual rendering (multimodal input)
+    JUDGE_MULTIMODAL as _CFG_JUDGE_MULTIMODAL,
+    JUDGE_VIEWS_COUNT as _CFG_JUDGE_VIEWS_COUNT,
+    JUDGE_VIEW_SIZE as _CFG_JUDGE_VIEW_SIZE,
+    JUDGE_SAVE_VIEWS as _CFG_JUDGE_SAVE_VIEWS,
 )
 
 
@@ -450,6 +470,43 @@ def _qa_report_or_dict(error_details: list[str] | None) -> str:
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT_PYTHON_CODER = _load_prompt("python_coder")
+
+# ============================================================================
+# System Prompt — QA Judge (Phase 2.5 in autonomous_skill_loop)
+# ============================================================================
+
+# Module-level loading — fail-fast if qa_judge.md is missing (consistent with
+# SYSTEM_PROMPT_PYTHON_CODER and SYSTEM_PROMPT_SPEC_PLANNER loading strategy).
+# F12 fix: was previously lazy-loaded via _get_judge_system_prompt() to avoid
+# reading the file when JUDGE_ENABLED=False, but the prompt file read has
+# negligible cost (~1ms) and fail-fast is more consistent.
+SYSTEM_PROMPT_QA_JUDGE = _load_prompt("qa_judge")
+
+# F5 fix: narrowed multimodal-unsupported keyword detection.
+# Previous list ("image", "unsupported", "not support") was too broad and would
+# false-positive on errors like "rate limit exceeded for image-generation model"
+# or "model does not support streaming". New approach: two-part check — error
+# must mention BOTH an image/vision/multimodal concept AND an unsupported/
+# not-allowed concept. This eliminates false positives on non-multimodal errors.
+_MULTIMODAL_KEYWORDS = (
+    "image input", "image_url", "image content", "image_content",
+    "vision input", "vision model",
+    "multimodal", "multi-modal",
+    "does not support image", "not support image",
+    "does not support vision", "not support vision",
+    "image not allowed", "image not support",
+)
+_UNSUPPORTED_KEYWORDS = (
+    "not support", "unsupported", "not allowed", "does not support",
+    "invalid content", "is not support",
+)
+
+
+def _is_multimodal_unsupported_error(err_str: str) -> bool:
+    """Two-part check: error must mention BOTH multimodal concept AND unsupported concept."""
+    has_multimodal = any(k in err_str for k in _MULTIMODAL_KEYWORDS)
+    has_unsupported = any(k in err_str for k in _UNSUPPORTED_KEYWORDS)
+    return has_multimodal and has_unsupported
 
 
 # ============================================================================
@@ -2532,7 +2589,7 @@ def node_python_coder(state: GraphState) -> dict:
     """Translate an ArchitectPlan into executable build123d Python code.
 
     1. Reads the ArchitectPlan and any previous QA feedback from state.
-    2. Calls Qwen 3.7-max (DashScope) to generate self-contained build123d code.
+    2. Calls Qwen 3.8-max (DashScope) to generate self-contained build123d code.
     3. Writes the code to ``temp_design_{iteration}.py``.
     4. Executes the script via ``subprocess.run``.
     5. On success: returns ``current_python_code``, ``current_step_path``,
@@ -5515,29 +5572,58 @@ def _build_autonomous_repair_prompt(
 
     **Important**: Each iteration only fixes **1-2 most critical errors**, do not attempt to fix all errors at once.
 
+    ### Judge has already decided REPAIR — execute, don't re-evaluate
+
+    The QA Judge agent has already evaluated the QA report and selected
+    `REPAIR` (not ACCEPT, not HALT). This means:
+    - The QA failures are **real** — not false positives (Judge would have ACCEPTed those)
+    - The request is **not mathematically self-contradictory** — Judge would have HALTed those
+    - Your job is to **execute the repair**, not re-decide whether to repair
+
+    The Judge's `reason` and `evidence` are prepended to `error_details` as
+    `JUDGE context (proceeding to repair): <reason> | Evidence: <evidence...>`.
+    If the reason starts with `DEFENSIVE CORRECTION:`, this is a physical-soundness
+    fix (e.g. add overlap, add fillet, increase thickness) that preserves user
+    intent — apply it as a defensive override. Otherwise, treat the reason as
+    Judge's prioritized guidance for which errors to fix first.
+
     ### Information Priority (from high to low)
 
-    1. **User Qualitative Requirements** (structure, function, design intent described in the original request) — highest priority
-    2. **QA Report** (overall bounding box, connectivity, watertightness) — core reference for topology and overall dimensions
-    3. **White-box Feature Measurement Data** (📏 Feature Measurements section) — core reference for feature-level dimensions
-    4. **User Quantitative Data** (specific dimension values) — satisfy as much as possible without violating the first three
+    1. **Judge's reason + evidence** (in error_details, prefixed with
+       `JUDGE context`) — Judge has done the high-level triage; trust its priority
+    2. **QA Report** (overall bounding box, connectivity, watertightness) — core
+       reference for topology and overall dimensions
+    3. **White-box Feature Measurement Data** (📏 Feature Measurements section) —
+       core reference for feature-level dimensions
+    4. **User Quantitative Data** (specific dimension values in user_request) —
+       satisfy as much as possible without violating the first three
+
+    **Note**: User qualitative intent vs QA report conflicts (e.g. user wants
+    multi-body assembly but QA flags FATAL connectivity) are **Judge's
+    responsibility** — Judge decides ACCEPT (multi-body is intentional) or
+    REPAIR (real disconnect). You won't see REPAIR for intentional multi-body
+    designs. If you somehow suspect a QA/Judge misjudgment, still apply the
+    fix — Judge's decision is authoritative; disputes go through the user
+    checkpoint (Phase 1.9) or by rerunning with `JUDGE_ENABLED=False`.
 
     **Processing Principles**:
-    - The QA report only detects overall bounding box dimensions, part connectivity, and watertightness. Connectivity and watertightness
-      errors must be fixed first (correct structure is the foundation of everything).
-    - Feature-level dimensions (hole diameter, plate thickness, boss height, fillet radius, etc.) must be verified by comparing white-box
-      measurement data with the user request. If a feature's `size_x/y/z` in the white-box data
-      deviates from the nominal in the user request by > 0.5mm, actively fix it.
-    - When QA suggestions clearly conflict with user qualitative intent (e.g., user requests a "gear system" but QA
-      reports a multi-body error), follow the user qualitative intent.
-    - Coordinate verification should use `min/max_x/y/z` (actual bounding box) from white-box data, not
-      hand calculations or coordinate comments in the code. Comments may be outdated from previous fixes without being updated.
+    - Feature-level dimensions (hole diameter, plate thickness, boss height,
+      fillet radius, etc.) must be verified by comparing white-box measurement
+      data with the user request. If a feature's `size_x/y/z` in the white-box
+      data deviates from the nominal in the user request by > 0.5mm, actively
+      fix it.
+    - Coordinate verification should use `min/max_x/y/z` (actual bounding box)
+      from white-box data, not hand calculations or coordinate comments in the
+      code. Comments may be outdated from previous fixes without being updated.
 
     **Examples**:
-    - QA report shows overall Z deviation 3mm → Check each feature's size_z in white-box data to locate the cause
-    - White-box data shows hole diameter feature size_x=6mm but user requests 14mm → Fix the hole cutting tool
-    - User requests gear system, QA reports multi-body error → Keep multi-body (user qualitative intent takes priority)
-    - User labels hole diameter 4mm but wall thickness at that position is only 3mm → Adjust hole diameter to a reasonable value (structure takes priority over quantitative data)
+    - QA report shows overall Z deviation 3mm → Check each feature's size_z in
+      white-box data to locate the cause
+    - White-box data shows hole diameter feature size_x=6mm but user requests
+      14mm → Fix the hole cutting tool
+    - User labels hole diameter 4mm but wall thickness at that position is only
+      3mm → Adjust hole diameter to a reasonable value (structure takes priority
+      over quantitative data)
 
     ## QA Error Report
 
@@ -5811,6 +5897,344 @@ def _build_autonomous_repair_prompt(
 
 
 # ============================================================================
+# QA Judge — model can self-terminate iteration on QA disagreement
+# ============================================================================
+
+
+def node_judge_qa(
+    *,
+    user_request: str,
+    qa_report: QAReport,
+    special_features: list[str],
+    feature_measurements: dict | None,
+    retry: int,
+    workflow_id: str,
+    current_stl_path: str | None = None,
+) -> JudgeDecision | None:
+    """Evaluate whether a QA report's failures warrant code repair.
+
+    This is the QA Judge agent (Phase 2.5 in ``node_autonomous_skill_loop``).
+    The Judge is a separate LLM call with its own prompt
+    (``prompts/qa_judge.md``) and structured JSON output. It can:
+
+    - ``accept`` — override QA failure as PASS, return ``ErrorType.NONE``
+    - ``repair`` — continue to Aider (normal flow)
+    - ``halt`` — stop iteration as ``ErrorType.FATAL``
+
+    Anti-hallucination design: the Judge sees only structured text
+    (feature_measurements, error_details, special_features, user_request)
+    plus **optionally** rendered multi-angle PNG views of the current STL
+    (when ``JUDGE_MULTIMODAL`` is enabled and the model supports vision).
+    Every accept/halt decision must cite concrete data points in the
+    ``evidence`` field. Empty evidence on ACCEPT/HALT → downgrade to REPAIR
+    by the caller (Phase 2.5 evidence gate in ``node_autonomous_skill_loop``).
+
+    Visual input (when enabled):
+    - ``JUDGE_MULTIMODAL="never"`` (off): text-only path, no rendering.
+    - ``JUDGE_MULTIMODAL="auto"`` (default): render N isometric PNG views
+      from ``current_stl_path``, send as ``image_url`` content blocks
+      alongside the text prompt. If the API errors out with a
+      multimodal-related message, retry without images (text-only fallback).
+    - ``JUDGE_MULTIMODAL="always"``: require images; if rendering failed,
+      return None (safe default → REPAIR).
+
+    Parameters
+    ----------
+    user_request : str
+        Original natural-language design intent (ground truth).
+    qa_report : QAReport
+        Merged QA report from the dual-engine QA node.
+    special_features : list[str]
+        Non-trivial geometric constraints extracted by Spec Planner
+        (symmetry, multi-body intent, feature placement rules, etc.).
+    feature_measurements : dict | None
+        White-box instrumentation: per-feature bounding boxes from
+        ``temp_measurements_{iter}.json``.
+    retry : int
+        Current outer retry number (0 = first attempt).
+    workflow_id : str
+        ``"original"`` (full pipeline) or ``"aider"`` (modify-existing).
+    current_stl_path : str | None
+        Path to the current STL file for visual rendering. None or missing
+        file → text-only path (no multimodal input).
+
+    Returns
+    -------
+    JudgeDecision | None
+        None on any failure (safe default → caller falls through to Aider,
+        never blocks the pipeline). Otherwise a parsed JudgeDecision.
+
+        The caller (``node_autonomous_skill_loop``) applies confidence +
+        evidence gates to decide whether to actually honor ``accept`` /
+        ``halt`` — empty evidence or low confidence on FATAL/TOPOLOGY is
+        downgraded to REPAIR.
+
+    Notes
+    -----
+    - Function is prefixed ``node_`` so ``token_tracker.py`` auto-wraps it
+      via ``_wrap_node`` (token_tracker.py:261-269) — per-module token
+      attribution appears as a separate ``node_judge_qa`` row in the
+      final token summary.
+    - Returns None when ``JUDGE_ENABLED=False`` or ``retry < JUDGE_MIN_RETRY``
+      (configurable in config.py). First retry always lets Aider genuinely
+      try — Judge only kicks in from ``JUDGE_MIN_RETRY`` (default 1).
+    - On LLM call failure or JSON parse failure, returns None (safe default
+      → continue to Aider). The ``_call_llm_json_with_retry`` helper already
+      retries 3× with self-correction on parse errors.
+    """
+    # -- Config gates -------------------------------------------------------
+    if not _CFG_JUDGE_ENABLED:
+        return None
+    if retry < _CFG_JUDGE_MIN_RETRY:
+        return None
+
+    # -- Build user prompt -------------------------------------------------
+    error_details = list(qa_report.error_details or [])
+    error_type = qa_report.error_type
+    error_type_str = error_type.value if hasattr(error_type, "value") else str(error_type)
+
+    # Errors section
+    if error_details:
+        errors_lines = [f"  [{i}] {e}" for i, e in enumerate(error_details)]
+        errors_section = "\n".join(errors_lines)
+    else:
+        errors_section = "(no error_details — QA report has no failure items)"
+
+    # Special features section (same format as _build_autonomous_repair_prompt)
+    if special_features:
+        features_lines = [f"  [{i}] {feat}" for i, feat in enumerate(special_features)]
+        special_features_section = (
+            "## 🔍 Special Features (non-trivial geometric constraints)\n\n"
+            "These constraints were extracted from the user request by the Spec Planner.\n"
+            "If a special_feature explicitly documents the design intent that the QA report\n"
+            "flags as a failure (e.g. 'MUST be multi-body assembly' vs connectivity FATAL),\n"
+            "cite it in your evidence.\n\n"
+            + "\n".join(features_lines)
+        )
+    else:
+        special_features_section = (
+            "## 🔍 Special Features\n\n"
+            "(empty — no non-trivial geometric constraints extracted by Spec Planner)"
+        )
+
+    # Feature measurements section
+    if feature_measurements:
+        measurements_section = (
+            "## 📏 Feature Measurements (white-box instrumentation, pre-boolean-merge)\n\n"
+            "Each entry is a per-feature bounding box measured BEFORE boolean merge.\n"
+            "Use `size_x`/`size_y`/`size_z` to verify dimensions against the user request.\n"
+            "Use `min_x`/`min_y`/`min_z`/`max_x`/`max_y`/`max_z` to verify positions.\n\n"
+            "```json\n"
+            + json.dumps(feature_measurements, indent=2, ensure_ascii=False)
+            + "\n```\n"
+        )
+    else:
+        measurements_section = (
+            "## 📏 Feature Measurements\n\n"
+            "(not available — no temp_measurements_{iter}.json found on disk)"
+        )
+
+    user_prompt = textwrap.dedent(f"""\
+    ## Original User Request (ground truth — never deviate from this)
+
+    {user_request}
+
+    {special_features_section}
+
+    {measurements_section}
+
+    ## QA Error Report
+
+    Error type: {error_type_str}
+    Iteration: retry {retry} (workflow_id={workflow_id})
+
+    {errors_section}
+
+    ## Task
+
+    Evaluate whether the QA report's failures warrant code repair, or
+    whether the current model should be accepted as-is (false positive,
+    design intent satisfied, persistent kernel limitation) or the request
+    declared unimplementable (halt).
+
+    Follow the Anti-Hallucination Iron Rule from the system prompt: every
+    `accept` or `halt` decision MUST cite concrete data points in the
+    `evidence` field. If you cannot find at least one hard data point,
+    output `repair` instead.
+
+    Return ONLY the ```json fenced block — no other text.
+    """)
+
+    # -- Render multi-angle views (when multimodal enabled) ----------------
+    view_pngs: list[bytes] = []
+    multimodal_mode = _CFG_JUDGE_MULTIMODAL  # "auto" | "always" | "never"
+
+    if multimodal_mode != "never" and current_stl_path and Path(current_stl_path).is_file():
+        try:
+            from multi_agent_cad.render_views import (
+                _render_isometric_views,
+                _save_views_to_disk,
+                _encode_png_data_url,
+            )
+            view_pngs = _render_isometric_views(
+                Path(current_stl_path),
+                n_views=_CFG_JUDGE_VIEWS_COUNT,
+                size=_CFG_JUDGE_VIEW_SIZE,
+            )
+            if view_pngs and _CFG_JUDGE_SAVE_VIEWS:
+                cwd = Path.cwd()
+                views_dir = cwd / f"temp_judge_views_{retry}"
+                _save_views_to_disk(view_pngs, views_dir, prefix="view")
+                print(f"[JUDGE] Rendered {len(view_pngs)} views to {views_dir.name}")
+            elif view_pngs:
+                print(f"[JUDGE] Rendered {len(view_pngs)} views (disk save disabled)")
+        except Exception as exc:
+            print(f"[JUDGE] view rendering failed: {exc}")
+            if multimodal_mode == "always":
+                print(f"[JUDGE] JUDGE_MULTIMODAL=always but rendering failed — returning None (safe default REPAIR)")
+                return None
+            # auto mode → continue with text-only
+            view_pngs = []
+        # F3 fix: _render_isometric_views returns [] (not exception) on failure
+        # like degenerate mesh or empty STL. The except block above doesn't catch it.
+        # Explicit check: if always mode and no views rendered, return None.
+        if multimodal_mode == "always" and not view_pngs:
+            print(f"[JUDGE] JUDGE_MULTIMODAL=always but rendering produced no views — returning None (safe default REPAIR)")
+            return None
+    elif multimodal_mode == "always" and (not current_stl_path or not Path(current_stl_path).is_file()):
+        print(f"[JUDGE] JUDGE_MULTIMODAL=always but STL not available — returning None (safe default REPAIR)")
+        return None
+
+    # -- Load user-provided reference images (independent scan) ------------
+    # User dropped images into user_input_images/ to specify the design
+    # visually. Loaded here in addition to the rendered view[N] blocks —
+    # lets Judge compare user_image[N] (intended) vs view[N] (current).
+    user_images: list[bytes] = []
+    if multimodal_mode != "never":
+        try:
+            from multi_agent_cad.image_preprocess import (
+                _load_user_images, _encode_jpeg_data_url,
+            )
+            user_images_dir = Path.cwd() / _CFG_USER_IMAGES_DIR
+            user_images = _load_user_images(
+                user_images_dir,
+                max_size=_CFG_USER_IMAGE_MAX_SIZE,
+                jpeg_quality=_CFG_USER_IMAGE_JPEG_QUALITY,
+            )
+            if user_images:
+                print(f"[JUDGE] Loaded {len(user_images)} user reference images from {user_images_dir.name}")
+        except Exception as exc:
+            print(f"[JUDGE] user image load failed: {exc}")
+            # auto mode → continue; always mode → already handled by rendering path
+            # (no STL → already returned None above)
+
+    # -- Build messages: text + user_image blocks + view blocks ------------
+    # OpenAI-compatible multimodal format: user content can be a list of
+    # {type: "text", text: ...} and {type: "image_url", image_url: {url: ...}}
+    # blocks. The SDK accepts both str and list[dict] for the content field.
+    # Order: text first (let LLM read context), then user_image[N] (intended
+    # design), then view[N] (current model) — natural reading flow.
+    text_first_block = {"type": "text", "text": user_prompt}
+    content_list: list[dict] = [text_first_block]
+    for img in user_images:
+        data_url = _encode_jpeg_data_url(img)
+        content_list.append({
+            "type": "image_url",
+            "image_url": {"url": data_url},
+        })
+    for png in view_pngs:
+        data_url = _encode_png_data_url(png)
+        content_list.append({
+            "type": "image_url",
+            "image_url": {"url": data_url},
+        })
+    if len(content_list) > 1:  # has any image blocks (user_image or view)
+        user_content: list[dict] | str = content_list
+        n_user = len(user_images)
+        n_view = len(view_pngs)
+        print(f"[JUDGE] Sending multimodal message: 1 text + {n_user} user images + {n_view} rendered views")
+    else:
+        user_content = user_prompt  # text-only path (no user images AND no rendered views)
+
+    messages: list[dict] = [
+        {"role": "system", "content": SYSTEM_PROMPT_QA_JUDGE},
+        {"role": "user", "content": user_content},
+    ]
+
+    # -- Call LLM (with auto-fallback on multimodal API errors) ------------
+    # Wrapped tightly so a missing API key (RuntimeError from _llm_client)
+    # also falls into the safe-default path — caller proceeds to Aider.
+    # Catches generic Exception (not just ValueError/RuntimeError) because the
+    # OpenAI SDK raises openai.BadRequestError for "model doesn't support image"
+    # — a subclass of openai.APIStatusError, NOT ValueError/RuntimeError. Without
+    # the broad catch, the auto-fallback would never fire on real multimodal-
+    # unsupported errors.
+    try:
+        client = _llm_client()
+        json_str, _raw_response = _call_llm_json_with_retry(
+            client, messages,
+            model=_JUDGE_MODEL,
+            max_tokens=_JUDGE_MAX_TOKENS,
+            temperature=_JUDGE_TEMP,
+            extra_kwargs=_JUDGE_KWARGS,
+            max_retries=3,
+        )
+    except Exception as exc:
+        err_str = str(exc).lower()
+        # Detect multimodal-unsupported errors (varies by provider).
+        # Common patterns:
+        #   OpenAI: "model 'X' does not support image input"
+        #   Qwen/DashScope: "param image_content is not supported by the model"
+        #   Anthropic: "image input not supported"
+        #   DeepSeek: "unsupported content type"
+        # F5 fix: two-part check via _is_multimodal_unsupported_error() —
+        # eliminates false positives on non-multimodal errors like
+        # "rate limit exceeded for image-generation model" or
+        # "model does not support streaming".
+        multimodal_unsupported = _is_multimodal_unsupported_error(err_str)
+        has_images = bool(view_pngs) or bool(user_images)
+        if has_images and multimodal_mode == "auto" and multimodal_unsupported:
+            # Fallback: retry without images (drop both user_image and view blocks)
+            print(f"[JUDGE] multimodal unsupported ({exc}) — retrying text-only")
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT_QA_JUDGE},
+                {"role": "user", "content": user_prompt},
+            ]
+            try:
+                client = _llm_client()
+                json_str, _raw_response = _call_llm_json_with_retry(
+                    client, messages,
+                    model=_JUDGE_MODEL,
+                    max_tokens=_JUDGE_MAX_TOKENS,
+                    temperature=_JUDGE_TEMP,
+                    extra_kwargs=_JUDGE_KWARGS,
+                    max_retries=3,
+                )
+            except Exception as exc2:
+                print(f"[JUDGE] text-only fallback also failed: {exc2} — proceeding to repair (safe default)")
+                return None
+        else:
+            print(f"[JUDGE] LLM call failed: {exc} — proceeding to repair (safe default)")
+            return None
+
+    # -- Parse and validate ------------------------------------------------
+    try:
+        parsed_dict = json.loads(json_str)
+        decision = JudgeDecision.model_validate(parsed_dict)
+    except json.JSONDecodeError as exc:
+        print(f"[JUDGE] JSON decode failed: {exc} — proceeding to repair")
+        return None
+    except ValidationError as exc:
+        print(f"[JUDGE] schema validation failed: {exc} — proceeding to repair")
+        return None
+    except Exception as exc:
+        print(f"[JUDGE] parse failed: {exc} — proceeding to repair")
+        return None
+
+    return decision
+
+
+# ============================================================================
 # Autonomous Skill Loop — Aider helpers
 # ============================================================================
 
@@ -6026,7 +6450,7 @@ def _run_repair_on_script(
     """Repair a CAD Python script using Aider (primary) or direct API (fallback).
 
     **Primary path — Aider (headless)**:
-      Uses ``aider.coders.Coder`` with ``openai/qwen3.7-max`` to directly
+      Uses ``aider.coders.Coder`` with ``openai/qwen3.8-max`` to directly
       edit the script file in place.  Aider's edit formats (search/replace,
       unified diff) are more reliable for targeted code fixes than asking an
       LLM to regenerate the entire file.
@@ -6907,6 +7331,10 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
     # Autonomous retry loop
     # ==================================================================
     _skip_qa = False  # True when previous execution failed — model unchanged
+    # F13: initialize judge_decision — included in ALL return paths so audit
+    # trail is complete (can distinguish "Judge didn't run" (None) from "Judge
+    # ran and chose REPAIR" (JudgeDecision with action=REPAIR)).
+    judge_decision: JudgeDecision | None = None
     # Snapshot the original user_request so per-iteration interventions
     # (choice 2) only affect the current round. Next iteration starts
     # fresh from the original, even if the user picked 2 last round.
@@ -7073,6 +7501,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
             return {
                 "qa_report": last_qa_report,
                 "error_type": ErrorType.NONE,
+                "judge_decision": judge_decision,  # F13: might be None if Judge hasn't run
                 "current_step_path": str(current_step.resolve()),
                 "current_stl_path": str(rotated_stl.resolve()),
                 "current_python_code": python_code,
@@ -7136,6 +7565,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
             return {
                 "qa_report": last_qa_report,
                 "error_type": ErrorType.NONE,
+                "judge_decision": judge_decision,  # F13: might be None if Judge hasn't run
                 "current_step_path": str(current_step.resolve()),
                 "current_stl_path": str(rotated_stl.resolve()),
                 "current_python_code": python_code,
@@ -7143,6 +7573,128 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                 "execution_log": all_log_lines,
                 "node_history": list(state.get("node_history", [])) + ["autonomous_skill_loop"],
             }
+
+        # --------------------------------------------------------------
+        # Phase 2.5: QA Judge — model can override QA report
+        # --------------------------------------------------------------
+        # Load feature_measurements ONCE per outer retry and share between
+        # Judge (here) and Aider (Phase 4). Avoids double-reading from disk.
+        feature_measurements = None
+        measurements_file = cwd / f"temp_measurements_{retry_iter}.json"
+        if not measurements_file.is_file():
+            measurements_file = cwd / "temp_measurements_0.json"
+        if measurements_file.is_file():
+            try:
+                with open(measurements_file, 'r', encoding='utf-8') as f:
+                    feature_measurements = json.load(f)
+                print(f"[AUTONOMOUS JUDGE] Loaded {len(feature_measurements)} feature measurements from {measurements_file.name}")
+            except Exception as exc:
+                print(f"[AUTONOMOUS JUDGE] WARNING: Failed to load feature measurements: {exc}")
+
+        judge_decision = node_judge_qa(
+            user_request=user_request,
+            qa_report=last_qa_report,
+            special_features=_attr(cad_brief, "special_features", []) or [],
+            feature_measurements=feature_measurements,
+            retry=retry,
+            workflow_id=workflow_id,
+            current_stl_path=str(current_stl) if current_stl else None,
+        )
+        if judge_decision is not None:
+            all_log_lines.append(
+                f"node_autonomous_skill_loop [retry {retry}]: "
+                f"JUDGE → {judge_decision.action.value} "
+                f"(confidence={judge_decision.confidence}, "
+                f"evidence={len(judge_decision.evidence)} items, "
+                f"reason: {judge_decision.reason[:80]})"
+            )
+
+            # -- ACCEPT: confidence + evidence gate (anti-hallucination) --
+            if judge_decision.action == JudgeAction.ACCEPT:
+                err = last_qa_report.error_type
+                # F7 fix: filter empty/whitespace-only evidence entries — LLM can
+                # output evidence: [""] or ["N/A"] or ["based on general experience"]
+                # to bypass the gate. Only count entries with >3 non-whitespace chars.
+                meaningful_evidence = [
+                    e for e in judge_decision.evidence
+                    if e and e.strip() and len(e.strip()) > 3
+                ]
+                has_evidence = len(meaningful_evidence) > 0
+                is_high_conf = judge_decision.confidence == "high"
+                # Hard gate: FATAL/TOPOLOGY ACCEPT requires high confidence AND evidence
+                # DIMENSION ACCEPT requires evidence (any confidence)
+                if err in (ErrorType.FATAL, ErrorType.TOPOLOGY) and not (is_high_conf and has_evidence):
+                    all_log_lines.append(
+                        f"  Judge ACCEPT on {err.value} requires high confidence AND "
+                        f"non-empty evidence — proceeding to repair"
+                    )
+                elif not has_evidence:
+                    all_log_lines.append(
+                        f"  Judge ACCEPT has no evidence — proceeding to repair (anti-hallucination)"
+                    )
+                else:
+                    last_qa_report.error_details = [
+                        f"JUDGE OVERRIDE (confidence={judge_decision.confidence}): "
+                        f"{judge_decision.reason}",
+                        f"  Evidence cited: {'; '.join(judge_decision.evidence[:3])}",
+                        *(last_qa_report.error_details or []),
+                    ]
+                    rotated_stl, _orientation_info = _optimize_print_orientation(current_stl)
+                    return {
+                        "qa_report": last_qa_report,
+                        "error_type": ErrorType.NONE,
+                        "judge_decision": judge_decision,
+                        "current_step_path": str(current_step.resolve()),
+                        "current_stl_path": str(rotated_stl.resolve()),
+                        "current_python_code": python_code,
+                        "iteration_count": retry_iter + 1,
+                        "execution_log": all_log_lines,
+                        "node_history": list(state.get("node_history", [])) + ["autonomous_skill_loop"],
+                    }
+
+            # -- HALT: requires high confidence AND non-empty evidence --
+            if judge_decision.action == JudgeAction.HALT:
+                is_high_conf = judge_decision.confidence == "high"
+                # F7 fix: same evidence filtering as ACCEPT gate
+                meaningful_evidence = [
+                    e for e in judge_decision.evidence
+                    if e and e.strip() and len(e.strip()) > 3
+                ]
+                has_evidence = len(meaningful_evidence) > 0
+                if not (is_high_conf and has_evidence):
+                    all_log_lines.append(
+                        f"  Judge HALT requires high confidence AND non-empty evidence — "
+                        f"proceeding to repair (anti-hallucination)"
+                    )
+                else:
+                    all_log_lines.append(
+                        f"  Judge HALT — stopping iteration: {judge_decision.reason[:120]}"
+                    )
+                    return {
+                        "qa_report": last_qa_report,
+                        "error_type": ErrorType.FATAL,
+                        "judge_decision": judge_decision,
+                        "current_step_path": str(current_step.resolve()),
+                        "current_stl_path": str(current_stl.resolve()),
+                        "current_python_code": python_code,
+                        "iteration_count": retry_iter + 1,
+                        "execution_log": all_log_lines,
+                        "node_history": list(state.get("node_history", [])) + ["autonomous_skill_loop"],
+                    }
+
+            # -- REPAIR: fall through; inject judge's reason + evidence --
+            if judge_decision.reason:
+                aider_context = (
+                    f"JUDGE context (proceeding to repair): {judge_decision.reason}"
+                )
+                if judge_decision.evidence:
+                    aider_context += (
+                        f" | Evidence: {'; '.join(judge_decision.evidence[:2])}"
+                    )
+                last_qa_report.error_details = [
+                    aider_context,
+                    *(last_qa_report.error_details or []),
+                ]
 
         # --------------------------------------------------------------
         # Phase 3: Build repair prompt & run Aider or fallback repair
@@ -7200,18 +7752,21 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
 
         for exec_attempt in range(MAX_EXEC_RETRIES + 1):
             # -- Phase 4: Aider repair --
-            # Load feature measurements from white-box instrumentation
-            feature_measurements = None
-            measurements_file = cwd / f"temp_measurements_{retry_iter}.json"
-            if not measurements_file.is_file():
-                measurements_file = cwd / "temp_measurements_0.json"
-            if measurements_file.is_file():
-                try:
-                    with open(measurements_file, 'r', encoding='utf-8') as f:
-                        feature_measurements = json.load(f)
-                    print(f"[AUTONOMOUS REPAIR] Loaded {len(feature_measurements)} feature measurements from {measurements_file.name}")
-                except Exception as exc:
-                    print(f"[AUTONOMOUS REPAIR] WARNING: Failed to load feature measurements: {exc}")
+            # feature_measurements was hoisted to Phase 2.5 (loaded once per
+            # outer retry, shared between Judge and Aider). Re-load only on
+            # inner exec-retry > 0 since Aider may have rewritten the script
+            # and produced fresh measurements on a successful exec.
+            if exec_attempt > 0 or feature_measurements is None:
+                measurements_file = cwd / f"temp_measurements_{retry_iter}.json"
+                if not measurements_file.is_file():
+                    measurements_file = cwd / "temp_measurements_0.json"
+                if measurements_file.is_file():
+                    try:
+                        with open(measurements_file, 'r', encoding='utf-8') as f:
+                            feature_measurements = json.load(f)
+                        print(f"[AUTONOMOUS REPAIR] Loaded {len(feature_measurements)} feature measurements from {measurements_file.name}")
+                    except Exception as exc:
+                        print(f"[AUTONOMOUS REPAIR] WARNING: Failed to load feature measurements: {exc}")
 
             aider_ok = _run_repair_on_script(
                 script_path=str(script_path),
@@ -7232,6 +7787,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                 return {
                     "qa_report": last_qa_report,
                     "error_type": ErrorType.FATAL,
+                    "judge_decision": judge_decision,  # F13: audit trail on Aider-failed path
                     "current_step_path": str(current_step.resolve()),
                     "current_stl_path": str(current_stl.resolve()),
                     "current_python_code": python_code,
@@ -7353,6 +7909,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
     return {
         "qa_report": last_qa_report,
         "error_type": ErrorType.FATAL,
+        "judge_decision": judge_decision,  # F13: audit trail on MAX_RETRIES path
         "current_step_path": str(current_step.resolve()),
         "current_stl_path": str(current_stl.resolve()),
         "current_python_code": python_code,
@@ -7397,7 +7954,7 @@ SYSTEM_PROMPT_GEOMETRIC_ARCHITECT = _load_prompt("geometric_architect")
 def node_spec_planner(state: GraphState) -> dict:
     """Parse the user's natural-language CAD request into a formal CADBrief.
 
-    Calls Qwen 3.7-max (DashScope) with a specialised system prompt that instructs it to
+    Calls Qwen 3.8-max (DashScope) with a specialised system prompt that instructs it to
     extract dimensions, infer defaults, standardise units, define an origin,
     and — most importantly — generate concrete VerificationTarget objects
     for the downstream QA engines.
@@ -7487,14 +8044,84 @@ def node_spec_planner(state: GraphState) -> dict:
     # ------------------------------------------------------------------
     # 2. Call Qwen (DashScope) with JSON retry
     # ------------------------------------------------------------------
+    # -- Load user-provided reference images (when multimodal enabled) -----
+    user_images: list[bytes] = []
+    sp_multimodal_mode = _CFG_SP_MULTIMODAL  # "auto" | "always" | "never"
+
+    if sp_multimodal_mode != "never":
+        try:
+            from multi_agent_cad.image_preprocess import (
+                _load_user_images, _encode_jpeg_data_url,
+            )
+            images_dir = Path.cwd() / _CFG_USER_IMAGES_DIR
+            user_images = _load_user_images(
+                images_dir,
+                max_size=_CFG_USER_IMAGE_MAX_SIZE,
+                jpeg_quality=_CFG_USER_IMAGE_JPEG_QUALITY,
+            )
+            if user_images:
+                print(f"[SPEC PLANNER] Loaded {len(user_images)} user images from {images_dir.name}")
+        except Exception as exc:
+            print(f"[SPEC PLANNER] user image load failed: {exc}")
+            if sp_multimodal_mode == "always":
+                return {
+                    "error_type": ErrorType.FATAL,
+                    "cad_brief": None,
+                    "execution_log": [
+                        f"node_spec_planner: FATAL — "
+                        f"SPEC_PLANNER_MULTIMODAL=always but image loading failed: {exc}"
+                    ],
+                    "node_history": list(state.get("node_history", [])) + ["planner"],
+                }
+            # auto mode → continue with text-only
+
+        # F2 fix: "always" mode requires images — _load_user_images returns []
+        # (not exception) on empty dir, so the except block above doesn't catch it.
+        # Explicit check: if always mode and no images loaded, return FATAL.
+        if sp_multimodal_mode == "always" and not user_images:
+            print(f"[SPEC PLANNER] SPEC_PLANNER_MULTIMODAL=always but no images found — returning FATAL")
+            return {
+                "error_type": ErrorType.FATAL,
+                "cad_brief": None,
+                "execution_log": [
+                    f"node_spec_planner: FATAL — "
+                    f"SPEC_PLANNER_MULTIMODAL=always but no user images found in user_input_images/"
+                ],
+                "node_history": list(state.get("node_history", [])) + ["planner"],
+            }
+
+    # -- Build messages (multimodal or text-only) -------------------------
+    if user_images:
+        # OpenAI-compatible multimodal: user content is a list of text + image_url blocks
+        content_list = [{"type": "text", "text": user_prompt}]
+        for img in user_images:
+            data_url = _encode_jpeg_data_url(img)
+            content_list.append({
+                "type": "image_url",
+                "image_url": {"url": data_url},
+            })
+        user_content: list[dict] | str = content_list
+        print(f"[SPEC PLANNER] Sending multimodal: 1 text + {len(user_images)} user images")
+    else:
+        user_content = user_prompt  # text-only path
+
     client = _llm_client()
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT_SPEC_PLANNER},
-        {"role": "user", "content": user_prompt},
+        {"role": "user", "content": user_content},
     ]
 
     json_str = ""
     raw_response = ""
+    # Broad except (not just ValueError/JSONDecodeError/RuntimeError) because
+    # the OpenAI SDK raises openai.BadRequestError for "model doesn't support
+    # image" — a subclass of openai.APIStatusError, NOT ValueError/RuntimeError.
+    # Without this, auto-fallback would never fire on real multimodal-unsupported
+    # errors from the API. The isinstance checks below distinguish:
+    #   - multimodal_unsupported → retry text-only
+    #   - ValueError (empty response) → FATAL
+    #   - JSONDecodeError → DIMENSION (let graph retry)
+    #   - other Exception → FATAL (unexpected)
     try:
         json_str, raw_response = _call_llm_json_with_retry(
             client, messages,
@@ -7504,31 +8131,77 @@ def node_spec_planner(state: GraphState) -> dict:
             extra_kwargs=_SPEC_PLANNER_KWARGS,
             max_retries=3,
         )
-    except ValueError as exc:
-        # Empty response after retries → FATAL
-        return {
-            "error_type": ErrorType.FATAL,
-            "cad_brief": None,  # Explicitly clear stale cad_brief
-            "execution_log": [
-                f"node_spec_planner: FATAL — {exc}"
-            ],
-            "node_history": list(state.get("node_history", [])) + ["planner"],
-        }
-    except json.JSONDecodeError as exc:
-        # JSON still broken after retries → let graph retry
-        print(f"\n[DEBUG PLANNER] JSON decode exhausted: {exc}\n")
-        return {
-            "error_type": ErrorType.DIMENSION,
-            "cad_brief": None,  # Explicitly clear stale cad_brief
-            "execution_log": [f"node_spec_planner: JSON Decode exhausted: {exc}"],
-            "node_history": list(state.get("node_history", [])) + ["planner"],
-        }
     except Exception as exc:
-        return _planner_fatal(
-            iteration=iteration,
-            reason=f"DashScope API call failed: {exc}",
-            node="node_spec_planner",
-        )
+        # Auto-fallback on multimodal-unsupported API errors (only when images
+        # were sent and we're in auto mode)
+        err_str = str(exc).lower()
+        # F5 fix: two-part check via _is_multimodal_unsupported_error()
+        multimodal_unsupported = _is_multimodal_unsupported_error(err_str)
+        if user_images and sp_multimodal_mode == "auto" and multimodal_unsupported:
+            print(f"[SPEC PLANNER] multimodal unsupported ({exc}) — retrying text-only")
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT_SPEC_PLANNER},
+                {"role": "user", "content": user_prompt},
+            ]
+            try:
+                client = _llm_client()
+                json_str, raw_response = _call_llm_json_with_retry(
+                    client, messages,
+                    model=_SP_MODEL,
+                    max_tokens=_SP_MAX_TOKENS,
+                    temperature=_SP_TEMP,
+                    extra_kwargs=_SPEC_PLANNER_KWARGS,
+                    max_retries=3,
+                )
+            except Exception as exc2:
+                print(f"[SPEC PLANNER] text-only fallback failed: {exc2}")
+                # F4 fix: JSONDecodeError in text-only fallback should return
+                # DIMENSION (let graph retry planner), not FATAL — same as
+                # direct text-only path would do. Previous code always returned
+                # FATAL, which meant enabling multimodal could upgrade a
+                # recoverable JSON parse error to an unrecoverable pipeline halt.
+                if isinstance(exc2, json.JSONDecodeError):
+                    return {
+                        "error_type": ErrorType.DIMENSION,
+                        "cad_brief": None,
+                        "execution_log": [
+                            f"node_spec_planner: JSON Decode (text-only fallback): {exc2}"
+                        ],
+                        "node_history": list(state.get("node_history", [])) + ["planner"],
+                    }
+                return {
+                    "error_type": ErrorType.FATAL,
+                    "cad_brief": None,
+                    "execution_log": [
+                        f"node_spec_planner: FATAL — text-only fallback failed: {exc2}"
+                    ],
+                    "node_history": list(state.get("node_history", [])) + ["planner"],
+                }
+        elif isinstance(exc, ValueError):
+            # Empty response after retries → FATAL
+            return {
+                "error_type": ErrorType.FATAL,
+                "cad_brief": None,
+                "execution_log": [f"node_spec_planner: FATAL — {exc}"],
+                "node_history": list(state.get("node_history", [])) + ["planner"],
+            }
+        elif isinstance(exc, json.JSONDecodeError):
+            # JSON still broken after retries → let graph retry (DIMENSION)
+            _safe_print(f"\n[DEBUG PLANNER] JSON decode exhausted: {exc}\n")
+            return {
+                "error_type": ErrorType.DIMENSION,
+                "cad_brief": None,
+                "execution_log": [f"node_spec_planner: JSON Decode exhausted: {exc}"],
+                "node_history": list(state.get("node_history", [])) + ["planner"],
+            }
+        else:
+            # RuntimeError or other — unexpected, treat as FATAL
+            return {
+                "error_type": ErrorType.FATAL,
+                "cad_brief": None,
+                "execution_log": [f"node_spec_planner: FATAL — {exc}"],
+                "node_history": list(state.get("node_history", [])) + ["planner"],
+            }
 
     # ------------------------------------------------------------------
     # 3. Validate Pydantic schema
@@ -7537,7 +8210,7 @@ def node_spec_planner(state: GraphState) -> dict:
         parsed_dict = json.loads(json_str)
         cad_brief = CADBrief.model_validate(parsed_dict)
     except json.JSONDecodeError as e:
-        print(f"\n[DEBUG PLANNER] {e}\n")
+        _safe_print(f"\n[DEBUG PLANNER] {e}\n")
         return {
             "error_type": ErrorType.DIMENSION,
             "cad_brief": None,  # Explicitly clear stale cad_brief
@@ -7545,7 +8218,7 @@ def node_spec_planner(state: GraphState) -> dict:
             "node_history": list(state.get("node_history", [])) + ["planner"],
         }
     except ValidationError as e:
-        print(f"\n[DEBUG PLANNER] Schema Error: {e}\n")
+        _safe_print(f"\n[DEBUG PLANNER] Schema Error: {e}\n")
         return {
             "error_type": ErrorType.DIMENSION,
             "cad_brief": None,  # Explicitly clear stale cad_brief

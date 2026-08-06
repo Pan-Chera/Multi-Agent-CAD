@@ -141,12 +141,12 @@ python -m multi_agent_cad._config_defaults --reset
 ### 🔌 Use any LLM provider (not locked to Alibaba Cloud)
 
 MAC calls models through an **OpenAI-compatible endpoint**. The repo defaults to
-Alibaba Cloud DashScope (`qwen3.7-max`). Point two config fields at any provider
+Alibaba Cloud DashScope (`qwen3.8-max`). Point two config fields at any provider
 and the whole pipeline follows:
 
 > **The model names and endpoints below are illustrative only.** Verify the
 > exact model ID with your provider's docs (DashScope console / OpenAI
-> models API / etc.) before use — names like `qwen3.7-max` may not match
+> models API / etc.) before use — names like `qwen3.8-max` may not match
 > what's currently served.
 
 | Provider | `DS_BASE_URL` | Example `*_MODEL` | Notes |
@@ -176,9 +176,9 @@ export DASHSCOPE_API_KEY="sk-..."              # bash / zsh
 # PowerShell:  $env:DASHSCOPE_API_KEY = "sk-..."
 ```
 
-> **About the model name `qwen3.7-max`** — it is simply the model ID served on
+> **About the model name `qwen3.8-max`** — it is simply the model ID served on
 > the configured endpoint, here the flagship reasoning model of Alibaba
-> DashScope. Every `*_MODEL` field accepts whatever model ID your provider
+> DashScope (multimodal: supports both text and image input). Every `*_MODEL` field accepts whatever model ID your provider
 > exposes; nothing in the code is Qwen-specific. The only Qwen-specific piece is
 > the `enable_thinking` toggle inside `*_KWARGS` — set `*_KWARGS = {}` for other
 > providers (more per-provider examples live in
@@ -314,7 +314,7 @@ Every intermediate artifact is on disk: [pipeline_cache/cad_brief.json](pipeline
 A traditional single agent stuffs every task (requirement parsing, geometric design, code generation, error repair) into one model — you're forced to pick one "all-rounder" expensive model. MAC decouples these 4 stages so **each stage can pick its own model** (see the `SPEC_PLANNER_*` / `ARCHITECT_*` / `CODER_*` / `AIDER_*` / `REPAIR_*` blocks in [config.py](multi_agent_cad/config.py), each with independent `MODEL` / `TEMPERATURE` / `MAX_TOKENS` / `KWARGS`, e.g. the thinking-chain toggle):
 
 - **Spec Planner** (requirement parsing) — "read a paragraph, output structured JSON" is simple work; you can hang a cheap lightweight model or a local small model here
-- **Geometric Architect** and **Python Coder** — tasks that need spatial imagination and algorithmic reasoning should use a strong model like qwen3.7-max
+- **Geometric Architect** and **Python Coder** — tasks that need spatial imagination and algorithmic reasoning should use a strong model like qwen3.8-max
 - **Aider Repair** — swap in Claude/GPT (better at code) or even train a local model specialized in build123d repair
 
 Going further — since stages hand off only via structured JSON (`CADBrief`, `ArchitectPlan`), **any one stage can be replaced with a specialized local model you trained without touching the others**. For example, train a small model that only reads `CADBrief` and outputs `ArchitectPlan`, replacing the Architect stage's qwen call and dropping per-run cost from ~¥0.5 to near zero. This is impossible in a single-agent architecture — the single agent's prompt and context are deeply coupled, you can't swap just one piece.
@@ -330,6 +330,10 @@ Default config: Qwen 3.7-max with thinking enabled on Planner/Coder/Repair, disa
 ### ⏱️ Wall-clock speed — roughly 10× faster
 
 Token efficiency (116×) and API-call reduction (26×) translate directly into wall-clock speed: less to generate, fewer round-trips to the LLM. No formal benchmark was run, but across the 10-prompt suite MAC consistently finished in roughly a tenth the wall-clock time of the single-agent baseline. Treat the 10× as an order-of-magnitude estimate, not a measured figure.
+
+### 🧐 QA Judge — model can self-terminate iteration
+
+After receiving a QA report, the model itself can evaluate whether the report is wrong or no modification is needed, and choose to end iteration early (ACCEPT/HALT) instead of being forced to repair for the full retry budget. Three decisions cover three scenarios: **HALT** for mathematically self-contradictory requests (e.g. Ø80mm bore in 60mm-wide block), **REPAIR with `DEFENSIVE CORRECTION:` prefix** for physically-implausible-but-fixable geometry (e.g. tangent bodies that will fracture — Aider applies the defensive override preserving user intent), **ACCEPT** for QA false positives or design-intent-satisfied cases. When `JUDGE_MULTIMODAL="auto"` (default), the Judge also receives 4 isometric PNG views of the current model rendered from the STL — letting the LLM ground its decision in actual visual geometry instead of guessing from numbers alone; non-multimodal models automatically fall back to text-only. Users can also drop reference images (sketch, photo, screenshot) into `user_input_images/` at the repo root — both CLI and Web UI modes read from the same folder (Web UI falls back to repo root when its per-job tempdir has no images). Spec Planner reads them to extract geometric intent, Judge compares user_image vs rendered views. See [multi_agent_cad/WORKFLOW.md §5 QA Judge](multi_agent_cad/WORKFLOW.md#5-qa-judge-node_judge_qa--phase-25) for design, anti-hallucination 5-layer defense, configuration, and verification.
 
 For the complete pipeline diagrams (Mermaid), GraphState definition, per-stage design rationale, and key implementation features, see [multi_agent_cad/WORKFLOW.md](multi_agent_cad/WORKFLOW.md).
 

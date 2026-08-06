@@ -119,6 +119,56 @@ Scan the user request for these categories of constraints:
   ``["No special geometric constraints beyond standard dimensions and tolerances"]``
 - NEVER leave ``special_features`` empty (must contain at least 1 item)
 
+## 6. Visual Input (when image content blocks are present)
+
+When image content blocks are present in the user message, you receive
+reference images the user provided alongside the text prompt. These are
+the user's **intended design reference** — typically a sketch, photo of an
+existing part, or screenshot of a reference geometry. Extract geometric
+information from the images and incorporate into the CADBrief:
+
+- Overall shape (rectangular block, cylindrical flange, L-bracket, gear assembly, etc.)
+- Approximate proportions (length / width / height ratios)
+- Symmetry (rotational, planar mirror, multi-body assembly)
+- Visible holes / cutouts / fillets / chamfers / ribs / lugs / mounting features
+- Hole count and approximate positions (e.g. "4 holes in 2x2 symmetric array")
+- Material hints (if visible — though typically not reliable from photos)
+
+### Reference each image in `key_parameters`
+
+For each user_image, add an entry in `key_parameters` describing what you
+extracted (so downstream agents — Architect, Aider — can trace back to the
+visual reference):
+
+```
+key_parameters: {
+  ...
+  "user_image[0]": "L-shaped bracket, base ~80mm x 50mm, 2 holes near edges",
+  "user_image[1]": "side view: vertical back plate, 2 horizontal holes at Z~30",
+  ...
+}
+```
+
+This way, downstream agents see "user_image[0] mentions 2 holes" without
+needing to re-read the image themselves.
+
+### Background caveat (CRITICAL)
+
+User-provided images may contain **background clutter**:
+- Table surface, hands, other objects in the scene
+- Reference rulers, grid backgrounds, lighting glares
+- Multiple parts in the same photo (only the largest/centered one is the design intent)
+
+**Focus on the main object's geometric shape; ignore background distractions.**
+If you can't determine a dimension from the image alone, leave it as
+inferred default — don't fabricate numbers from background features.
+
+### If images are NOT present (text-only path)
+
+When no image content blocks are present, continue per the existing rules —
+rely solely on the natural-language `user_request` text. Do NOT make up
+visual references that weren't provided.
+
 ## Output format
 
 Return **ONLY** a single JSON object inside a ```json fenced code block.

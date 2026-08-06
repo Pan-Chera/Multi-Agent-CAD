@@ -139,9 +139,9 @@ python -m multi_agent_cad._config_defaults --reset
 
 ### 🔌 可接入任意 LLM provider
 
-MAC 通过 **OpenAI 兼容端点**调用模型。仓库默认指向阿里云百炼（`qwen3.7-max`）。把两个配置字段指向任意 provider，整条流水线随之切换：
+MAC 通过 **OpenAI 兼容端点**调用模型。仓库默认指向阿里云百炼（`qwen3.8-max`）。把两个配置字段指向任意 provider，整条流水线随之切换：
 
-> **下表的模型名与端点地址仅为示例。** 实际使用前请到各家 provider 后台核对确切的 model ID（DashScope 控制台 / OpenAI models API 等）——像 `qwen3.7-max` 这样的名字未必与当前线上版本对得上。
+> **下表的模型名与端点地址仅为示例。** 实际使用前请到各家 provider 后台核对确切的 model ID（DashScope 控制台 / OpenAI models API 等）——像 `qwen3.8-max` 这样的名字未必与当前线上版本对得上。
 
 | Provider | `DS_BASE_URL` | `*_MODEL` 示例 | 说明 |
 |---|---|---|---|
@@ -169,7 +169,7 @@ export DASHSCOPE_API_KEY="sk-..."              # bash / zsh
 # PowerShell:  $env:DASHSCOPE_API_KEY = "sk-..."
 ```
 
-> **关于模型名 `qwen3.7-max`**——它只是所配置端点上的模型 ID，此处指阿里云百炼的旗舰推理模型。每个 `*_MODEL` 字段都接受你所选 provider 暴露的任意模型 ID，代码中没有任何 Qwen 专属逻辑。唯一的 Qwen 专属项是 `*_KWARGS` 里的 `enable_thinking` 开关——换其它 provider 时设 `*_KWARGS = {}`（[config.py](multi_agent_cad/config.py) 内附更多 provider 示例）。
+> **关于模型名 `qwen3.8-max`**——它只是所配置端点上的模型 ID，此处指阿里云百炼的旗舰推理模型（多模态：支持文本 + 图像输入）。每个 `*_MODEL` 字段都接受你所选 provider 暴露的任意模型 ID，代码中没有任何 Qwen 专属逻辑。唯一的 Qwen 专属项是 `*_KWARGS` 里的 `enable_thinking` 开关——换其它 provider 时设 `*_KWARGS = {}`（[config.py](multi_agent_cad/config.py) 内附更多 provider 示例）。
 
 ### 两种运行方式
 
@@ -295,7 +295,7 @@ CAD 生成天生是多轮迭代过程：代码生成 → 执行 → 错误分析
 传统单 agent 把所有任务（需求解析、几何设计、代码生成、错误修复）压在一个模型上，只能选一个"全能型"昂贵模型。MAC 把这 4 个阶段解耦，**每个阶段可以独立选择模型**（见 [config.py](multi_agent_cad/config.py) 的 `SPEC_PLANNER_*` / `ARCHITECT_*` / `CODER_*` / `AIDER_*` / `REPAIR_*` 块，每块都有独立的 `MODEL` / `TEMPERATURE` / `MAX_TOKENS` / `KWARGS`，如思维链开关）：
 
 - **Spec Planner**（需求解析）这种"读一段文字、产出结构化 JSON"的简单工作，可以挂便宜的轻量模型或本地小模型
-- **Geometric Architect**（几何设计）和 **Python Coder**（代码生成）这种需要空间想象和算法推理的复杂工作，才挂 qwen3.7-max 这类强模型
+- **Geometric Architect**（几何设计）和 **Python Coder**（代码生成）这种需要空间想象和算法推理的复杂工作，才挂 qwen3.8-max 这类强模型
 - **Aider Repair**（错误修复）可以换 Claude/GPT 这类擅长代码的模型，甚至自训一个专攻 build123d 修复的本地模型
 
 更进一步 —— 由于阶段间只通过结构化 JSON 交接（`CADBrief`、`ArchitectPlan`），**任何一个阶段都可以被替换为你自训的专攻模型，而不影响其他阶段**。例如训一个只读 `CADBrief` 输出 `ArchitectPlan` 的小模型替代 Architect 阶段的 qwen 调用，单次成本从 ~¥0.5 降到接近零。这在单 agent 架构下做不到 —— 单 agent 的 prompt 和上下文深度耦合，无法只替换其中一环。
@@ -311,6 +311,10 @@ LLM-only CAD agent 每次生成代码都要烧 token。MAC 反其道而行：用
 ### ⏱️ 时间更快 —— 约 10×
 
 Token 效率（116×）和 API 调用次数减少（26×）直接转化为时间优势：要生成的内容更少、与 LLM 的往返次数更少。未做正式 benchmark，但在 10 个 prompt 上 MAC 的总耗时大约是单 agent 基线的 1/10。10× 仅作量级估计，非实测数据。
+
+### 🧐 QA Judge —— 模型自决终止迭代
+
+收到 QA 报告之后，模型自己评估报告是否合理，可选择提前结束迭代（ACCEPT/HALT），避免被强制跑满 5 轮重试。三种决策对应三种场景：**HALT** 用于需求自相矛盾（如 Ø80mm 孔在 60mm 宽块体里数学上切断），**REPAIR + `DEFENSIVE CORRECTION:` 前缀** 用于物理常识不足但数学可修的几何（如踏步 tangent 会断裂——Aider 按防御性覆盖执行，保留用户意图），**ACCEPT** 用于 QA 误报或设计意图已实质满足。当 `JUDGE_MULTIMODAL="auto"`（默认）时，Judge 同时收到从当前 STL 渲染出的 4 张等轴测 PNG 视图——让模型基于实际几何视觉判断而非单纯猜数字；非多模态模型自动回退到纯文本路径。用户也可以把参考图（草图、照片、截图）放到项目根目录的 `user_input_images/`——CLI 和 Web UI 模式共用同一份图片文件夹（Web UI 在 per-job tempdir 没图时自动 fallback 到项目根目录）。Spec Planner 读图提取几何意图，Judge 对比用户图 vs 渲染图。设计、反幻觉 5 层防御、配置与验证见 [multi_agent_cad/WORKFLOW.md §5 QA Judge](multi_agent_cad/WORKFLOW.md#5-qa-judge-node_judge_qa--phase-25)。
 
 完整流水线图（Mermaid）、GraphState 定义、各阶段设计理据与关键实现特性见 [multi_agent_cad/WORKFLOW.md](multi_agent_cad/WORKFLOW.md)。
 

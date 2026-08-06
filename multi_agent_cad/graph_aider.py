@@ -240,6 +240,7 @@ from multi_agent_cad.graph import (
     _print_node_start,
     _print_node_end,
     _print_final_report,
+    get_default_initial_state,
 )
 
 
@@ -269,7 +270,6 @@ if __name__ == "__main__":
     # same request). The user_request here is interpreted as MODIFICATION
     # REQUIREMENTS for an existing .py file in cwd.
     # ------------------------------------------------------------------
-    from multi_agent_cad.graph import get_default_initial_state
     initial_state: GraphState = get_default_initial_state(workflow_id="aider")
 
     print("  Modification Request:")

@@ -119,7 +119,7 @@ async def _cleanup_loop() -> None:
 _PROVIDER_PRESETS: dict[str, dict[str, str]] = {
     "qwen": {
         "ds_base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-        "model_hint": "qwen3.7-max",
+        "model_hint": "qwen3.8-max",
     },
     "openai": {
         "ds_base_url": "https://api.openai.com/v1",
