@@ -238,6 +238,12 @@ class VerificationTarget(BaseModel):
         description="Allowed negative deviation from nominal (mm).",
     )
 
+    @field_validator("tolerance_upper", "tolerance_lower", mode="before")
+    @classmethod
+    def _coerce_null_tolerance(cls, v: Any) -> Any:
+        # LLMs often emit explicit nulls; Pydantic skips Field defaults then.
+        return 0.1 if v is None else v
+
     # -- Feature selectors (how to locate the measurement site) --
     face_selector_expression: str | None = Field(
         None,
