@@ -22,7 +22,16 @@ async function loadSchema() {
   document.getElementById("workflow").value = cfg.WORKFLOW_ID || "original";
   document.getElementById("MAX_RETRIES").value = cfg.MAX_RETRIES;
   document.getElementById("MAX_EXEC_RETRIES").value = cfg.MAX_EXEC_RETRIES;
-  document.getElementById("provider").value = "qwen";
+
+  // Pick the preset that matches config.py's base URL (fallback: qwen).
+  let matched = "qwen";
+  for (const [name, p] of Object.entries(providers)) {
+    if (p.ds_base_url && cfg.DS_BASE_URL && cfg.DS_BASE_URL.startsWith(p.ds_base_url.replace(/\/$/, ""))) {
+      matched = name;
+      break;
+    }
+  }
+  document.getElementById("provider").value = matched;
 
   const tbody = document.querySelector("#stage-table tbody");
   tbody.innerHTML = "";
@@ -66,12 +75,17 @@ document.getElementById("run-btn").addEventListener("click", async () => {
     config[s.prefix + "_MAX_TOKENS"] = parseInt(document.getElementById(s.prefix + "_MAX_TOKENS").value, 10);
   }
 
+  // Auto-filled temp paths are display-only — clear them so the next run
+  // gets a fresh tempdir instead of copying into the previous job's folder.
+  const destInput = document.getElementById("dest_path");
+  if (!destInput.dataset.userSet) destInput.value = "";
+
   const body = {
     config,
     prompt: document.getElementById("prompt").value,
     api_key: document.getElementById("api_key").value,
     workflow: document.getElementById("workflow").value,
-    dest_path: document.getElementById("dest_path").value,
+    dest_path: destInput.value,
   };
 
   const log = document.getElementById("log");
@@ -100,7 +114,11 @@ document.getElementById("run-btn").addEventListener("click", async () => {
     runBtn.disabled = false;
     return;
   }
-  const { job_id } = await r.json();
+  const { job_id, out_dir } = await r.json();
+  // If the user left the path blank, show where artifacts actually went.
+  if (out_dir && !destInput.dataset.userSet) {
+    destInput.value = out_dir;
+  }
   stopBtn.disabled = false;
   streamEvents(job_id);
 });
@@ -198,31 +216,52 @@ function showResult(jobId, msg) {
   if (msg.glb) {
     mv.setAttribute("src", `/api/jobs/${jobId}/files/model.glb`);
   } else {
-    mv.setAttribute("alt", "No GLB available — try downloading the STEP/STL");
+    mv.setAttribute("alt", "No GLB available — try the STL viewer tab");
   }
 
-  // Only show download buttons for artifacts that actually exist on disk.
+  // Everything opens in a new tab and leaves this page alone.
+  // Text → raw file. GLB/STL → /viewer.html. STEP → viewer with GLB mesh
+  // (browsers can't render STEP).
   const files = [
-    ["GLB (preview)", "model.glb", msg.glb],
-    ["STEP", "model.step", msg.step],
-    ["STL", "model.stl", msg.stl],
-    ["Python source", "source.py", msg.py],
-    ["Measurements", "measurements.json", msg.measurements],
-    ["Runtime diagnostics", "missed.json", msg.missed],
+    ["GLB", "model.glb", msg.glb, "viewer"],
+    ["STEP", "model.step", msg.step, "viewer"],
+    ["STL", "model.stl", msg.stl, "viewer"],
+    ["Python source", "source.py", msg.py, "text"],
+    ["Measurements", "measurements.json", msg.measurements, "text"],
+    ["Runtime diagnostics", "missed.json", msg.missed, "text"],
   ];
-  for (const [label, fname, path] of files) {
+  for (const [label, fname, path, mode] of files) {
     if (!path) continue;
     const a = document.createElement("a");
-    a.href = `/api/jobs/${jobId}/files/${fname}`;
-    a.textContent = `⬇ ${label}`;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
     a.className = "dl-btn";
+    a.textContent = "↗ " + label;
+    if (mode === "viewer") {
+      a.href = `/viewer.html?job=${encodeURIComponent(jobId)}&file=${encodeURIComponent(fname)}`;
+    } else {
+      a.href = `/api/jobs/${jobId}/files/${fname}`;
+    }
     dl.appendChild(a);
+  }
+
+  if (msg.out_dir) {
+    const destInput = document.getElementById("dest_path");
+    // Keep an explicit user path; otherwise mirror the resolved location.
+    if (!destInput.dataset.userSet) destInput.value = msg.out_dir;
   }
 
   const statsStr = [];
   if (msg.tokens != null) statsStr.push(`Tokens: ${msg.tokens}`);
   if (msg.api_calls != null) statsStr.push(`API calls: ${msg.api_calls}`);
+  if (msg.out_dir) statsStr.push(`Output: ${msg.out_dir}`);
   document.getElementById("stats").textContent = statsStr.join(" · ");
 }
+
+// Remember when the user typed a dest path themselves so we don't overwrite it.
+document.getElementById("dest_path").addEventListener("input", (e) => {
+  e.target.dataset.userSet = e.target.value.trim() ? "1" : "";
+});
+
 
 loadSchema();

@@ -21,15 +21,16 @@
       <label>Provider preset
         <select id="provider">
           <option value="qwen">Qwen (DashScope, default)</option>
+          <option value="openrouter">OpenRouter</option>
           <option value="openai">OpenAI</option>
           <option value="deepseek">DeepSeek</option>
           <option value="gemini">Google Gemini</option>
           <option value="ollama">Local Ollama</option>
         </select>
       </label>
-      <label>API key <input type="password" id="api_key" placeholder="sk-..." autocomplete="off" /></label>
+      <label>API key <input type="password" id="api_key" placeholder="optional if set in config.py" autocomplete="off" /></label>
       <label>DS_BASE_URL <input type="text" id="DS_BASE_URL" /></label>
-      <p class="hint">Switching provider auto-fills DS_BASE_URL and a suggested model name. The thinking toggle (<code>*_KWARGS</code>) is Qwen-specific — leave it for Qwen, ignore for others.</p>
+      <p class="hint">API key can be left blank if <code>DS_API_KEY</code> is set in <code>config.py</code> (or <code>DASHSCOPE_API_KEY</code> env). Switching provider auto-fills DS_BASE_URL and a suggested model name.</p>
     </details>
 
     <details>
@@ -50,9 +51,9 @@
         </select>
       </label>
       <label>Output directory on server (optional)
-        <input type="text" id="dest_path" placeholder="/path/to/save/outputs (empty = keep in temp)" />
+        <input type="text" id="dest_path" placeholder="/path/to/save/outputs (empty = per-job temp dir)" />
       </label>
-      <p class="hint">If set, the runner copies STEP/STL/GLB/.py/QA there after a successful run.</p>
+      <p class="hint">Leave empty to use a per-job temp dir — the field fills with that path when the run starts. If set, STEP/STL/GLB/.py/QA are also copied there when the run finishes.</p>
     </details>
 
     <details>

@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MAC · 3D viewer</title>
+  <!-- Bare 'three' imports inside STLLoader/OrbitControls need this map. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #0d1117; color: #e6e6e6; font-family: ui-sans-serif, system-ui, sans-serif; }
+    header {
+      padding: 10px 16px;
+      border-bottom: 1px solid #30363d;
+      display: flex;
+      gap: 12px;
+      align-items: baseline;
+      flex-wrap: wrap;
+    }
+    header h1 { margin: 0; font-size: 14px; font-weight: 600; }
+    header .note { margin: 0; font-size: 12px; color: #8b949e; }
+    #stage { position: absolute; inset: 42px 0 0 0; }
+    model-viewer, canvas { width: 100%; height: 100%; display: block; }
+    #err { padding: 24px; color: #f85149; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="title">3D viewer</h1>
+    <p class="note" id="note"></p>
+  </header>
+  <div id="stage"></div>
+  <script type="module">
+    import * as THREE from "three";
+    import { STLLoader } from "three/addons/loaders/STLLoader.js";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+    import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+
+    const params = new URLSearchParams(location.search);
+    const job = params.get("job");
+    const file = params.get("file") || "model.glb";
+    const stage = document.getElementById("stage");
+    const title = document.getElementById("title");
+    const note = document.getElementById("note");
+
+    function fail(msg) {
+      stage.innerHTML = `<p id="err">${msg}</p>`;
+    }
+
+    if (!job) {
+      fail("Missing ?job=… query param.");
+      throw new Error("missing job");
+    }
+
+    // Browsers can't render STEP. Show the mesh preview (GLB) instead.
+    let viewFile = file;
+    let label = file;
+    if (file.endsWith(".step")) {
+      viewFile = "model.glb";
+      label = "STEP → mesh preview (GLB)";
+      note.textContent = "STEP isn't viewable in the browser; showing the exported GLB.";
+    } else if (file.endsWith(".stl")) {
+      label = "STL";
+    } else if (file.endsWith(".glb")) {
+      label = "GLB";
+    }
+    title.textContent = label;
+    document.title = `MAC · ${label}`;
+
+    const src = `/api/jobs/${encodeURIComponent(job)}/files/${encodeURIComponent(viewFile)}`;
+
+    try {
+      if (viewFile.endsWith(".stl")) {
+        await viewStl(src);
+      } else {
+        const mv = document.createElement("model-viewer");
+        mv.setAttribute("src", src);
+        mv.setAttribute("camera-controls", "");
+        mv.setAttribute("auto-rotate", "");
+        mv.setAttribute("rotation-per-second", "8");
+        mv.setAttribute("shadow-intensity", "1");
+        mv.setAttribute("alt", label);
+        stage.appendChild(mv);
+      }
+    } catch (e) {
+      fail(`Viewer failed: ${e?.message || e}`);
+      console.error(e);
+    }
+
+    async function viewStl(url) {
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x0d1117);
+      const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 10000);
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setPixelRatio(devicePixelRatio);
+      // Same tone-mapping path model-viewer uses, so white plastic reads white.
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1;
+      stage.appendChild(renderer.domElement);
+
+      // Image-based lighting ≈ model-viewer's default environment.
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      pmrem.dispose();
+
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+
+      function resize() {
+        const w = stage.clientWidth || 1;
+        const h = stage.clientHeight || 1;
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, h, false);
+      }
+      resize();
+      addEventListener("resize", resize);
+
+      const geom = await new STLLoader().loadAsync(url);
+      geom.computeVertexNormals();
+      geom.center();
+      const mesh = new THREE.Mesh(
+        geom,
+        new THREE.MeshStandardMaterial({
+          color: 0xffffff,
+          metalness: 0.0,
+          roughness: 0.35,
+        }),
+      );
+      scene.add(mesh);
+
+      geom.computeBoundingSphere();
+      const r = Math.max(geom.boundingSphere?.radius || 1, 1);
+      camera.position.set(r * 2.2, r * 1.4, r * 2.2);
+      controls.target.set(0, 0, 0);
+      controls.update();
+
+      (function tick() {
+        requestAnimationFrame(tick);
+        controls.update();
+        renderer.render(scene, camera);
+      })();
+    }
+  </script>
+</body>
+</html>

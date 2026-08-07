@@ -117,6 +117,10 @@ async def _cleanup_loop() -> None:
 # ---------------------------------------------------------------------------
 
 _PROVIDER_PRESETS: dict[str, dict[str, str]] = {
+    "openrouter": {
+        "ds_base_url": "https://openrouter.ai/api/v1",
+        "model_hint": "qwen/qwen3-max",
+    },
     "qwen": {
         "ds_base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
         "model_hint": "qwen3.7-max",
@@ -190,12 +194,24 @@ async def run(req: Request) -> dict:
     prompt = (body.get("prompt") or config.get("USER_REQUEST", "") or "").strip()
     dest_path = (body.get("dest_path") or "").strip()
     workflow = body.get("workflow") or config.get("WORKFLOW_ID", "original")
-    api_key = body.get("api_key", "") or config.get("DS_API_KEY", "")
+    # Prefer form key; never send DS_API_KEY to the browser, but allow
+    # falling back to env / config.py so local runs don't require re-paste.
+    from multi_agent_cad import config as cfg
+    api_key = (
+        (body.get("api_key") or "").strip()
+        or (config.get("DS_API_KEY") or "").strip()
+        or os.environ.get("DASHSCOPE_API_KEY", "").strip()
+        or (getattr(cfg, "DS_API_KEY", "") or "").strip()
+    )
 
     if not prompt:
         raise HTTPException(400, "prompt is required")
     if not api_key:
-        raise HTTPException(400, "api_key is required (fill it in the form)")
+        raise HTTPException(
+            400,
+            "api_key is required (fill it in the form, or set DS_API_KEY in "
+            "multi_agent_cad/config.py / DASHSCOPE_API_KEY env)",
+        )
 
     job_id = uuid.uuid4().hex[:12]
     tempdir = Path(tempfile.mkdtemp(prefix=f"macjob_{job_id}_"))
@@ -249,7 +265,10 @@ async def run(req: Request) -> dict:
 
     asyncio.create_task(_reader_task(job_id, job))
     asyncio.create_task(_watcher_task(job_id, job))
-    return {"job_id": job_id}
+    # Effective place artifacts live: user dest if set, else the job tempdir.
+    out_dir = dest_path or str(tempdir)
+    job["out_dir"] = out_dir
+    return {"job_id": job_id, "out_dir": out_dir}
 
 
 @app.post("/api/jobs/{job_id}/cancel")
@@ -315,6 +334,7 @@ async def _reader_task(job_id: str, job: dict) -> None:
             if msg.get("done"):
                 if job.get("dest_path"):
                     _copy_artifacts(msg, job["dest_path"])
+                msg["out_dir"] = job.get("out_dir") or job.get("dest_path") or str(job["tempdir"])
                 job["result"] = msg
                 await queue.put(msg)
                 break
@@ -328,6 +348,7 @@ async def _reader_task(job_id: str, job: dict) -> None:
                 msg = _harvest_intermediate(job)
                 if job.get("dest_path"):
                     _copy_artifacts(msg, job["dest_path"])
+                msg["out_dir"] = job.get("out_dir") or job.get("dest_path") or str(job["tempdir"])
                 job["result"] = msg
                 await queue.put(msg)
             else:
@@ -514,8 +535,8 @@ async def job_result(job_id: str) -> JSONResponse:
     return JSONResponse(_JOBS[job_id].get("result") or {"status": "running"})
 
 
-@app.get("/api/jobs/{job_id}/files/{name}")
-async def job_file(job_id: str, name: str) -> FileResponse:
+def _resolve_job_file(job_id: str, name: str) -> Path:
+    """Return the on-disk path for a named job artifact, or raise 404."""
     if job_id not in _JOBS:
         raise HTTPException(404, "job not found")
     job = _JOBS[job_id]
@@ -546,6 +567,12 @@ async def job_file(job_id: str, name: str) -> FileResponse:
     path = name_map.get(name)
     if not path or not Path(path).is_file():
         raise HTTPException(404, f"file '{name}' not available (yet)")
+    return Path(path)
+
+
+@app.get("/api/jobs/{job_id}/files/{name}")
+async def job_file(job_id: str, name: str) -> FileResponse:
+    path = _resolve_job_file(job_id, name)
     media_types = {
         "model.glb": "model/gltf-binary",
         "live.glb": "model/gltf-binary",
