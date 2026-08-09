@@ -108,7 +108,7 @@ conda activate multi_agent_cad
 > # 先装 aider（会拉 numpy 1.26.4 + 一堆传递依赖），再强制覆盖 numpy 到 2.x。
 > # 已验证 aider 0.82.3 在 numpy 2.x 上能正常 import——上游的 pin 是过度保守。
 > pip install "aider-chat==0.82.3"
-> pip install --no-deps --force-reinstall "numpy>=2,<3"
+> pip install --no-deps --force-reinstall "numpy>=2,<2.3"
 > pip install "build123d>=0.8" "langgraph>=0.2,<0.3" "langgraph-checkpoint>=2.0,<3.0" \
 >             "pydantic>=2.5" "openai>=1.20.0" "anthropic>=0.30" \
 >             "trimesh>=4.0" "rtree>=1.1" "scipy>=1.10" "scikit-learn>=1.3" \

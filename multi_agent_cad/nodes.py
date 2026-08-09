@@ -4533,6 +4533,14 @@ def _run_engine_b_check_mesh(
         f"Strength: {strength.get('strength_score', '?')}/100",
         f"Single-body: {conn.get('is_single_body', True)}",
     ]
+    # Surface dimensional verdict so a structurally-OK but dimensionally-wrong
+    # model is not mistaken for an overall pass. `results` is filled above
+    # (one VerificationResult per target); each carries `passed` and `deviation`.
+    dims_total = len(results)
+    dims_pass = sum(1 for r in results if getattr(r, "passed", False))
+    if dims_total > 0:
+        marker = " OK" if dims_pass == dims_total else " FAIL"
+        summary_parts.append(f"Dims: {dims_pass}/{dims_total}{marker}")
     print(f"[ENGINE B] {' | '.join(summary_parts)}")
 
     # Collect structural / mfg warnings
