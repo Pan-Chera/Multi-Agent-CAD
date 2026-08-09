@@ -8,7 +8,7 @@ dependencies:
   - python=3.11.*
 
   # ── Core scientific / math (C extensions — stability from conda-forge) ──
-  - numpy>=1.24,<3
+  - numpy>=1.24,<2.3
   - scipy>=1.10
   - scikit-learn>=1.3
 
