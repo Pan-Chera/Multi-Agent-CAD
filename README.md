@@ -342,7 +342,7 @@ If you find this project useful for your research, please consider citing:
 ```bibtex
 @misc{mac2026,
   author = {Guanxing Qu and Xueyan Zou},
-  title  = {MAC (Multi-Agent CAD): A Decoupled Multi-Agent Framework for Text-to-CAD Generation},
+  title  = {MAC: A Decoupled Multi-Agent Framework for Text-to-CAD Generation},
   year   = {2026},
   publisher = {GitHub},
   journal   = {GitHub repository},
