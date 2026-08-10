@@ -2313,7 +2313,7 @@ def _gen_sketch_algebra(sketch, var_name: str) -> list[str]:
     return lines
 
 
-def _has_unsupported_placeholders(code: str) -> bool:
+def _has_unsupported_placeholders(code: str) -> tuple[bool, str | None]:
     """Check if the generated code contains placeholders for unsupported features."""
     return "# TODO_AIDER:" in code
 
@@ -6030,7 +6030,7 @@ def _run_repair_on_script(
     user_request: str,
     feature_measurements: dict | None = None,
     special_features: list[str] | None = None,
-) -> bool:
+) -> tuple[bool, str | None]:
     """Repair a CAD Python script using Aider (primary) or direct API (fallback).
 
     **Primary path — Aider (headless)**:
@@ -6045,8 +6045,14 @@ def _run_repair_on_script(
 
     Returns
     -------
-    bool
-        True if the code was successfully repaired.  False on failure.
+    tuple[bool, str | None]
+        (True, None) on success. (False, reason) on failure, where ``reason``
+        is a short human-readable string identifying the actual cause (e.g.
+        "Aider exception: Request timed out", "No DashScope API key",
+        "Aider made no changes (timeout, model rejected, or context limit)").
+        The caller surfaces this in the iteration log so the user is not
+        misdirected into checking credentials when the real cause was a
+        timeout or context-limit issue.
     """
     script_path_obj = Path(script_path)
 
@@ -6109,38 +6115,57 @@ def _run_repair_on_script(
                 # Verify the file still has valid content
                 try:
                     fixed_code = script_path_obj.read_text(encoding="utf-8")
-                except OSError:
+                except OSError as exc:
                     print("[AIDER REPAIR] Cannot read file after Aider run.")
-                    return False
+                    return False, f"Cannot read file after Aider run: {exc}"
 
                 if len(fixed_code.strip()) < 50:
                     print("[AIDER REPAIR] WARNING: file is nearly empty after Aider edit.")
-                    return False
+                    return False, "File nearly empty after Aider edit"
 
                 # Detect whether Aider actually changed the code
                 if fixed_code.strip() == original_code.strip():
                     print("[AIDER REPAIR] WARNING: Aider made NO changes to the code.")
-                    print("[AIDER REPAIR] This usually means the API key is invalid or the model rejected the request.")
+                    print("[AIDER REPAIR] This is usually a timeout, context-limit, or model rejection - NOT an API key issue.")
                     print("[AIDER REPAIR] Falling back to direct API repair ...")
+                    _aider_no_change_reason = (
+                        "Aider made no changes (timeout, context limit, or model rejected)"
+                    )
                     # Fall through to Path B
                 else:
                     delta = len(fixed_code) - len(original_code)
                     print(f"[AIDER REPAIR] Aider completed: code changed (delta: {delta:+d} chars)")
-                    return True
+                    return True, None
 
             except Exception as exc:
                 print(f"[AIDER REPAIR] Aider exception: {exc}")
                 import traceback as _tb
                 _tb.print_exc()
                 print("[AIDER REPAIR] Falling back to direct API repair ...")
+                _aider_no_change_reason = f"Aider exception: {exc}"
+            else:
+                # Try/except completed without raising and without returning;
+                # only reachable when Aider made no changes (the fall-through
+                # case above). ``_aider_no_change_reason`` is set in that path.
+                pass
+            try:
+                _aider_no_change_reason
+            except NameError:
+                _aider_no_change_reason = None
 
     # ── Path B: Direct DashScope API (fallback) ───────────────────────────
-    return _run_direct_repair_fallback(
+    ok, fallback_reason = _run_direct_repair_fallback(
         script_path_obj=script_path_obj,
         error_details=error_details,
         user_request=user_request,
         special_features=special_features,
     )
+    if ok:
+        return True, None
+    # If fallback failed, surface the most informative reason: prefer the
+    # fallback's own error (e.g. "Request timed out"), but if the fallback
+    # didn't say and Aider had a reason, use that.
+    return False, fallback_reason or _aider_no_change_reason or "fallback repair failed"
 
 
 def _run_direct_repair_fallback(
@@ -6149,18 +6174,24 @@ def _run_direct_repair_fallback(
     error_details: list[str],
     user_request: str,
     special_features: list[str] | None = None,
-) -> bool:
-    """Fallback: call DashScope API directly to regenerate the entire script."""
+) -> tuple[bool, str | None]:
+    """Fallback: call DashScope API directly to regenerate the entire script.
+
+    Returns (True, None) on success or (False, reason) on failure, where
+    ``reason`` identifies the actual cause (e.g. "API call failed: Request
+    timed out") so the caller can surface it in the iteration log instead
+    of guessing at credentials.
+    """
 
     try:
         current_code = script_path_obj.read_text(encoding="utf-8")
     except OSError as exc:
         print(f"[FALLBACK REPAIR] Cannot read script: {exc}")
-        return False
+        return False, f"Cannot read script: {exc}"
 
     if not current_code.strip():
         print("[FALLBACK REPAIR] Script is empty.")
-        return False
+        return False, "Script is empty"
 
     errors_text = "\n".join(f"  [{i+1}] {e}" for i, e in enumerate(error_details))
 
@@ -6244,29 +6275,29 @@ def _run_direct_repair_fallback(
                     continue
             # Non-transient error or final attempt
             print(f"[FALLBACK REPAIR] API call failed: {exc}")
-            return False
+            return False, f"API call failed: {exc}"
 
     if not raw_response.strip():
         print("[FALLBACK REPAIR] Empty response.")
-        return False
+        return False, "Empty LLM response"
 
     fixed_code = _extract_code_from_llm_response(raw_response)
     if not fixed_code or len(fixed_code.strip()) < 50:
         print(f"[FALLBACK REPAIR] Extracted code too short ({len(fixed_code)} chars).")
-        return False
+        return False, f"Extracted code too short ({len(fixed_code)} chars)"
 
     if fixed_code.strip() == current_code.strip():
         print("[FALLBACK REPAIR] LLM returned IDENTICAL code.")
-        return True  # not a hard failure
+        return True, None  # not a hard failure
 
     try:
         script_path_obj.write_text(fixed_code, encoding="utf-8")
         print(f"[FALLBACK REPAIR] Fixed code written: {script_path_obj.name} "
               f"({len(fixed_code)} chars, delta: {len(fixed_code) - len(current_code):+d})")
-        return True
+        return True, None
     except OSError as exc:
         print(f"[FALLBACK REPAIR] Cannot write: {exc}")
-        return False
+        return False, f"Cannot write fixed code: {exc}"
 
 
 def _execute_cad_script(
@@ -7221,7 +7252,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                 except Exception as exc:
                     print(f"[AUTONOMOUS REPAIR] WARNING: Failed to load feature measurements: {exc}")
 
-            aider_ok = _run_repair_on_script(
+            aider_ok, aider_err = _run_repair_on_script(
                 script_path=str(script_path),
                 error_details=error_details,
                 user_request=user_request,
@@ -7229,12 +7260,15 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                 special_features=_attr(cad_brief, "special_features", []) or [],
             )
 
-            # If Aider is not installed or the API key is missing, there is
-            # no point in retrying — every iteration would be an empty loop.
+            # If repair failed (Aider + fallback both failed), there is no
+            # point in retrying — every iteration would be an empty loop.
+            # Surface the actual cause (timeout, context limit, missing key,
+            # etc.) instead of guessing at credentials.
             if not aider_ok:
+                _reason = aider_err or "unknown failure"
                 all_log_lines.append(
                     f"node_autonomous_skill_loop [retry {retry}]: "
-                    f"AIDER FAILED — cannot repair code (not installed or no API key). "
+                    f"AIDER FAILED — {_reason}. "
                     f"Halting immediately."
                 )
                 return {
