@@ -97,7 +97,10 @@ git clone https://github.com/Pan-Chera/Multi-Agent-CAD
 cd Multi-Agent-CAD
 conda env create -f environment.yml
 conda activate multi_agent_cad
+pip install --no-deps "aider-chat==0.82.3"
 ```
+
+The last `pip install` is needed because every `aider-chat` version on PyPI hard-pins `numpy==1.26.4` (1.x), which conflicts with `build123d`'s `numpy>=2` requirement - conda's pip subprocess can't bypass that pin, so `aider-chat` is omitted from `environment.yml`. `--no-deps` skips the pin; aider 0.82.3 imports cleanly on numpy 2.x (the pin is over-cautious upstream).
 
 > **pip users (no conda)**: `aider-chat` pins `numpy==1.26.4`, but `build123d>=0.8` requires `numpy>=2,<3` — these conflict in pure pip. Use this workaround (verified on macOS arm64 + Python 3.11):
 >
@@ -120,7 +123,7 @@ conda activate multi_agent_cad
 >
 > The last step registers the `mac-config-reset` console script and lets you run `python -m multi_agent_cad.graph` from any directory. See [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml) for the canonical dependency list.
 
-> **Windows**: `conda env create -f environment.yml` works out of the box — `trimesh` and `rtree` come from conda-forge prebuilt; `OCP` is pulled in transitively by `build123d` (via its PyPI dep `cadquery-ocp-novtk`). Don't use the pure-pip workaround above on Windows — native wheels for `trimesh`/`rtree` can be unreliable. Set the API key in PowerShell as `$env:DASHSCOPE_API_KEY = "sk-..."` (or `set DASHSCOPE_API_KEY=sk-...` in cmd.exe). For the Web UI under conda, `pip install -e ".[web]"` inside the activated env works — `uvloop` auto-skips on Windows. Windows isn't in CI, but the code avoids Unix-only APIs and uses UTF-8 throughout; issues welcome.
+> **Windows**: the same `conda env create` + `pip install --no-deps aider-chat==0.82.3` flow works — `trimesh` and `rtree` come from conda-forge prebuilt; `OCP` is pulled in transitively by `build123d` (via its PyPI dep `cadquery-ocp-novtk`). Don't use the pure-pip workaround below on Windows — native wheels for `trimesh`/`rtree` can be unreliable. Set the API key in PowerShell as `$env:DASHSCOPE_API_KEY = "sk-..."` (or `set DASHSCOPE_API_KEY=sk-...` in cmd.exe). For the Web UI under conda, `pip install -e ".[web]"` inside the activated env works — `uvloop` auto-skips on Windows. Windows isn't in CI, but the code avoids Unix-only APIs and uses UTF-8 throughout; issues welcome.
 
 ### Configuration
 

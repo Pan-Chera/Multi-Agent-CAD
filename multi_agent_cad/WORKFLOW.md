@@ -697,7 +697,7 @@ langgraph>=0.2,<0.3
 langgraph-checkpoint>=2.0,<3.0
 build123d>=0.8               # CAD 建模引擎；transitive 拉到 cadquery-ocp-novtk（提供 `OCP`）
 pydantic>=2.5
-aider-chat>=0.50            # Aider 代码修复
+aider-chat>=0.50            # Aider 代码修复 (手动装: pip install --no-deps aider-chat==0.82.3, 绕开 numpy==1.26.4 pin)
 openai>=1.20.0              # DashScope API (Qwen，OpenAI 兼容端点)
 anthropic>=0.30             # Claude fallback (optional)
 numpy>=1.24,<2.3
