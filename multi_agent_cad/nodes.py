@@ -606,7 +606,6 @@ def _node_python_coder_deterministic(
         )
 
     stl_size = _file_size_kb(stl_path) if stl_path.is_file() else "N/A"
-    print(f"[DETERMINISTIC CODER] SUCCESS — {_file_size_kb(step_path)} STEP, {stl_size} STL")
 
     # ── Check for missed cuts / fillet failures (runtime diagnostics) ──
     missed_path = cwd / f"temp_missed_{iteration}.json"
@@ -617,7 +616,7 @@ def _node_python_coder_deterministic(
                 cats = _parse_missed_cuts(missed)
                 error_details, label = _format_missed_cuts_errors(cats)
                 total = sum(len(v) for v in cats.values())
-                print(f"[DETERMINISTIC CODER] WARNING: {total} runtime issue(s): {label}")
+                print(f"[DETERMINISTIC CODER] PARTIAL SUCCESS — {_file_size_kb(step_path)} STEP, {stl_size} STL, but {total} runtime issue(s): {label}")
                 for m in missed[:5]:
                     print(f"  → {m}")
                 return {
@@ -646,6 +645,7 @@ def _node_python_coder_deterministic(
         except Exception:
             pass
 
+    print(f"[DETERMINISTIC CODER] SUCCESS — {_file_size_kb(step_path)} STEP, {stl_size} STL")
     return {
         "current_python_code": code,
         "current_python_code_path": str(script_path.resolve()),
