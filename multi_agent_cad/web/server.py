@@ -131,7 +131,7 @@ _PROVIDER_PRESETS: dict[str, dict[str, str]] = {
     },
     "gemini": {
         "ds_base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "model_hint": "gemini-2.0-flash",
+        "model_hint": "gemini-2.5-flash",
     },
     "ollama": {
         "ds_base_url": "http://localhost:11434/v1",
@@ -580,7 +580,11 @@ if _STATIC_DIR.is_dir():
 def main() -> None:
     host = os.environ.get("MAC_WEB_HOST", "0.0.0.0")
     port = int(os.environ.get("MAC_WEB_PORT", "8000"))
-    print(f"\n  MAC Web UI — http://{host}:{port}")
+    # 0.0.0.0 listens on all interfaces but is not a valid browser URL on
+    # Windows (ERR_ADDRESS_INVALID). Show 127.0.0.1 as the clickable URL when
+    # host is 0.0.0.0, while still binding to all interfaces for LAN access.
+    display_host = "127.0.0.1" if host == "0.0.0.0" else host
+    print(f"\n  MAC Web UI — http://{display_host}:{port}")
     print("  Single-user, trusted-network only. Generated .py runs server-side.")
     print(f"  Auto-cleanup: job tempdirs removed {_CLEANUP_AFTER_SECONDS // 3600}h after completion.\n")
     uvicorn.run(app, host=host, port=port, log_level="info")

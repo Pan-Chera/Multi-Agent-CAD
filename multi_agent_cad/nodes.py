@@ -2653,7 +2653,7 @@ def node_python_coder(state: GraphState) -> dict:
         # API-level failure — bubble up as a DIMENSION retry with the error
         return _coder_failure_state(
             iteration=iteration,
-            error_message=f"DashScope API call failed: {exc}",
+            error_message=f"LLM API call failed: {exc}",
             script_path=str(script_path),
             node_history=_coder_history,
         )
@@ -7568,7 +7568,7 @@ def node_spec_planner(state: GraphState) -> dict:
     except Exception as exc:
         return _planner_fatal(
             iteration=iteration,
-            reason=f"DashScope API call failed: {exc}",
+            reason=f"LLM API call failed: {exc}",
             node="node_spec_planner",
         )
 
@@ -7999,7 +7999,7 @@ def node_geometric_architect(state: GraphState) -> dict:
     except Exception as exc:
         return _planner_fatal(
             iteration=iteration,
-            reason=f"DashScope API call failed: {exc}",
+            reason=f"LLM API call failed: {exc}",
             node="node_geometric_architect",
         )
 
