@@ -97,7 +97,10 @@ git clone https://github.com/Pan-Chera/Multi-Agent-CAD
 cd Multi-Agent-CAD
 conda env create -f environment.yml
 conda activate multi_agent_cad
+pip install --no-deps "aider-chat==0.82.3"
 ```
+
+最后一步 `pip install` 是必需的：PyPI 上所有 `aider-chat` 版本都硬 pin `numpy==1.26.4`（1.x），与 `build123d` 的 `numpy>=2` 要求冲突，conda 的 pip 子进程无法绕过这个 pin，所以 `aider-chat` 没放进 `environment.yml`。`--no-deps` 跳过该 pin；aider 0.82.3 在 numpy 2.x 上能正常 import（上游 pin 过度保守）。
 
 > **pip 用户（无 conda）**：`aider-chat` 锁定 `numpy==1.26.4`，与 `build123d>=0.8` 要求的 `numpy>=2,<3` 冲突，纯 pip 直接装失败。走以下 workaround（已在 macOS arm64 + Python 3.11 验证）：
 >
@@ -108,7 +111,7 @@ conda activate multi_agent_cad
 > # 先装 aider（会拉 numpy 1.26.4 + 一堆传递依赖），再强制覆盖 numpy 到 2.x。
 > # 已验证 aider 0.82.3 在 numpy 2.x 上能正常 import——上游的 pin 是过度保守。
 > pip install "aider-chat==0.82.3"
-> pip install --no-deps --force-reinstall "numpy>=2,<3"
+> pip install --no-deps --force-reinstall "numpy>=2,<2.3"
 > pip install "build123d>=0.8" "langgraph>=0.2,<0.3" "langgraph-checkpoint>=2.0,<3.0" \
 >             "pydantic>=2.5" "openai>=1.20.0" "anthropic>=0.30" \
 >             "trimesh>=4.0" "rtree>=1.1" "scipy>=1.10" "scikit-learn>=1.3" \
@@ -119,7 +122,7 @@ conda activate multi_agent_cad
 >
 > 最后一步同时注册 `mac-config-reset` 命令行脚本、并允许在任意目录（不只是仓库根）跑 `python -m multi_agent_cad.graph`。完整依赖清单见 [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml)。
 
-> **Windows**：`conda env create -f environment.yml` 在 Windows 上开箱即用——`trimesh` 和 `rtree` 来自 conda-forge 预编译包；`OCP` 由 `build123d` 的 PyPI 依赖 `cadquery-ocp-novtk` 传递性拉入。Windows 上不要走上面的纯 pip workaround——`trimesh`/`rtree` 的 native wheel 在 Windows 上不可靠。PowerShell 设 API key：`$env:DASHSCOPE_API_KEY = "sk-..."`（cmd.exe 用 `set DASHSCOPE_API_KEY=sk-...`）。conda 环境内跑 Web UI 用 `pip install -e ".[web]"`——`uvloop` 在 Windows 上自动跳过。Windows 不在 CI 里，但代码避开 Unix 专属 API、全程 UTF-8；遇到问题欢迎反馈。
+> **Windows**：在 Windows 上同样的 `conda env create` + `pip install --no-deps aider-chat==0.82.3` 流程可用——`trimesh` 和 `rtree` 来自 conda-forge 预编译包；`OCP` 由 `build123d` 的 PyPI 依赖 `cadquery-ocp-novtk` 传递性拉入。Windows 上不要走下面的纯 pip workaround——`trimesh`/`rtree` 的 native wheel 在 Windows 上不可靠。PowerShell 设 API key：`$env:DASHSCOPE_API_KEY = "sk-..."`（cmd.exe 用 `set DASHSCOPE_API_KEY=sk-...`）。conda 环境内跑 Web UI 用 `pip install -e ".[web]"`——`uvloop` 在 Windows 上自动跳过。Windows 不在 CI 里，但代码避开 Unix 专属 API、全程 UTF-8；遇到问题欢迎反馈。
 
 ### 配置
 

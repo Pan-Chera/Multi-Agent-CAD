@@ -2,7 +2,9 @@
 
 ## Unit Price Reference
 
-Model: `qwen3.7-max`
+### qwen3.7-max (currently on limited-time discount)
+
+Used by `cad skill` and `multi agent v1`.
 
 | Item | Unit Price (CNY / million tokens) |
 |---|---:|
@@ -10,6 +12,17 @@ Model: `qwen3.7-max`
 | cache_creation | 7.5 |
 | cache_read | 0.6 |
 | output | 18 |
+
+### qwen3.8-max (standard pricing, 2x qwen3.7)
+
+Used by `multi agent v2` (MAC with visual self-verification). qwen3.7 is currently on a limited-time promotional discount; qwen3.8 standard price is 2x qwen3.7.
+
+| Item | Unit Price (CNY / million tokens) |
+|---|---:|
+| input | 12 |
+| cache_creation | 15 |
+| cache_read | 1.2 |
+| output | 36 |
 
 ## Prompt 1 
 > Create a single solid STEP model in millimeters. The part is a rectangular block, 100 mm long in X, 60 mm wide in Y, and 20 mm tall in Z. Center the block on the XY origin, with the bottom face at Z = 0. Add four vertical through-holes, each 8 mm in diameter, located at X = +/-35 mm and Y = +/-20 mm. Add a 2 mm chamfer to the top perimeter edges only. Do not chamfer the holes.
@@ -26,7 +39,8 @@ Model: `qwen3.7-max`
 | Category | Pass Rate | input | cache_w | cache_r | output | total | API calls | Cost (CNY) |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | cad skill | 7/7 | 212,689 | 0 | 5,413,760 | 55,878 | 5,682,327 | 112 | **5.53** |
-| multi agent | 7/7 | 23,453 | 0 | 0 | 9,156 | 32,609 | 3 | **0.31** |
+| multi agent v1 | 7/7 | 23,453 | 0 | 0 | 9,156 | 32,609 | 3 | **0.31** |
+| multi agent v2 (qwen3.8 + vision) | 7/7 | 32,774 | 0 | 0 | 15,404 | 48,178 | 4 | **0.95** |
 
 ## Prompt 2 
 > Create a single solid circular flange as a STEP model in millimeters. The flange is a cylinder with an outside diameter of 80 mm and a thickness of 10 mm. Its axis is vertical along Z, with the bottom face at Z = 0 and the center at X = 0, Y = 0. Add a central vertical through-bore with diameter 30 mm. Add six equally spaced vertical through-holes, each 6 mm in diameter, on a 60 mm bolt-circle diameter. Add a 1.5 mm fillet to the top and bottom outside circular edges.
@@ -46,7 +60,8 @@ Model: `qwen3.7-max`
 | Category | Pass Rate | input | cache_w | cache_r | output | total | API calls | Cost (CNY) |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | cad skill | 10/10 | 412,097 | 0 | 6,625,536 | 89,885 | 7,127,518 | 126 | **8.07** |
-| multi agent | 10/10 | 24,179 | 0 | 0 | 10,648 | 34,827 | 3 | **0.34** |
+| multi agent v1 | 10/10 | 24,179 | 0 | 0 | 10,648 | 34,827 | 3 | **0.34** |
+| multi agent v2 (qwen3.8 + vision) | 10/10 | 32,712 | 0 | 10,240 | 20,990 | 63,942 | 4 | **1.16** |
 
 ## Prompt 3
 > Create a single solid L-bracket STEP model in millimeters. The bracket has a horizontal base plate 80 mm long in X, 50 mm wide in Y, and 8 mm thick in Z. Center the base plate on the XY origin, with its bottom at Z = 0. Add a vertical back plate along the rear long edge of the base. The back plate is 80 mm long in X, 8 mm thick in Y, and 50 mm tall in Z, rising from the top of the base plate. The back plate should sit along the rear edge at positive Y. Add two vertical through-holes in the base plate, each 6 mm in diameter, located at X = +/-25 mm and Y = -10 mm. Add two horizontal through-holes in the vertical plate, each 6 mm in diameter, located at X = +/-25 mm and Z = 30 mm, passing through the 8 mm thickness of the vertical plate. Add two triangular gussets, each 8 mm thick in X, located at X = +/-20 mm. Each gusset should connect the base plate to the back plate with a right-triangle side profile 30 mm tall and 30 mm deep. Add 2 mm fillets to the outside corner where the base and back plate meet.
@@ -70,7 +85,8 @@ Model: `qwen3.7-max`
 | Category | Pass Rate | input | cache_w | cache_r | output | total | API calls | Cost (CNY) |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | cad skill | 14/14 | 457,731 | 0 | 8,393,600 | 293,629 | 9,144,960 | 113 | **13.07** |
-| multi agent | 14/14 | 51,886 | 0 | 0 | 42,618 | 94,504 | 5 | **1.08** |
+| multi agent v1 | 14/14 | 51,886 | 0 | 0 | 42,618 | 94,504 | 5 | **1.08** |
+| multi agent v2 (qwen3.8 + vision) | 14/14 | 61,227 | 0 | 6,144 | 107,343 | 174,714 | 6 | **4.61** |
 
 ## Prompt 4
 > Create a single solid stepped shaft STEP model in millimeters. The shaft axis runs along X. The total length is 120 mm. The left end center is at X = 0, Y = 0, Z = 0. From X = 0 to X = 30, the shaft diameter is 20 mm. From X = 30 to X = 90, the shaft diameter is 30 mm. From X = 90 to X = 120, the shaft diameter is 20 mm. Add a 1 mm chamfer to both end edges. Add a rectangular keyway slot on the top of the 30 mm diameter middle section. The keyway is 6 mm wide in Y, 3 mm deep in Z, and runs from X = 40 to X = 80. Export as a STEP file.
@@ -91,7 +107,8 @@ Model: `qwen3.7-max`
 | Category | Pass Rate | input | cache_w | cache_r | output | total | API calls | Cost (CNY) |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | cad skill | 11/11 | 206,212 | 0 | 6,293,248 | 84,450 | 6,583,910 | 106 | **6.53** |
-| multi agent | 11/11 | 27,069 | 0 | 0 | 22,538 | 49,607 | 3 | **0.57** |
+| multi agent v1 | 11/11 | 27,069 | 0 | 0 | 22,538 | 49,607 | 3 | **0.57** |
+| multi agent v2 (qwen3.8 + vision) | 11/11 | 44,776 | 0 | 12,288 | 51,197 | 108,261 | 5 | **2.40** |
 
 ## Prompt 5
 > The outer shape is a rectangular box 100 mm long in X, 70 mm wide in Y, and 30 mm tall in Z. Center it on the XY origin, with the bottom face at Z = 0. The enclosure is open at the top. The wall thickness is 3 mm and the bottom floor thickness is 3 mm. Add four internal cylindrical standoffs rising from the inside floor. Each standoff has an outside diameter of 10 mm and a height of 12 mm above the inside floor. Place the standoffs at X = +/-35 mm and Y = +/-25 mm. Add a centered blind hole in each standoff, 3 mm in diameter and 8 mm deep from the top of the standoff. Add 2 mm radius fillets to the four outside vertical corners of the enclosure.
@@ -113,7 +130,8 @@ Model: `qwen3.7-max`
 | Category | Pass Rate | input | cache_w | cache_r | output | total | API calls | Cost (CNY) |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | cad skill | 11/12 (item 11 not satisfied) | 199,344 | 0 | 1,961,344 | 27,957 | 2,188,645 | 53 | **2.88** |
-| multi agent | 12/12 | 25,927 | 0 | 0 | 11,430 | 37,357  | 3 | **0.36** |
+| multi agent v1 | 12/12 | 25,927 | 0 | 0 | 11,430 | 37,357  | 3 | **0.36** |
+| multi agent v2 (qwen3.8 + vision) | 12/12 | 36,247 | 0 | 12,288 | 43,807 | 92,342 | 4 | **2.03** |
 
 ## Prompt 6
 > Create a single solid aerospace-style clevis bracket as a STEP model in millimeters. The part is symmetric about the XZ plane. Start with a base plate 120 mm long in X, 60 mm wide in Y, and 10 mm thick in Z, centered on the XY origin, with bottom face at Z = 0. Add two vertical clevis lugs rising from the top of the base near the center. Each lug is 18 mm thick in Y, 42 mm tall above the base, and extends 36 mm along X. The two lugs are separated by a 16 mm central gap in Y. The top of each lug has a semicircular rounded profile with radius 18 mm when viewed from the side. Add a horizontal through-hole of diameter 14 mm through both lugs along the Y direction, centered at X = 0 and Z = 34 mm. Add four base mounting holes, diameter 7 mm, through the base plate, located at X = +/-45 mm and Y = +/-20 mm. Add two triangular lightening cutouts through the base web, one on each side of the clevis, each with rounded corners of radius 3 mm. Add two diagonal reinforcing ribs from the base to the outer faces of the lugs, one on each side, thickness 6 mm. Add 3 mm fillets to the base perimeter and 2 mm fillets at lug-to-base transitions.
@@ -136,12 +154,13 @@ Model: `qwen3.7-max`
 - Ribs symmetrically distributed (one on +Y, one on -Y)
 - Larger fillet on the base perimeter edges
 - Smaller fillet at the lug-to-base junction
-- No fillets elsewhere
+- No unspecified additional features (no extra fillets, holes, cylinders, or other structures beyond those listed)
 
 | Category | Pass Rate | input | cache_w | cache_r | output | total | API calls | Cost (CNY) |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | cad skill | 16/18 (items 16 and 18 not satisfied) | 677,783 | 0 | 12,261,248 | 210,211 | 13,149,242 | 171 | **15.21** |
-| multi agent | 18/18 | 157,815 | 0 | 0 | 119,799 | 277,614 | 13 | **3.10** |
+| multi agent v1 | 18/18 | 157,815 | 0 | 0 | 119,799 | 277,614 | 13 | **3.10** |
+| multi agent v2 (qwen3.8 + vision) | 18/18 | 47,671 | 0 | 2,048 | 75,711 | 125,430 | 5 | **3.30** |
 
 ## Prompt 7
 > Create a single solid radial-engine-style cylinder as a STEP model in millimeters. The main cylinder axis is vertical along Z and centered at the origin.Create a central barrel with diameter 36 mm and height 70 mm, bottom at Z = 0.Around the barrel, add 12 horizontal circular cooling fins. Each fin is 2 mm thick in Z, has outside diameter 62 mm, and is spaced every 5 mm from Z = 10 mm to Z = 65 mm. Add a thicker base flange at the bottom, outside diameter 70 mm and thickness 8 mm, with six vertical mounting holes of diameter 5 mm on a 56 mm bolt circle. Add a top cap cylinder, diameter 44 mm and height 8 mm, from Z = 70 mm to Z = 78 mm. Add an angled spark-plug boss protruding from the side of the top cap. The boss is a cylinder of diameter 12 mm and length 24 mm, angled upward at 35 degrees from horizontal, with its axis pointing outward in the positive X direction. Add a 5 mm diameter hole through the boss along its own axis.Add small 1 mm fillets to the outer fin edges and base flange edges.
@@ -168,7 +187,8 @@ Model: `qwen3.7-max`
 | Category | Pass Rate | input | cache_w | cache_r | output | total | API calls | Cost (CNY) |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | cad skill | 17/17 | 809,241 | 0 | 13,545,088 | 246,802 | 14,601,131 | 150 | **17.42** |
-| multi agent | 17/17 | 30,679 | 0 | 0 | 19,334 | 50,013 | 3 | **0.53** |
+| multi agent v1 | 17/17 | 30,679 | 0 | 0 | 19,334 | 50,013 | 3 | **0.53** |
+| multi agent v2 (qwen3.8 + vision) | 17/17 | 84,033 | 0 | 13,312 | 82,097 | 179,442 | 6 | **3.98** |
 
 ## Prompt 8
 > Create a single solid centrifugal impeller as a STEP model in millimeters. The impeller axis is vertical along Z and centered at the origin. Add a circular backplate disk with outside diameter 90 mm and thickness 6 mm, with its bottom face at Z = 0. Add a central hub cylinder on top of the backplate, diameter 26 mm and height 22 mm above the backplate. Add a vertical through-bore of diameter 8 mm through the entire part. Add 12 identical backward-curved blades on top of the backplate, equally spaced around the hub. Each blade begins at radius 18 mm and ends at radius 43 mm. Each blade is 3 mm thick, 16 mm tall above the backplate, and curves backward by approximately 45 degrees from root to tip. The blade tips should lean opposite the direction of rotation when viewed from above.Add 1 mm fillets at the blade roots where they meet the backplate and hub. Add a 1.5 mm fillet to the top and bottom outer circular edges of the backplate.
@@ -193,7 +213,8 @@ Model: `qwen3.7-max`
 | Category | Pass Rate | input | cache_w | cache_r | output | total | API calls | Cost (CNY) |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | cad skill | 15/15 | 2,089,788 | 0 | 21,905,920 | 392,906 | 24,388,614 | 211 | **32.75** |
-| multi agent | 14/15 (item 13 not satisfied) | 80,922 | 0 | 0 | 39,733 | 120,655 | 7 | **1.20** |
+| multi agent v1 | 14/15 (item 13 not satisfied) | 80,922 | 0 | 0 | 39,733 | 120,655 | 7 | **1.20** |
+| multi agent v2 (qwen3.8 + vision) | 14/15 (item 13 not satisfied) | 59,711 | 0 | 12,288 | 99,517 | 171,516 | 12 | **4.31** \* |
 
 ## Prompt 9
 > Create a single STEP model of a miniature spiral staircase in millimeters. The staircase is centered on the origin and rises along Z. Add a central vertical column, diameter 14 mm and height 140 mm, with its bottom at Z = 0. Add 20 identical wedge-shaped stair treads arranged helically around the column. Each tread is 4 mm thick, has an inner radius of 10 mm, an outer radius of 62 mm, and subtends 24 degrees in plan view. The first tread is at Z = 4 mm, and each subsequent tread rises by 6 mm and rotates by 18 degrees around Z. Add a helical outer handrail tube of diameter 5 mm following radius 66 mm, starting at Z = 14 mm and ending at Z = 130 mm, making one full revolution around the staircase. Add 20 vertical balusters, each diameter 3 mm, connecting the outer end of each tread to the handrail. Add a circular base disk, diameter 90 mm and thickness 5 mm.
@@ -219,7 +240,8 @@ Model: `qwen3.7-max`
 | Category | Pass Rate | input | cache_w | cache_r | output | total | API calls | Cost (CNY) |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | cad skill | 16/16 | 487,907 | 0 | 10,189,056 | 208,818 | 10,885,781 | 135 | **12.80** |
-| multi agent | 17/16 (fixed item 8) | 71,493 | 0 | 10,496 | 56,503 | 138,492 | 6 | **1.45** |
+| multi agent v1 | 17/16 (fixed item 8) | 71,493 | 0 | 10,496 | 56,503 | 138,492 | 6 | **1.45** |
+| multi agent v2 (qwen3.8 + vision) | 16/16 | 80,513 | 0 | 7,168 | 107,193 | 194,874 | 13 | **4.83** \* |
 
 ## Prompt 10
 > Create a visually clear simplified planetary gear assembly as a STEP model in millimeters. The assembly lies flat in the XY plane with gear axes along Z. Use separate solid bodies for the sun gear, three planet gears, ring gear, carrier plate, and three planet pins. All gears are 8 mm thick. Use simplified straight-sided trapezoidal teeth rather than true involute teeth. The sun gear has 24 external teeth, pitch diameter 48 mm, root diameter 42 mm, and outside diameter 54 mm. The three planet gears each have 18 external teeth, pitch diameter 36 mm, root diameter 31 mm, and outside diameter 41 mm. Place the planet gear centers on a 42 mm radius circle, equally spaced every 120 degrees. The ring gear is concentric with the sun gear, has 60 internal teeth, internal pitch diameter 120 mm, internal root diameter 126 mm, internal tooth-tip diameter 114 mm, and outside diameter 140 mm. Add a thin circular carrier plate below the gears, diameter 105 mm and thickness 4 mm, located from Z = -5 mm to Z = -1 mm. Add three vertical planet pins, each diameter 6 mm and height 14 mm, centered under the planet gears. Add a central sun bore of diameter 10 mm.
@@ -250,7 +272,37 @@ Model: `qwen3.7-max`
 | Category | Pass Rate | input | cache_w | cache_r | output | total | API calls | Cost (CNY) |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | cad skill | 21/21 | 418,774 | 0 | 9,604,096 | 175,191 | 10,198,061 | 130 | **11.43** |
-| multi agent | 21/21 | 30,501 | 0 | 0 | 30,161 | 60,662 | 4 | **0.73** |
+| multi agent v1 | 21/21 | 30,501 | 0 | 0 | 30,161 | 60,662 | 4 | **0.73** |
+| multi agent v2 (qwen3.8 + vision) | 21/21 | 97,407 | 0 | 26,112 | 112,899 | 236,418 | 8 | **5.26** |
+
+\* P8/P9 v2 cost is reported at **iteration_0 cutoff**: human inspection confirmed the iteration 0 output already met the quality bar, but the Judge agent over-flagged subsequent iterations as FATAL (false negatives on fillet/connectivity checks). Token and cost figures reflect the curated iteration 0 stop point; API call count reflects the full run.
+
+## Summary (P1-P10)
+
+| System | Model | Pass Rate | input | cache_w | cache_r | output | total | API calls | Cost (CNY) |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| cad skill | qwen3.7 | 138/141 | 5,971,566 | 0 | 96,192,896 | 1,785,727 | 103,950,189 | 1,407 | **125.69** |
+| cad skill | qwen3.8 | 132/141 | 4,010,066 | 184,254 | 81,876,456 | 1,389,990 | 87,460,766 | 1,119 | **199.18** |
+| multi agent v1 | qwen3.7 | 140/141 | 523,924 | 0 | 10,496 | 361,920 | 896,340 | 50 | **9.66** |
+| multi agent v2 (curated) | qwen3.8 + vision | 140/141 | 577,071 | 0 | 101,888 | 716,158 | 1,395,117 | 67 | **32.83** |
+
+> **qwen3.8 skill detail**: see [qwen3.8_token.md](qwen3.8_token.md) for per-prompt breakdown. qwen3.8 model achieves 132/141 (93.6%) — **lower** than qwen3.7's 138/141 (97.9%), despite 2× standard price.
+
+### Efficiency Comparison
+
+| Comparison | Token Reduction | Cost Reduction |
+|---|---:|---:|
+| v1 vs skill (both qwen3.7) | 116.0x | 13.0x |
+| v2 vs skill (v2=qwen3.8 standard) | 74.5x | 3.8x |
+| v2 vs skill (v2=qwen3.7 discount price) | 74.5x | 7.7x |
+| v2 / v1 overhead (for vision) | 1.56x | 3.40x (qwen3.8) / 1.70x (qwen3.7 price) |
+
+**Notes**:
+- Token reduction is model-independent; cost reduction depends on provider pricing.
+- qwen3.7 is currently on a limited-time promotional discount (half of qwen3.8 standard price).
+- v2 cost at qwen3.8 standard pricing is ¥32.83; at qwen3.7 discounted pricing (hypothetical) it would be ¥16.41.
+- v2 uses qwen3.8 + vision (multimodal Judge with rendered views); v1 and skill use qwen3.7 (text-only).
+- P8/P9 v2 costs are curated at iteration_0 cutoff (see footnote above).
 
 ## MAC
 ## Prompt test1
@@ -322,3 +374,32 @@ Model: `qwen3.7-max`
 
 ![test10 result](assets/show10.gif)
 > Create a high-performance automotive ventilated brake disc with internal cooling vanes and cross-drilled holes. Step 1: Create the bottom friction plate as a solid cylinder with a radius of 160 mm and a thickness of 8 mm, centered on the XY plane. Step 2: Create a central mounting hat as a cylinder with a radius of 75 mm and a height of 25 mm, resting directly on top of the bottom plate's center. Boolean union it with the bottom plate. Step 3: Cut a central through-bore with a radius of 35 mm entirely through the center of the assembly. Step 4: Cut 5 vertical bolt holes, each with a radius of 7 mm, arranged on a 52 mm radius bolt circle around the center of the mounting hat. Step 5: Create a single cooling vane. Sketch a rectangle on the XY plane with a length of 80 mm and a width of 5 mm, centered at X=120 mm, Y=0 mm. Extrude this sketch upwards by 12 mm, starting from the top surface of the bottom plate. Step 6: Circularly pattern this cooling vane 36 times around the Z-axis. Boolean union all 36 vanes with the assembly. Step 7: Create the top friction plate. Sketch a ring on the XY plane with an outer radius of 160 mm and an inner radius of 80 mm. Extrude it by 8 mm and place it exactly on top of the cooling vanes. Boolean union it with the rest of the body. Step 8: Add cross-drilled cooling holes. Cut a vertical through-hole of radius 3 mm located at X=110 mm, Y=0. Circularly pattern this cut 18 times around the Z-axis. Cut another vertical through-hole of radius 3 mm at X=140 mm, Y=0, and circularly pattern it 18 times around the Z-axis. Step 9: Apply a 2 mm chamfer to the outer top and bottom circular edges of the complete brake disc assembly.
+
+## Robot Structural Components (test11–test16)
+
+The following 6 prompts are robot structural components with explicit dimensions, shape, and position requirements; higher complexity than test1–test10. Untested (no token table).
+
+## Prompt test11
+
+> Create a single solid robot wrist base as a STEP model in millimeters. The main body is a rectangular block, 80 mm in X, 60 mm in Y, and 50 mm in Z, with its bottom face at Z = 0 and X-Y centered on the origin. Add a horizontal through-bore (roll axis) in the X direction, 30 mm in diameter, centered at (0, 0, 25). Add a vertical through-bore (pitch axis) in the Z direction, 25 mm in diameter, centered at (X = 0, Y = 0). Add two bearing bosses on the ±X sides, each a cylinder with an outside diameter of 50 mm, protruding 8 mm outward (i.e., X range -48 to -40 and +40 to +48), centered at (X = ±44, Y = 0, Z = 25). Each boss has a 30 mm diameter through-bore in the X direction. Add a top bearing boss above the main body, with an outside diameter of 45 mm, protruding 6 mm upward (i.e., Z range 50 to 56), centered at (X = 0, Y = 0), with a 25 mm diameter through-bore in the Z direction. Add 4 through-mounting holes in the bottom, 9 mm in diameter, located at (X = ±25, Y = ±20). Add 4 M4 threaded holes (minor diameter 3 mm simulated) on the top bearing boss, on a 35 mm bolt-circle diameter, equally spaced at 90°, 8 mm deep. Add a central pocket on the +Y side, 25 mm × 25 mm × 15 mm deep, recessed from Y = 30. Apply R8 mm fillets to the 4 vertical corner edges of the body. Apply 3 mm fillets to all other external edges.
+
+## Prompt test12
+
+> Create a single solid robot shoulder joint bracket as a STEP model in millimeters. Add a horizontal base plate 120 mm long in X, 80 mm wide in Y, and 15 mm thick in Z, with its bottom face at Z = 0 and X-Y centered on the origin. Add a vertical plate 120 mm long in X, 80 mm tall in Z, and 20 mm thick in Y, located from Y = -10 to Y = 10 and from Z = 15 to Z = 95, with its bottom edge meeting the top face of the base plate. Add two bearing housings on the front face (+Y side) of the vertical plate, each a cylindrical boss with an outside diameter of 50 mm, protruding 15 mm in +Y (from Y = 10 to Y = 25), centered at (X = ±30, Y = 10, Z = 50). Each bearing housing has a horizontal through-bore of 35 mm diameter running in the Y direction through the vertical plate. Add 4 through-mounting holes in the base plate, 11 mm in diameter, located at (X = ±45, Y = ±25). Add a central cable hole in the vertical plate, 25 mm in diameter, located at (X = 0, Y = 0, Z = 50). Add 4 reinforcing ribs connecting the vertical plate to the base plate, each 8 mm thick in Y (from Y = -4 to Y = 4), located at X = ±40 and X = ±20. Each rib is a right triangle in the X-Z plane, extending from the top of the base plate (Z = 15) up to Z = 40 on the vertical plate. Apply 5 mm fillets at the external edges where the base plate meets the vertical plate, and 2 mm fillets to all other external edges.
+
+## Prompt test13
+
+> Create a single solid robot servo motor mounting bracket as a STEP model in millimeters. The main plate is 100 mm in X, 80 mm in Y, and 10 mm thick, centered on the origin. Add a central motor through-bore, 70 mm in diameter, through the plate, centered at (X = 0, Y = 0). Add 4 M6 motor mounting threaded holes (minor diameter 5 mm simulated), on an 85 mm × 70 mm rectangular array (i.e., at (X = ±42.5, Y = ±35)), 8 mm deep, recessed from the bottom face of the plate. Add 4 external mounting feet, each a 30 mm × 30 mm square tab, the same thickness as the main plate (10 mm), at the four corners, extending 5 mm outward (i.e., X range ±50 to ±55, Y range ±35 to ±40). Add 4 foot mounting holes, 9 mm in diameter, at the centers of the feet. Add 6 cooling fins on one side (+Z side), each 3 mm thick, 15 mm tall, and 80 mm long, running in the X direction, evenly distributed in Y, with Y centers at ±4, ±12, ±20 (8 mm center-to-center spacing). Add a cable routing groove on the opposite side (-Z side), 8 mm wide and 5 mm deep, running in the X direction at Y = 0. Add 4 dowel pin holes, 6 mm in diameter, at (X = ±35, Y = ±25), through the plate. Apply 3 mm fillets where the feet meet the plate, and 1 mm fillets to all other external edges.
+
+## Prompt test14
+
+> Create a single solid robot gripper base as a STEP model in millimeters. The main body is 80 mm in X, 60 mm in Y, and 30 mm in Z, with its bottom face at Z = 0 and X-Y centered on the origin. Add a central piston bore, 20 mm in diameter, running through in the Z direction. Add 2 T-slots on the top, with a T-shaped cross-section: upper part 8 mm wide × 4 mm deep (from Z = 26 to Z = 30, opening to the top face), lower part 16 mm wide × 8 mm deep (from Z = 18 to Z = 26, i.e., the T-bottom housing a T-nut), running in the X direction from X = -30 to X = 30, located at Y = ±15. Add mounting flanges on both sides, each flange 10 mm thick in X (from X = ±35 to ±45), 50 mm tall in Z (from Z = 30 to Z = 80), and 60 mm long in Y (from Y = -30 to 30). Each flange has 4 M5 threaded holes (minor diameter 4.2 mm simulated), on a 20 mm × 35 mm rectangular array. Add 2 finger guide rails on the top, each 5 mm tall, 3 mm wide, and 30 mm long, running in the X direction, located at Y = ±22 mm on the top of the body, with X centered on the origin. Add 4 dowel pin holes, 6 mm in diameter, at (X = ±25, Y = ±20). Add 2 M5 air-fitting threaded holes (minor diameter 4.2 mm simulated) on the +Y side, at (X = ±15, Y = 30, Z = 15), 10 mm deep. Add 2 piston seal grooves, 22 mm in diameter with a 2 mm square cross-section, around the central bore, located at Z = 5 and Z = 25. Apply 2 mm fillets where the flanges meet the body, and 1 mm fillets to all other external edges.
+
+## Prompt test15
+
+> Create a single solid robot end-effector flange (ISO 9409 style) as a STEP model in millimeters. The main flange is a cylinder with an outside diameter of 80 mm and a thickness of 10 mm, with its axis along Z, bottom face at Z = 0, and centered on the origin. Add a central pilot boss on the top, a truncated cone with a base diameter of 40 mm at Z = 10, tapering up to a top diameter of 31 mm at Z = 15 (i.e., a 5 mm tall frustum). Add 6 through-mounting holes, 6.5 mm in diameter, equally spaced on a 50 mm bolt-circle diameter, running from Z = 0 through to Z = 10. Add a central through-bore, 20 mm in diameter, running from Z = 0 through to Z = 15. Add 4 dowel pin holes, 4 mm in diameter, on a 36 mm bolt-circle diameter, offset 30° from the mounting holes. Add 4 M4 threaded holes (minor diameter 3 mm simulated) on the side of the flange, equally spaced at 90°, at Z = 5 mm, 8 mm deep. Add 2 cable holes through the flange, 8 mm in diameter, located at (X = ±25, Y = 0). Apply a 1 mm chamfer to the bottom outer edge. Apply a 0.5 mm fillet at the root of the pilot boss.
+
+## Prompt test16
+
+> Create a single solid robot harmonic reducer mounting seat as a STEP model in millimeters. The outer cylindrical cup has an outside diameter of 120 mm and a height of 30 mm, with its bottom face at Z = 0, axis along Z, and centered on the origin. Add a cylindrical inner cavity, 90 mm in diameter, recessed from the top to a depth of 25 mm (from Z = 30 down to Z = 5), to house the harmonic reducer's circular spline. Add a central through-bore at the bottom of the cavity, 20 mm in diameter (from Z = 5 down to Z = 0, i.e., through the remaining 5 mm bottom thickness). Add 8 through-mounting holes, 7 mm in diameter, equally spaced on a 105 mm bolt-circle diameter. Add 4 dowel pin holes, 6 mm in diameter, on a 75 mm bolt-circle diameter, spaced at 45° intervals (at 0°, 90°, 180°, 270°). Add 4 M5 threaded holes (minor diameter 4 mm simulated) on the side, equally spaced at 90°, at Z = 15 mm, 10 mm deep. Add 4 external cooling ribs, each 5 mm thick and 15 mm tall, on the outer circumference of the cup, equally spaced at 90°, running from Z = 5 to Z = 20. Apply 2 mm fillets at the inner corners of the cavity bottom, and 1 mm fillets to all other internal and external edges.
+

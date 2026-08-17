@@ -8,7 +8,7 @@ dependencies:
   - python=3.11.*
 
   # ── Core scientific / math (C extensions — stability from conda-forge) ──
-  - numpy>=1.24,<3
+  - numpy>=1.24,<2.3
   - scipy>=1.10
   - scikit-learn>=1.3
 
@@ -37,8 +37,14 @@ dependencies:
       # --- LLM clients (DashScope / Qwen via OpenAI-compatible endpoint) ---
       - openai>=1.20.0
 
-      # --- Autonomous code repair engine ---
-      - aider-chat>=0.50
+      # NOTE: aider-chat is intentionally NOT installed here. Every version
+      # on PyPI (0.50.0 through 0.86.2+) hard-pins numpy==1.26.4 (1.x),
+      # which is incompatible with build123d's numpy>=2 requirement, and
+      # conda's pip subprocess can't bypass that pin. Install it manually
+      # AFTER `conda env create` succeeds:
+      #   pip install --no-deps "aider-chat==0.82.3"
+      # --no-deps skips the numpy==1.26.4 pin; aider 0.82.3 imports
+      # cleanly on numpy 2.x (the pin is over-cautious upstream).
 
       # --- Anthropic SDK (备用 LLM 接口) ---
       - anthropic>=0.30

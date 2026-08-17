@@ -78,6 +78,15 @@ Valid scenarios:
   design deviates from spec, but the deviation reflects a physical-safety
   override documented in `special_features` (e.g. tread inner end kept in
   safe overlap with column to avoid fracture)
+- **Fillet radius degradation (FILLET_DEGRADED)**: `_safe_fillet`
+  successfully applied the fillet at a reduced radius (e.g. R=2.0
+  requested, R=0.5 applied). This is a CAD kernel limitation
+  (OpenCASCADE ChFi3d cannot apply large radii on degenerate junctions
+  where only 2 faces meet), NOT a code error or design flaw. The geometry
+  is valid, watertight, and printable; only the fillet radius is smaller
+  than specified. If FILLET_DEGRADED is the sole issue type (or all issues
+  are FILLET_DEGRADED), ACCEPT with confidence="high" - do not waste
+  retries trying to fix a kernel limitation via code changes.
 
 ### `repair` — continue to Aider (safe default)
 
@@ -407,6 +416,35 @@ just a single failure.
 **Contrast with Example 6 (HALT)**: Example 6's Ø80mm bore in 60mm-wide block **cannot** be fixed by any code change — the bore mathematically severs the block. Example 10's tangent tread **can** be fixed — just push the tread 0.5mm into the column. The distinction is "mathematically impossible" vs "physically implausible but fixable".
 
 **Defensive correction pattern**: When Judge decides REPAIR for a physically-implausible geometry, prefix the `reason` with `DEFENSIVE CORRECTION:` and state the specific physical issue + fix direction. Aider's repair prompt will see this and apply the fix as a defensive override (preserving user intent while ensuring physical soundness). This is the explicit, auditable version of what the old single-agent system did implicitly (silently modifying user requests for physical soundness).
+
+### Example 11 - ACCEPT on FILLET_DEGRADED (kernel limitation, not a code error)
+
+**Input context**:
+- `error_details[0]`: "FILLET_DEGRADED: step-18-fillet-lug-base-transitions - original radius 2.0 failed, succeeded at 0.5. Architect should reduce radius_mm to 0."
+- `feature_measurements.lug`: present and correctly sized (size_x=36.0, size_y=18.0, size_z=42.0)
+- `retry_count`: 1
+- No other issues in QA report (FILLET_DEGRADED is the sole issue)
+- Engine B: `Single watertight body`, `Strength: 100/100`
+
+**Output**:
+```json
+{"action": "accept",
+ "reason": "FILLET_DEGRADED is a CAD kernel limitation - _safe_fillet successfully applied R=0.5 (degraded from R=2.0 due to ChFi3d degenerate junction where only 2 faces meet). The fillet IS applied (not failed); geometry is valid, watertight, and printable. Code changes cannot fix a kernel limitation - retrying would waste tokens on the same degradation. Accept the degraded radius as a minor cosmetic deviation.",
+ "confidence": "high",
+ "evidence": [
+   "error_details[0]: FILLET_DEGRADED (not FILLET_FAILED) - fillet applied at R=0.5, geometry is valid",
+   "feature_measurements.lug: present and correctly sized (36x18x42) - underlying geometry is correct",
+   "Engine B: Single watertight body, Strength 100/100 - model is printable",
+   "retry_count=1: no need for persistence check; FILLET_DEGRADED is kernel-intrinsic, not retry-dependent"
+ ],
+ "disputed_errors": [0]}
+```
+
+**Why ACCEPT (not REPAIR)**: FILLET_DEGRADED means `_safe_fillet`'s auto-degradation worked (R -> R/2 -> R/4 succeeded). The fillet exists in the final geometry. Aider cannot fix this by changing code - the degradation is caused by the edge topology (degenerate junction), not by code bugs. Retrying will produce the same degradation. The only "fix" would be to redesign the geometry (e.g., make the lug thicker so ChFi3d can apply R=2.0), but that changes the design, not the code.
+
+**Why confidence="high"**: 4 concrete evidence points (FILLET_DEGRADED not FAILED + lug correctly sized + Engine B pass + retry-independence). This meets the "≥2 data points" threshold for high confidence.
+
+**Contrast with FILLET_FAILED**: If the issue were `FILLET_FAILED` (no radius succeeded, fillet completely missing), that would warrant REPAIR - the fillet is absent, not degraded. FILLET_DEGRADED is strictly better (fillet present, just smaller).
 
 ## 6. Output format
 

@@ -270,6 +270,7 @@ def _call_llm_json_with_retry(
                 temperature=temperature,
                 messages=list(messages),
                 max_tokens=max_tokens,
+                timeout=_CFG_LLM_API_TIMEOUT,
                 **kwargs_to_use,
             )
             raw_response = response.choices[0].message.content or ""
@@ -637,6 +638,27 @@ def _node_python_coder_deterministic(
             stl_path=stl_path,
             generator_metadata=meta,
         )
+
+        # Write token snapshot to file before execution (crash safety).
+        # If run_script_generator crashes (e.g., OCP SIGSEGV at export_step),
+        # the parent reads this file to recover token stats that would
+        # otherwise be lost when the subprocess dies before printing result JSON.
+        try:
+            from multi_agent_cad.token_tracker import tracker as _pre_exec_tracker
+            import json as _json
+            _pre_exec_snap = _pre_exec_tracker.summary()
+            _snap_path = Path.cwd() / "temp_token_snapshot.json"
+            with open(_snap_path, "w") as _f:
+                _json.dump({
+                    "phase": "pre_execute",
+                    "n_calls": _pre_exec_snap["n_calls"],
+                    "total_tokens": _pre_exec_snap["total_tokens"],
+                    "total_input": _pre_exec_snap["total_input"],
+                    "total_output": _pre_exec_snap["total_output"],
+                    "total_cache_read": _pre_exec_snap["total_cache_read"],
+                }, _f)
+        except Exception:
+            pass
 
         # Run gen_step() → cadpy loads the module, calls gen_step(),
         # exports STEP + STL, generates GLB topology.
@@ -2512,7 +2534,10 @@ Fillets/chamfers MUST come after ALL boolean operations (union, cut).
             os.environ[_API_KEY_ENV_VAR] = api_key
 
         model = Model(_AIDER_MODEL_NAME)
-        model.extra_params = {"max_tokens": _AIDER_MAX_TOKENS}  # avoid truncation
+        model.extra_params = {
+            "max_tokens": _AIDER_MAX_TOKENS,  # avoid truncation
+            "extra_body": {"enable_thinking": False},  # thinking off
+        }
         io = InputOutput(
             yes=True,
             pretty=False,
@@ -2703,6 +2728,7 @@ def node_python_coder(state: GraphState) -> dict:
                 {"role": "user", "content": user_prompt},
             ],
             max_tokens=_CODER_MAX_TOKENS,
+            timeout=_CFG_LLM_API_TIMEOUT,
             **_CODER_KWARGS,
         )
         raw_response = response.choices[0].message.content or ""
@@ -4590,6 +4616,14 @@ def _run_engine_b_check_mesh(
         f"Strength: {strength.get('strength_score', '?')}/100",
         f"Single-body: {conn.get('is_single_body', True)}",
     ]
+    # Surface dimensional verdict so a structurally-OK but dimensionally-wrong
+    # model is not mistaken for an overall pass. `results` is filled above
+    # (one VerificationResult per target); each carries `passed` and `deviation`.
+    dims_total = len(results)
+    dims_pass = sum(1 for r in results if getattr(r, "passed", False))
+    if dims_total > 0:
+        marker = " OK" if dims_pass == dims_total else " FAIL"
+        summary_parts.append(f"Dims: {dims_pass}/{dims_total}{marker}")
     print(f"[ENGINE B] {' | '.join(summary_parts)}")
 
     # Collect structural / mfg warnings
@@ -6325,7 +6359,10 @@ Please replace the 'pass' statement in gen_step() with the full implementation.
                 original_code = script_path_obj.read_text(encoding="utf-8")
 
                 model = Model(_AIDER_MODEL_NAME)
-                model.extra_params = {"max_tokens": _AIDER_MAX_TOKENS}  # avoid truncation
+                model.extra_params = {
+            "max_tokens": _AIDER_MAX_TOKENS,  # avoid truncation
+            "extra_body": {"enable_thinking": False},  # thinking off
+        }
                 io = InputOutput(
                     yes=True,
                     pretty=False,
@@ -6508,7 +6545,10 @@ def _run_repair_on_script(
                     original_code = ""
 
                 model = Model(_AIDER_MODEL_NAME)
-                model.extra_params = {"max_tokens": _AIDER_MAX_TOKENS}  # avoid truncation
+                model.extra_params = {
+            "max_tokens": _AIDER_MAX_TOKENS,  # avoid truncation
+            "extra_body": {"enable_thinking": False},  # thinking off
+        }
                 io = InputOutput(
                     yes=True,       # auto-confirm all prompts
                     pretty=False,   # no colored / interactive output
@@ -7347,6 +7387,19 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
         print(f"\n{'='*60}")
         print(f"  AUTONOMOUS LOOP — Retry {retry + 1}/{MAX_RETRIES}")
         print(f"{'='*60}")
+
+        # Per-iteration token snapshot (for benchmark analysis)
+        try:
+            from multi_agent_cad.token_tracker import tracker as _iter_tracker
+            _iter_snap = _iter_tracker.summary()
+            print(f"[TOKEN SNAPSHOT] retry={retry} start "
+                  f"total_tokens={_iter_snap['total_tokens']} "
+                  f"api_calls={_iter_snap['n_calls']} "
+                  f"input={_iter_snap['total_input']} "
+                  f"output={_iter_snap['total_output']} "
+                  f"cache_read={_iter_snap['total_cache_read']}", flush=True)
+        except Exception:
+            pass
 
         # --------------------------------------------------------------
         # Phase 1: Dual-Engine QA

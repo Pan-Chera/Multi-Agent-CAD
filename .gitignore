@@ -41,7 +41,10 @@ env/
 
 # ── MAC runtime artifacts ───────────────────────────────────────────────────
 # Per-iteration generated files (see WORKFLOW.md §6 for what each contains).
-temp_*.py
+# NOTE: temp_design_*.py is intentionally NOT ignored - Aider's repair stage
+# adds it to the chat, and Aider refuses to edit gitignored files. The other
+# temp_output_* / temp_measurements_* / temp_missed_* artifacts are ignored
+# because they are pure outputs, never edited.
 temp_output_*.step
 temp_output_*.stp
 temp_output_*.stl

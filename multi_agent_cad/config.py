@@ -12,6 +12,8 @@ This file is loaded by ``nodes.py`` and ``token_tracker.py`` at import
 time. Changes take effect on the next run.
 """
 
+import os
+
 # ============================================================================
 # API Key & Provider
 # ============================================================================
@@ -42,7 +44,7 @@ API_BASE_ENV_VAR = "OPENAI_API_BASE"
 
 # Max outer retries for the autonomous skill loop (Phase 4).
 # Each retry runs a full QA -> Aider repair -> re-execute cycle.
-MAX_RETRIES = 5
+MAX_RETRIES = 3
 
 # Inner exec retries within each outer retry.  When Aider edits the code
 # but re-execution crashes, we immediately re-invoke Aider with the
@@ -107,7 +109,7 @@ DS_BASE_URL = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v
 SPEC_PLANNER_MODEL = "qwen3.8-max"
 SPEC_PLANNER_TEMPERATURE = 0.0
 SPEC_PLANNER_MAX_TOKENS = 32768
-SPEC_PLANNER_KWARGS = {"extra_body": {"enable_thinking": True}}
+SPEC_PLANNER_KWARGS = {"extra_body": {"enable_thinking": False}}
 
 # --- Stage 0: User-provided reference images (shared by Spec Planner + Judge) ---
 # When user drops image files into user_input_images/ (PNG/JPG/JPEG/WebP),
@@ -146,7 +148,7 @@ ARCHITECT_KWARGS = {"extra_body": {"enable_thinking": False}}
 CODER_MODEL = "qwen3.8-max"
 CODER_TEMPERATURE = 0.0
 CODER_MAX_TOKENS = 32768
-CODER_KWARGS = {"extra_body": {"enable_thinking": True}}
+CODER_KWARGS = {"extra_body": {"enable_thinking": False}}
 
 # --- Stage 4: Autonomous Skill Loop ------------------------------------
 # Primary: Aider (uses Aider's own Model() class with provider-prefixed name).
@@ -164,7 +166,7 @@ AIDER_MAX_TOKENS = 65536
 REPAIR_MODEL = "qwen3.8-max"
 REPAIR_TEMPERATURE = 0.3   # slightly creative -- multiple valid fix paths
 REPAIR_MAX_TOKENS = 32768
-REPAIR_KWARGS = {"extra_body": {"enable_thinking": True}}
+REPAIR_KWARGS = {"extra_body": {"enable_thinking": False}}
 
 # --- Stage 5: QA Judge (Phase 2.5 in autonomous_skill_loop) ----------------
 # The Judge evaluates whether a QA report's failures warrant code repair, or
@@ -182,7 +184,7 @@ JUDGE_MIN_RETRY = 1                 # only invoke Judge after this many outer re
 JUDGE_MODEL = "qwen3.8-max"
 JUDGE_TEMPERATURE = 0.0             # deterministic — judgment should be reproducible
 JUDGE_MAX_TOKENS = 4096             # decision is short; ample headroom
-JUDGE_KWARGS = {"extra_body": {"enable_thinking": True}}  # thinking helps judgment
+JUDGE_KWARGS = {"extra_body": {"enable_thinking": False}}  # thinking off
 
 # --- Stage 5b: QA Judge visual rendering (multimodal input) ---------------
 # When multimodal is enabled, Judge renders N isometric PNG views from the
