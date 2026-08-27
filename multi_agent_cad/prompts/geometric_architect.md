@@ -296,6 +296,47 @@ with proper build123d API:
 ``num_sides`` + ``circumscribed_radius`` is ONLY for true regular polygons
 (hexagon, octagon, etc.) like bolt heads or gear blanks.
 
+### 🔴 Iron Rule 6: No `box` / `cube` / `cylinder` / `sphere` step_type
+
+The ``ModelingStepType`` enum does NOT include primitive-solid step types.
+``Box()``, ``Cylinder()``, ``Sphere()``, ``Cone()`` are **Python Coder**
+build123d primitives, NOT ``ArchitectPlan`` step types.  Emitting
+``"step_type": "box"`` causes schema validation to fail (the enum only
+accepts ``sketch_2d``, ``extrude``, ``revolve``, ``fillet``, ``chamfer``,
+``hole``, ``simple_hole``, ``counterbore_hole``, ``extrude_cut``, ``cut``,
+``boolean_union``, ``boolean_cut``, ``boolean_intersect``, ``pattern_linear``,
+``pattern_circular``, ``mirror``, ``shell``, ``draft``, ``rib``, ``reference``)
+and wastes an autonomous-loop retry.
+
+For a rectangular prism (the most common case where the LLM reaches for
+``Box``), emit a ``rectangle`` sketch on ``XY`` + an ``extrude`` step:
+
+❌ WRONG (``box`` is not a valid step_type — schema rejects, retry wasted):
+
+```json
+{"step_id": "step-01-base", "step_type": "box",
+ "dimensions": [20, 10, 10], "position": [-10, 0, 5]}
+```
+
+✅ CORRECT (sketch + extrude — the canonical ArchitectPlan pattern):
+
+```json
+{"sketches": [
+  {"sketch_id": "base-profile", "workplane": "XY", "workplane_offset_mm": 0.0,
+   "entities": [{"entity_type": "rectangle", "width": 20.0, "height": 10.0}],
+   "notes": "Base rectangle 20x10, centered on origin"}
+ ],
+ "steps": [
+  {"step_id": "step-01-extrude-base", "step_type": "extrude",
+   "sketch_id": "base-profile", "distance_mm": 10.0, "direction": "positive",
+   "depends_on": [], "notes": "Base prism Z=0..10"}
+ ]}
+```
+
+For cylindrical primitives use ``circle`` sketch + ``extrude``; for revolved
+solids use ``circle``/``arc`` sketch + ``revolve``.  Never use primitive-solid
+step types.
+
 ---
 
 ## DIMENSION Retry

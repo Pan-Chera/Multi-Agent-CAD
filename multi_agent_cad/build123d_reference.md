@@ -216,3 +216,39 @@ export_stl(solid, "output.stl", tolerance=0.01, angular_tolerance=0.1)
 | `solid.edges().filter_by(Axis.Z)` for base perimeter fillet → wrong edges | Use `filter_by(Plane.XY)` for horizontal perimeter edges |
 | `e.center().z` → AttributeError | Use `e.center().Z` (capital Z) |
 | Fillet "try a smaller value" error | Reduce radius by 0.5mm and retry in try/except |
+| **Cylinder along X or Y (knuckle ear, horizontal bore, cross-bar)** — default `Cylinder(r, h)` is along Z; `Pos(...) * Cylinder(...)` keeps axis along Z | Wrap in `Rotation(0, 90, 0) * Cylinder(...)` to rotate axis +Z → +X (or `Rotation(90, 0, 0)` for +Z → +Y). Always use `align=(CENTER, CENTER, CENTER)` on the rotated cylinder so it spans ± h/2 around its position. See worked example below. |
+
+## Horizontal-axis cylinder (knuckle ear, cross-bore, cross-bar)
+
+build123d's `Cylinder(radius, height)` defaults to **axis along Z**. For a
+cylinder along X (a knuckle ear, a horizontal bore, a cross-bar), wrap it
+in `Rotation(0, 90, 0) * Cylinder(...)`:
+
+```python
+from build123d import Box, Cylinder, Rotation, Pos, Align
+
+# Plate: X=0..30, Y=-20..20, Z=0..16
+plate = Box(30, 40, 16, align=(Align.MIN, Align.CENTER, Align.MIN))
+
+# Knuckle ear: horizontal cylinder along X, length 12, radius 8, centered at (36, 0, 9)
+# Rotation(0, 90, 0) rotates the +Z axis to +X. Align.CENTER on all 3 so the
+# rotated cylinder spans X=30..42 (±6 around X=36), Y=-8..8, Z=1..17.
+ear = Pos(36, 0, 9) * (Rotation(0, 90, 0) * Cylinder(
+    radius=8, height=12, align=(Align.CENTER, Align.CENTER, Align.CENTER)
+))
+
+# Through-bore: same orientation, overshoot length by 1mm each side for a
+# clean boolean cut (coincident tool/target faces are a classic kernel failure).
+bore = Pos(36, 0, 9) * (Rotation(0, 90, 0) * Cylinder(
+    radius=6.2, height=14, align=(Align.CENTER, Align.CENTER, Align.CENTER)
+))
+
+part = plate + ear - bore  # algebraic API: + = union, - = subtract
+```
+
+For a cylinder along **Y**, use `Rotation(90, 0, 0)` (rotates +Z → +Y).
+
+For a **mirror** ear on the -X side, keep the same `Rotation(0, 90, 0)` and
+change the `Pos` to `Pos(-ear_length/2, 0, ear_z)` -- the cylinder spans
+X=-ear_length..0 (the rotation direction stays +X; only the position
+determines which side of the plate the ear sits on).

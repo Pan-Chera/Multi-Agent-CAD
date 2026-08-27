@@ -232,6 +232,16 @@ class AssemblyHelper:
     ) -> MateRelation:
         return self.connect(fixed, moving, relation="revolute", label=label, angle=angle)
 
+    def ball(
+        self,
+        fixed: MateTarget | tuple[Any, str],
+        moving: MateTarget | tuple[Any, str],
+        *,
+        angles: tuple[float, float, float] | None = None,
+        label: str | None = None,
+    ) -> MateRelation:
+        return self.connect(fixed, moving, relation="ball", label=label, angles=angles)
+
     def linear(
         self,
         fixed: MateTarget | tuple[Any, str],

@@ -427,6 +427,14 @@ def _normalize_architect_plan(plan_dict: dict) -> dict:
     The Architect LLM sometimes uses informal names that don't match the
     ``ModelingStepType`` enum.  This function maps them to valid values so
     the plan passes validation without wasting a retry round.
+
+    For primitive-solid step types (``box`` / ``cube`` / ``cylinder`` /
+    ``sphere`` / ``cone``) — which the LLM reaches for despite
+    ``geometric_architect.md`` Iron Rule 6 forbidding them — expand the
+    step into a ``sketch + extrude`` pair so the plan validates without a
+    retry. The LLM is trained on ``python_coder.md`` which teaches
+    ``Box(x,y,z)`` as a primitive, so the cross-stage bleed is common
+    even with the prompt rule.
     """
     _STEP_TYPE_ALIASES = {
         # LLM shorthand → correct enum value
@@ -442,16 +450,202 @@ def _normalize_architect_plan(plan_dict: dict) -> dict:
         "sweep": "extrude",             # sweep ≈ extrude along path; LLM must refine
         "loft": "extrude",              # loft ≈ extrude; LLM must refine
     }
+    # Primitive-solid step types forbidden by Iron Rule 6 but routinely
+    # emitted by the LLM. Mapped to ``extrude`` and, if the step carries
+    # dimensions info, expanded into a sketch+extrude pair (see below).
+    _PRIMITIVE_SOLID_TYPES = {"box", "cube", "cylinder", "sphere", "cone",
+                              "primitive", "solid"}
+
     steps = plan_dict.get("steps")
     if not isinstance(steps, list):
         return plan_dict
+
+    # First pass: simple alias substitution for non-primitive types.
     for step in steps:
         if not isinstance(step, dict):
             continue
         stype = step.get("step_type", "")
         if isinstance(stype, str) and stype in _STEP_TYPE_ALIASES:
             step["step_type"] = _STEP_TYPE_ALIASES[stype]
+
+    # Second pass: expand primitive-solid steps (box/cube/...) into
+    # sketch+extrude. These steps carry dimensions in ad-hoc fields the
+    # ModelingStep schema doesn't know (pydantic ignores unknowns), so
+    # without expansion the schema would pass but the Coder would emit
+    # no geometry (sketch_id=None, distance_mm=None). Expanding here
+    # preserves the LLM's dimensional intent.
+    sketches = plan_dict.get("sketches")
+    if not isinstance(sketches, list):
+        sketches = []
+        plan_dict["sketches"] = sketches
+
+    new_steps: list = []
+    for step in steps:
+        if not isinstance(step, dict):
+            new_steps.append(step)
+            continue
+        stype = step.get("step_type", "")
+        if not (isinstance(stype, str) and stype.lower() in _PRIMITIVE_SOLID_TYPES):
+            new_steps.append(step)
+            continue
+
+        dims = _extract_primitive_dimensions(step)
+        if dims is None:
+            # No dimensions found — fallback to plain alias so schema
+            # validates. Coder/Aider retry will recover the geometry.
+            step["step_type"] = "extrude"
+            new_steps.append(step)
+            print(f"[NORMALIZE] step_type={stype!r} has no dimensions; "
+                  f"aliasing to 'extrude' (Coder will need sketch_id)")
+            continue
+
+        # Got dimensions — expand into sketch + extrude pair. The new
+        # sketch is appended to plan_dict.sketches; the original step is
+        # rewritten in-place as the extrude step.
+        prim_kind = stype.lower()
+        sid_base = step.get("step_id") or f"step-{len(new_steps)+1:02d}"
+        sketch_id = f"{sid_base}-autogen-sketch"
+        sketch, extrude_step = _build_primitive_sketch_and_extrude(
+            prim_kind, dims, step, sketch_id
+        )
+        if sketch is None:
+            # Unsupported primitive (e.g. sphere has no sketch analogue) —
+            # alias to extrude and let Aider recover geometry from notes.
+            step["step_type"] = "extrude"
+            new_steps.append(step)
+            print(f"[NORMALIZE] step_type={stype!r} unsupported primitive "
+                  f"shape; aliasing to 'extrude'")
+            continue
+        sketches.append(sketch)
+        new_steps.append(extrude_step)
+        print(f"[NORMALIZE] expanded step_type={stype!r} dims={dims} "
+              f"into sketch {sketch_id!r} + extrude")
+
+    plan_dict["steps"] = new_steps
     return plan_dict
+
+
+def _extract_primitive_dimensions(step: dict) -> tuple[float, float, float] | None:
+    """Extract (w, h, d) from a primitive-solid step's ad-hoc fields.
+
+    The LLM emits dimensions under various field names; try each in order
+    and return the first parseable 3-tuple. Returns None if no dimensions
+    field is found.
+    """
+    def _parse_3list(v) -> tuple[float, float, float] | None:
+        if not isinstance(v, (list, tuple)) or len(v) != 3:
+            return None
+        try:
+            return tuple(float(x) for x in v)  # type: ignore[return-value]
+        except (TypeError, ValueError):
+            return None
+
+    # 3-list fields: dimensions, size, dims, extent, bbox
+    for key in ("dimensions", "dimensions_mm", "size", "size_mm",
+                "dims", "extent", "bbox"):
+        if key in step:
+            r = _parse_3list(step[key])
+            if r is not None:
+                return r
+
+    # Three separate numeric fields: width/height/depth (or length).
+    try:
+        w = float(step.get("width") or step.get("x_size") or 0)
+        h = float(step.get("height") or step.get("y_size") or 0)
+        d = float(step.get("depth") or step.get("length")
+                  or step.get("z_size") or 0)
+        if w > 0 and h > 0 and d > 0:
+            return (w, h, d)
+    except (TypeError, ValueError):
+        pass
+
+    # Single radius field for cylinder/sphere/cone: treat as (r, r, h)
+    # where h is from height/length if present, else 2*r.
+    try:
+        r = float(step.get("radius") or step.get("radius_mm") or 0)
+        if r > 0:
+            h = float(step.get("height") or step.get("length") or 2 * r)
+            return (r, r, h)
+    except (TypeError, ValueError):
+        pass
+
+    return None
+
+
+def _build_primitive_sketch_and_extrude(
+    prim_kind: str,
+    dims: tuple[float, float, float],
+    orig_step: dict,
+    sketch_id: str,
+) -> tuple[dict | None, dict]:
+    """Build a (sketch, extrude_step) pair replacing a primitive-solid step.
+
+    For box/cube: rectangle sketch on XY with width=w, height=h; extrude d.
+    For cylinder/cone: circle sketch on XY with radius=w; extrude h (cone
+       slope lost — Aider recovers from notes if needed).
+    For sphere: returns (None, ...) — sphere has no sketch+extrude analogue;
+       the caller aliases the step to 'extrude' as a placeholder.
+
+    The original step's step_id / label / depends_on / notes are preserved
+    on the extrude_step so downstream references stay intact.
+    """
+    w, h, d = dims
+    sid = orig_step.get("step_id") or sketch_id.replace("-autogen-sketch", "")
+    label = orig_step.get("label") or f"Extrude {prim_kind} primitive"
+    depends = orig_step.get("depends_on") or []
+    notes = orig_step.get("notes") or f"Auto-expanded from step_type={prim_kind!r} dims=({w},{h},{d})"
+
+    if prim_kind in ("box", "cube"):
+        sketch = {
+            "sketch_id": sketch_id,
+            "workplane": "XY",
+            "workplane_offset_mm": 0.0,
+            "entities": [{
+                "entity_type": "rectangle",
+                "width": w,
+                "height": h,
+            }],
+            "notes": f"Auto-generated rectangle {w}x{h} from {prim_kind} primitive",
+        }
+        extrude = {
+            "step_id": sid,
+            "step_type": "extrude",
+            "label": label,
+            "sketch_id": sketch_id,
+            "distance_mm": d,
+            "direction": "positive",
+            "depends_on": depends,
+            "notes": notes,
+        }
+        return sketch, extrude
+
+    if prim_kind in ("cylinder", "cone"):
+        radius = w  # _extract_primitive_dimensions returns (r, r, h) for these
+        sketch = {
+            "sketch_id": sketch_id,
+            "workplane": "XY",
+            "workplane_offset_mm": 0.0,
+            "entities": [{
+                "entity_type": "circle",
+                "center": {"x": 0.0, "y": 0.0},
+                "radius": radius,
+            }],
+            "notes": f"Auto-generated circle R={radius} from {prim_kind} primitive",
+        }
+        extrude = {
+            "step_id": sid,
+            "step_type": "extrude",
+            "label": label,
+            "sketch_id": sketch_id,
+            "distance_mm": d,  # = h from _extract_primitive_dimensions
+            "direction": "positive",
+            "depends_on": depends,
+            "notes": notes,
+        }
+        return sketch, extrude
+
+    # sphere / unknown — no sketch analogue
+    return None, orig_step
 
 
 def _qa_report_or_dict(error_details: list[str] | None) -> str:
@@ -753,8 +947,12 @@ def _validate_solid(solid, name="solid"):
     errors = []
 
     # 1. Check if valid (manifold, no self-intersections)
+    # build123d Shape.is_valid is a PROPERTY (bool), not a method.
     try:
-        if not solid.is_valid():
+        is_valid_val = solid.is_valid
+        if callable(is_valid_val):
+            is_valid_val = is_valid_val()
+        if not is_valid_val:
             errors.append(f"{name}: Solid is invalid (non-manifold or self-intersecting)")
     except Exception as e:
         errors.append(f"{name}: Validation error - {str(e)}")
@@ -881,8 +1079,12 @@ def _safe_union(a, b, name_a="solid_a", name_b="solid_b", min_overlap=0.1):
         overlap_y = min(bb_a.max.Y, bb_b.max.Y) - max(bb_a.min.Y, bb_b.min.Y)
         overlap_z = min(bb_a.max.Z, bb_b.max.Z) - max(bb_a.min.Z, bb_b.min.Z)
 
-        # Check if there's any overlap
-        if overlap_x <= 0 or overlap_y <= 0 or overlap_z <= 0:
+        # Allow coincident-face union: overlap == 0 means the solids touch at
+        # a face (e.g., a cap cylinder whose +Y face coincides with the box's
+        # -Y face). build123d `a + b` at overlap==0 returns a Compound (2
+        # disjoint solids) because OCCT's fuse needs a positive volume overlap.
+        # We handle that case below by injecting a sub-mm epsilon overlap.
+        if overlap_x < -0.01 or overlap_y < -0.01 or overlap_z < -0.01:
             all_errors.append(
                 f"{name_a} and {name_b} have no overlap. "
                 f"Overlap: X={overlap_x:.2f}, Y={overlap_y:.2f}, Z={overlap_z:.2f} mm. "
@@ -905,6 +1107,31 @@ def _safe_union(a, b, name_a="solid_a", name_b="solid_b", min_overlap=0.1):
     # Perform the union
     try:
         result = a + b
+
+        # Coincident-face handling: build123d `a + b` at overlap==0 returns a
+        # Compound of 2 disjoint solids (OCCT fuse needs positive overlap).
+        # Detect that and inject a sub-mm epsilon shift along the coincident
+        # axis to force a watertight single Solid. The shift is 0.005mm —
+        # invisible at CAD precision but enough for OCCT to merge.
+        try:
+            _n_solids = len(result.solids()) if hasattr(result, "solids") else 1
+        except Exception:
+            _n_solids = 1
+        if _n_solids > 1:
+            # Find the coincident axis (smallest overlap, near 0)
+            _overlaps = [overlap_x, overlap_y, overlap_z]
+            _axis_idx = _overlaps.index(min(_overlaps))
+            _shift = [0.0, 0.0, 0.0]
+            _shift[_axis_idx] = 0.005
+            try:
+                b_shifted = b.moved(Location(Vector(*_shift)))
+                result = a + b_shifted
+            except Exception:
+                try:
+                    b_shifted = b.translate(Vector(*_shift))
+                    result = a + b_shifted
+                except Exception:
+                    pass
 
         # Validate the result
         valid_result, errors_result = _validate_solid(result, f"union({name_a},{name_b})")

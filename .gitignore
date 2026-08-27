@@ -56,6 +56,11 @@ temp_missed_*.json
 # Use `git add -f pipeline_cache/<file>.json` to share a specific cache snapshot.
 pipeline_cache/
 
+# Assembly job outputs (mac_assembly pipeline). Each job_*/ directory holds
+# generated parts (STEP/STL), LLM temp_design_*.py iterations, assembly_cache,
+# placed_stl, judge views, etc. Pure runtime artifacts - never commit.
+assembly_jobs/
+
 # Local Claude Code state (session logs, scheduled tasks).
 .claude/
 
