@@ -71,6 +71,11 @@ assembly_jobs/
 # Local Claude Code state (session logs, scheduled tasks).
 .claude/
 
+# ── Local-only test suite ───────────────────────────────────────────────────
+# tests/ holds regression / unit tests for the mac_assembly pipeline. Kept
+# local-only — not part of the published project. Run `pytest tests/` locally.
+tests/
+
 # ── Local dev scripts & scratch space ──────────────────────────────────────
 tmp/
 
