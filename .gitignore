@@ -39,6 +39,13 @@ htmlcov/
 venv/
 env/
 
+# ── Secrets ────────────────────────────────────────────────────────────────
+# API keys live in environment variables only. A sourced .env file is
+# supported for local convenience but must never be committed.
+.env
+.env.*
+!.env.example
+
 # ── MAC runtime artifacts ───────────────────────────────────────────────────
 # Per-iteration generated files (see WORKFLOW.md §6 for what each contains).
 # NOTE: temp_design_*.py is intentionally NOT ignored - Aider's repair stage

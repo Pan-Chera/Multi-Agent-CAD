@@ -82,8 +82,13 @@ MAX_EXEC_RETRIES = 3
 # Timeouts (seconds)
 # ============================================================================
 
-# LLM API call (DashScope qwen3.8-max) for spec_planner / architect / coder.
-LLM_API_TIMEOUT = 120
+# LLM API call for JSON planning stages (Spec Planner / Geometric Architect /
+# assembly Decomposer / Mating Architect / Judges).
+LLM_API_TIMEOUT = 300
+
+# LLM API call for large code generation / repair paths (Python Coder,
+# Aider-backed generation + repair).
+LLM_CODEGEN_API_TIMEOUT = 900
 
 # check_mesh.py subprocess timeout (Engine B -- STL mesh analysis).
 CHECK_MESH_TIMEOUT = 180

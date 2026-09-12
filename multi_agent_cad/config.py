@@ -22,8 +22,10 @@ import os
 #
 # Priority (checked at runtime by ``_llm_client()`` in nodes.py):
 #   1. Environment variable ``DASHSCOPE_API_KEY``  (recommended -- especially
-#      for shared / version-controlled environments).
-#   2. ``DS_API_KEY`` below  (fallback for local development).
+#      for shared / version-controlled environments). Set it in your shell
+#      profile or a git-ignored ``.env`` file you source yourself; NEVER
+#      paste a real key into this tracked file.
+#   2. ``DS_API_KEY`` below  (local-development fallback; keep EMPTY).
 
 DS_API_KEY = ""
 
@@ -55,8 +57,15 @@ MAX_EXEC_RETRIES = 3
 # Timeouts (seconds)
 # ============================================================================
 
-# LLM API call (DashScope qwen3.8-max) for spec_planner / architect / coder.
-LLM_API_TIMEOUT = 120
+# LLM API call for JSON planning stages (Spec Planner / Geometric Architect /
+# assembly Decomposer / Mating Architect / Judges). 300s: enough for large
+# structured-JSON briefs, short enough to surface a hung endpoint quickly.
+LLM_API_TIMEOUT = int(os.environ.get("MAC_LLM_API_TIMEOUT") or "300")
+
+# LLM API call for large code generation / repair paths (Python Coder,
+# Aider-backed generation + repair). Full CAD scripts run 30k-65k output
+# tokens; 120s truncated these mid-file. env MAC_LLM_CODEGEN_API_TIMEOUT.
+LLM_CODEGEN_API_TIMEOUT = int(os.environ.get("MAC_LLM_CODEGEN_API_TIMEOUT") or "900")
 
 # check_mesh.py subprocess timeout (Engine B -- STL mesh analysis).
 CHECK_MESH_TIMEOUT = 180

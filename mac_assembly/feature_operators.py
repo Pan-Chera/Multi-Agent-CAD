@@ -12,10 +12,12 @@ Subtractive operators (through_bore, ball_cavity) overshoot 1mm
 already (preserves bore/cavity face topology -- see plan §2e/§2h).
 
 Snap-to-surface (plan §2g): if attach_point is >0.5mm from the base
-surface, snap along -direction to the nearest surface. Then verify
-the surface normal at the snap point is within 15° of -direction
-(planar kinematics protection); if not, revert to original attach_point
-+ log warning, let QA catch the bad geometry.
+surface, snap along -direction to the nearest surface. Then verify the
+surface normal at the snap point lies within 15° of the expected attach
+normal -- ``attachment.surface_axis`` when given, otherwise EITHER sign of
+``direction`` (planar kinematics protection: reject tilted/curved-surface
+snaps, not the natural straight-off-face case); if not, revert to the
+original attach_point + log warning, let QA catch the bad geometry.
 
 Multi-solid Compound fallback (plan §2f): if direct ``base + feature``
 raises BRep_API, try fusing against each base solid individually; if
@@ -27,6 +29,13 @@ from __future__ import annotations
 import math
 from typing import Any, Callable
 
+from mac_assembly.geometry_utils import (
+    DIR_VECTORS as _DIR_VECTORS,
+    OPPOSITE_DIRECTION as _OPPOSITE_DIRECTION,
+    X_AXIS_ROTATIONS as _X_AXIS_ROTATIONS,
+    Z_AXIS_ROTATIONS as _Z_AXIS_ROTATIONS,
+    closest_point_robust as _closest_point_robust,
+)
 from mac_assembly.schemas_assembly import Feature
 
 
@@ -38,14 +47,12 @@ from mac_assembly.schemas_assembly import Feature
 #   becomes global -Y (back away from +Y protrusion).
 # For direction=-x: rotate 180° about Z. Body local -X becomes +X (back).
 # For direction=-y: rotate -90° about Z (or 270°).
-# For direction=+z / -z: not supported for clevis_fork/tongue (planar only).
+# For direction=+z / -z: valid only with pin_axis=x/y (the non-planar modes
+#   in _FORK_ROTATIONS below); the legacy pin=z planar mode requires ±x/±y.
+# Derived from geometry_utils' X_AXIS_ROTATIONS + DIR_VECTORS (single source
+# of truth, R1) -- do not re-enter the numbers here.
 _PROTRUSION_ROTATIONS: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
-    "+x": ((0.0, 0.0, 0.0),     (1.0, 0.0, 0.0)),
-    "-x": ((0.0, 0.0, 180.0),   (-1.0, 0.0, 0.0)),
-    "+y": ((0.0, 0.0, 90.0),    (0.0, 1.0, 0.0)),
-    "-y": ((0.0, 0.0, -90.0),   (0.0, -1.0, 0.0)),
-    "+z": ((0.0, -90.0, 0.0),   (0.0, 0.0, 1.0)),
-    "-z": ((0.0, 90.0, 0.0),    (0.0, 0.0, -1.0)),
+    d: (_X_AXIS_ROTATIONS[d], _DIR_VECTORS[d]) for d in _DIR_VECTORS
 }
 
 # Pin-axis rotation table for clevis_fork / clevis_tongue.
@@ -89,61 +96,96 @@ _FORK_ROTATIONS: dict[tuple[str, str], tuple[float, float, float]] = {
     ("y", "-z"): (-90.0, 0.0, 90.0),
 }
 
-# Per-axis rotation to align a +Z cylinder with the chosen pin axis.
-# Used by bore-through-base cut: subtract a cylinder along pin_axis at
-# attach_point so the pin passes cleanly through both the fork/tongue and
-# the base body.
-_PIN_BORE_ROTATIONS: dict[str, tuple[float, float, float]] = {
-    "x": (0.0, 90.0, 0.0),    # +Z → +X
-    "y": (-90.0, 0.0, 0.0),   # +Z → +Y
-    "z": (0.0, 0.0, 0.0),     # +Z unchanged
-}
-
-# Rotation table for Z-axis features (cylinder along +Z by default).
-# build123d Cylinder default axis is +Z. To make the cylinder protrude in
-# `direction`, rotate +Z -> direction:
-#   +x: Y rotation +90° (right-hand rule: +Z -> +X)
-#   -x: Y rotation -90° (+Z -> -X)
-#   +y: X rotation -90° (+Z -> +Y)
-#   -y: X rotation +90° (+Z -> -Y)
-#   +z: no rotation (cylinder already along +Z)
-#   -z: X rotation 180° (+Z -> -Z)
-# Used by: through_bore, ball_cavity opening, ball_stem stem, knuckle_ear.
-# (clevis_fork / clevis_tongue use _PROTRUSION_ROTATIONS -- their local body
-# axis is X, not Z.)
-_Z_AXIS_ROTATIONS: dict[str, tuple[float, float, float]] = {
-    "+x": (0.0, 90.0, 0.0),
-    "-x": (0.0, -90.0, 0.0),
-    "+y": (-90.0, 0.0, 0.0),
-    "-y": (90.0, 0.0, 0.0),
-    "+z": (0.0, 0.0, 0.0),
-    "-z": (180.0, 0.0, 0.0),
-}
+# _Z_AXIS_ROTATIONS (direction -> RPY orienting local +Z along it, for
+# through_bore / ball_cavity opening / ball_stem stem / knuckle_ear) and
+# _OPPOSITE_DIRECTION are imported from geometry_utils (single source of
+# truth, R1). clevis_fork / clevis_tongue use _PROTRUSION_ROTATIONS instead
+# -- their local body axis is X, not Z.
 
 # Overshoot into the base along -direction (additive ops). 0.2mm matches
 # existing clevis clearance_side default; well above OpenCASCADE 1e-6 tolerance.
 _ADDITIVE_OVERSHOOT_MM = 0.2
+
+# Subtractive operators carve voids (base - tool). Their "disjoint solid"
+# fallback cannot be represented as positive geometry -- emitting the tool
+# body would ADD material where a void was designed. When such an op fails
+# to fuse with every base solid, apply_feature must fail the feature
+# outright (part_generator reports ok=False -> remodel) rather than
+# silently appending the tool solid.
+_SUBTRACTIVE_OPERATORS = frozenset({"through_bore", "ball_cavity"})
+
+# Additive KINEMATIC operators must end up CONNECTED to the base: a fork /
+# tongue / ear / ball that did not fuse floats as a separate solid, which
+# silently breaks the part (an extra disconnected solid in the STEP, no
+# structural path). A disjoint fallback is only allowed for an explicitly
+# opted-in decorative feature (params["allow_disjoint"]=True).
+_DISJOINT_ALLOWED_PARAM = "allow_disjoint"
+
+
+def _solid_count(shape: Any) -> int:
+    try:
+        return len(shape.solids())
+    except Exception:  # noqa: BLE001 - not a solid-bearing shape
+        return 0
+
+
+def _feature_allows_disjoint(feature: Feature) -> bool:
+    return bool(feature.params.get(_DISJOINT_ALLOWED_PARAM, False))
 
 # Snap-to-surface tolerance + normal angle threshold.
 _SNAP_TOLERANCE_MM = 0.5
 _MAX_NORMAL_ANGLE_DEG = 15.0
 
 
-def _snap_to_surface(base: Any, attach_point_mm: list[float], direction: str) -> tuple[list[float], str | None]:
+def _snap_to_surface(
+    base: Any,
+    attach_point_mm: list[float],
+    direction: str,
+    surface_axis: str | None = None,
+) -> tuple[list[float], str | None]:
     """If attach_point is >tolerance from base surface, snap along -direction.
 
     Returns (final_point, warning_msg). final_point is snapped_point if
     snap succeeds + normal aligned, else original attach_point. warning_msg
     is non-None if we reverted due to tilted normal.
+
+    ``surface_axis`` (from FeatureAttachment, optional): the expected
+    outward normal of the attach surface. The protrusion direction and the
+    surface normal are INDEPENDENT concepts:
+      - a clevis_fork protruding +y off a plate's +Y side face attaches to
+        a surface whose normal is +y (== +direction);
+      - a ball_stem's ball sits at -direction, so its attach surface normal
+        is -direction;
+      - a knuckle_ear centred on the TOP face protruding +y attaches to a
+        +z-normal surface (perpendicular to direction).
+    When ``surface_axis`` is given, the snap validates the surface normal
+    against exactly that axis. Legacy fallback (surface_axis None): accept
+    the snap when the normal is within the tolerance cone of EITHER
+    +direction or -direction -- the check's real purpose is planar-
+    kinematics protection (reject TILTED / curved-surface snaps), and the
+    previous -direction-only comparison rejected the natural straight-off-
+    face case (normal == +direction) at 180 deg.
     """
     try:
         import trimesh
         import numpy as np
-    except ImportError:
-        return list(attach_point_mm), None
+    except ImportError as exc:
+        # BUG-039: surface the import failure rather than silently
+        # reverting to the original attach point.
+        return (
+            list(attach_point_mm),
+            f"snap skipped: trimesh/numpy import failed "
+            f"({type(exc).__name__}: {exc})",
+        )
 
     protrusion_vec = _PROTRUSION_ROTATIONS.get(direction, ((0, 0, 0), (1, 0, 0)))[1]
-    anti_dir = [-v for v in protrusion_vec]
+    if surface_axis is not None and surface_axis in _DIR_VECTORS:
+        expected_normals = [np.asarray(_DIR_VECTORS[surface_axis], dtype=float)]
+        expected_desc = f"surface_axis={surface_axis!r}"
+    else:
+        pv = np.asarray(protrusion_vec, dtype=float)
+        expected_normals = [pv, -pv]
+        expected_desc = f"±{direction} (protrusion axis, legacy fallback)"
 
     # Probe the base surface: find the nearest surface point to attach_point.
     try:
@@ -165,61 +207,81 @@ def _snap_to_surface(base: Any, attach_point_mm: list[float], direction: str) ->
             except OSError:
                 pass
         if mesh.is_empty:
-            return list(attach_point_mm), None
-    except Exception:  # noqa: BLE001
-        return list(attach_point_mm), None
+            # BUG-039: surface probe produced no mesh -- record why so
+            # the caller can surface the warning (previously silently
+            # reverted to the original attach point with no signal).
+            return (
+                list(attach_point_mm),
+                f"snap skipped: base mesh is empty after STL export",
+            )
+    except Exception as exc:  # noqa: BLE001
+        # BUG-039: keep the original attach point (do not block the
+        # feature), but surface the failure so PartResult.warnings /
+        # QA can see the snap was skipped. The downstream disjoint
+        # detection will still catch the consequences if any.
+        return (
+            list(attach_point_mm),
+            f"snap skipped: STL export / mesh load failed "
+            f"({type(exc).__name__}: {exc})",
+        )
 
-    # closest_point: nearest surface point to attach_point
-    closest, _dist, _triangle_id = trimesh.proximity.closest_point(
-        mesh, [attach_point_mm]
-    )
+    # closest_point: nearest surface point to attach_point. Robust helper:
+    # falls back to closest_point_naive when the optional rtree package is
+    # missing (the accelerated query raises at call time otherwise, which
+    # used to surface as a "geometry failure" in rtree-less environments).
+    closest, _dist, tri_id = _closest_point_robust(mesh, [attach_point_mm])
     closest = closest[0]
+    tri_id = int(tri_id[0])
     snap_dist = float(np.linalg.norm(np.asarray(closest) - np.asarray(attach_point_mm)))
 
     if snap_dist <= _SNAP_TOLERANCE_MM:
         return list(attach_point_mm), None  # within tolerance, no snap
 
-    # Snap: check surface normal at the snap point
-    # Find the face containing `closest`, get its normal
-    face_normal = _face_normal_at(mesh, closest)
+    # Snap: check surface normal at the snap point (R3: tri_id passed in
+    # from the first closest_point call, no re-query inside the helper).
+    face_normal = _face_normal_at(mesh, tri_id)
     if face_normal is None:
         # Couldn't get normal; snap silently without normal check
         return list(closest), None
 
-    # Angle between face_normal and anti_dir
+    # Angle between face_normal and the expected attach-surface normal(s):
+    # the snap is accepted when the normal lies within the tolerance cone of
+    # ANY expected normal (surface_axis: exactly one; legacy fallback: both
+    # signs of the protrusion axis -- see docstring).
     fn = np.asarray(face_normal, dtype=float)
-    ad = np.asarray(anti_dir, dtype=float)
     fn_norm = np.linalg.norm(fn)
-    ad_norm = np.linalg.norm(ad)
-    if fn_norm < 1e-9 or ad_norm < 1e-9:
+    if fn_norm < 1e-9:
         return list(closest), None
-    cos_angle = float(np.dot(fn, ad) / (fn_norm * ad_norm))
-    cos_angle = max(-1.0, min(1.0, cos_angle))
-    angle_deg = math.degrees(math.acos(cos_angle))
+    angle_deg = 180.0
+    for ad in expected_normals:
+        ad_norm = np.linalg.norm(ad)
+        if ad_norm < 1e-9:
+            continue
+        cos_angle = float(np.dot(fn, ad) / (fn_norm * ad_norm))
+        cos_angle = max(-1.0, min(1.0, cos_angle))
+        angle_deg = min(angle_deg, math.degrees(math.acos(cos_angle)))
 
     if angle_deg > _MAX_NORMAL_ANGLE_DEG:
         # Normal too tilted: snap would tilt the feature on a curved surface.
         # Revert to original attach_point + warn.
         return list(attach_point_mm), (
-            f"snap surface normal tilted {angle_deg:.1f}° from -{direction} "
-            f"at {list(closest)} -- feature would be tilted on curved surface, "
-            f"breaking planar kinematics. Reverting to original attach_point "
-            f"{list(attach_point_mm)}; QA will catch disjoint/tilted geometry."
+            f"snap surface normal tilted {angle_deg:.1f}° from the "
+            f"expected attach-surface normal ({expected_desc}) "
+            f"at {[float(v) for v in closest]} -- feature would be tilted "
+            f"on curved surface, breaking planar kinematics. Reverting to "
+            f"original attach_point {list(attach_point_mm)}; QA will catch "
+            f"disjoint/tilted geometry. Set attachment.surface_axis to the "
+            f"real surface normal if this attach point is correct."
         )
 
     # Snap OK
     return list(closest), None
 
 
-def _face_normal_at(mesh: Any, point) -> list[float] | None:
-    """Get the face normal at the given point on the mesh."""
+def _face_normal_at(mesh: Any, tri_id: int) -> list[float] | None:
+    """Get the face normal at the given face index on the mesh."""
     try:
-        import trimesh  # N1: was missing -- NameError -> except -> None -> tilted-normal check dead
-        # trimesh: find which face contains the point, return its normal
-        # closest_point returns triangle_id; re-query to get the face
-        _, _dist, tri_id = trimesh.proximity.closest_point(mesh, [point])
-        tri_id = int(tri_id[0])
-        face_normal = mesh.face_normals[tri_id]
+        face_normal = mesh.face_normals[int(tri_id)]
         return [float(face_normal[0]), float(face_normal[1]), float(face_normal[2])]
     except Exception:  # noqa: BLE001
         return None
@@ -239,42 +301,159 @@ def _build_feature_solid(feature: Feature) -> Any:
 
 def apply_feature(base: Any, feature: Feature) -> Any:
     """Dispatch a feature operator by name. Multi-solid fallback (plan §2f):
-    if direct op raises, try per-solid fuse; if all fail, emit as disjoint solid.
+    if direct op raises, try per-solid fuse; if all fail, emit as disjoint
+    solid (additive only, and only when explicitly opted in via
+    ``params["allow_disjoint"]=True`` -- see _DISJOINT_ALLOWED_PARAM).
+
+    Disjoint-detection: build123d's algebraic ``base + feature`` does NOT
+    raise on disjoint operands -- it produces a Compound with an extra,
+    disconnected solid. After a successful op, a solid-count increase on
+    an additive feature means exactly that, so it is treated as a failure
+    (the kinematic feature must be structurally connected to the base)
+    instead of silently shipping a floating fork/ear/ball.
     """
     op = FEATURE_OPERATORS[feature.name]
+    base_solids = _solid_count(base)
     try:
-        return op(base, feature)
+        result = op(base, feature)
     except Exception as exc:  # noqa: BLE001
-        # Multi-solid Compound base: try fusing against each base solid.
+        # Multi-solid Compound base: fallback path. Additive and
+        # subtractive features need different strategies (BUG-018):
+        #
+        #   * ADDITIVE (clevis_fork / clevis_tongue / knuckle_ear /
+        #     ball_stem): try fusing against each base solid; the FIRST
+        #     one that accepts the feature is the structural connection
+        #     -- the rest pass through unchanged. If no solid accepts,
+        #     emit as a disjoint solid (only with allow_disjoint=True).
+        #
+        #   * SUBTRACTIVE (through_bore / ball_cavity): try cutting EVERY
+        #     base solid. A bore that passes through two stacked plates
+        #     must cut BOTH, not just the first. Each solid whose volume
+        #     actually decreased is replaced by the cut result; solids
+        #     the tool missed pass through unchanged. If NO solid was
+        #     cut, raise removed-no-material.
         import build123d
-        base_solids = list(base.solids()) if hasattr(base, "solids") else [base]
+        base_solid_list = list(base.solids()) if hasattr(base, "solids") else [base]
         result_solids = []
+        is_subtractive = feature.name in _SUBTRACTIVE_OPERATORS
         feature_applied = False
-        for s in base_solids:
-            if not feature_applied:
+        for s in base_solid_list:
+            try:
+                fused = op(s, feature)
+                # Reliable "did this solid actually change?" signal:
+                # volume delta. For subtractive, a real cut decreases
+                # volume; for additive, a fuse increases volume. A
+                # tool-body-misses-solid case returns the same solid
+                # (volume unchanged) -- the existing "feature_applied"
+                # guard for additive, and the per-solid cut loop for
+                # subtractive, both rely on this signal.
                 try:
-                    fused = op(s, feature)
+                    v_before = float(s.volume)
+                    v_after = float(fused.volume)
+                except Exception:  # noqa: BLE001
+                    v_before, v_after = 0.0, -1.0  # force "unchanged" branch
+                changed = v_after != v_before
+                if is_subtractive:
+                    # Subtractive: apply to EVERY solid, keep the cut
+                    # result for solids that actually changed; pass the
+                    # rest through unchanged.
+                    if changed:
+                        if hasattr(fused, "solids"):
+                            result_solids.extend(fused.solids())
+                        else:
+                            result_solids.append(fused)
+                        feature_applied = True
+                        continue
+                    # Tool missed this solid: keep the original.
+                    result_solids.append(s)
+                    continue
+                # Additive: only the FIRST accepting solid is the
+                # structural connection. Once feature_applied, the rest
+                # pass through unchanged.
+                if not feature_applied and changed:
                     if hasattr(fused, "solids"):
                         result_solids.extend(fused.solids())
                     else:
                         result_solids.append(fused)
                     feature_applied = True
                     continue
-                except Exception:  # noqa: BLE001
-                    pass
-            result_solids.append(s)
+                # Already fused OR no change on this solid: keep original.
+                result_solids.append(s)
+            except Exception:  # noqa: BLE001
+                # Op raised on this solid -- keep original (subtractive:
+                # tool may not intersect; additive: try next solid).
+                result_solids.append(s)
         if not feature_applied:
-            # Last-ditch: emit the feature as a SEPARATE solid in the Compound.
+            if is_subtractive:
+                # A bore/cavity that cut NO base solid would leave the
+                # tool body as a void that doesn't exist anywhere -- emit
+                # nothing and raise so part_generator marks ok=False.
+                raise RuntimeError(
+                    f"subtractive feature {feature.name!r} at "
+                    f"{feature.attachment.attach_point_mm} removed no "
+                    f"material from any base solid; the tool body misses "
+                    f"the base body -- move the attach_point onto the "
+                    f"base"
+                ) from exc
+            if not _feature_allows_disjoint(feature):
+                raise RuntimeError(
+                    f"additive feature {feature.name!r} at "
+                    f"{feature.attachment.attach_point_mm} could not fuse "
+                    f"with any base solid -- the feature would float as a "
+                    f"disjoint solid (no structural connection to the "
+                    f"part). Attach it on/near the base surface, or set "
+                    f"params[{_DISJOINT_ALLOWED_PARAM!r}]=True for a "
+                    f"deliberately decorative floating feature"
+                ) from exc
+            # Explicit opt-in: emit the feature as a SEPARATE solid in the
+            # Compound.
             print(f"  [feature_operator] WARNING: {feature.name} at "
-                  f"{feature.attachment.attach_point_mm} could not fuse with "
-                  f"any base solid; emitting as disjoint solid. "
+                  f"{feature.attachment.attach_point_mm} emitted as a "
+                  f"disjoint solid ({_DISJOINT_ALLOWED_PARAM}=True). "
                   f"Underlying error: {exc}")
             try:
                 feat_solid = _build_feature_solid(feature)
                 result_solids.append(feat_solid)
             except Exception:  # noqa: BLE001
                 pass  # give up entirely; base only
+            return build123d.Compound(children=result_solids)
         return build123d.Compound(children=result_solids)
+    # Op succeeded without raising, but the algebraic union of disjoint
+    # shapes does not raise in build123d -- detect the extra solid.
+    if (
+        feature.name not in _SUBTRACTIVE_OPERATORS
+        and _solid_count(result) > base_solids
+        and not _feature_allows_disjoint(feature)
+    ):
+        raise RuntimeError(
+            f"additive feature {feature.name!r} at "
+            f"{feature.attachment.attach_point_mm} did not fuse with the "
+            f"base body (solid count {base_solids} -> "
+            f"{_solid_count(result)}) -- it floats as a disjoint solid with "
+            f"no structural connection. Place the attach_point on the base "
+            f"surface (set attachment.surface_axis when the surface normal "
+            f"differs from -direction), or set "
+            f"params[{_DISJOINT_ALLOWED_PARAM!r}]=True for a deliberately "
+            f"decorative floating feature"
+        )
+    # Symmetric guard for subtractive ops: `base - tool` with a DISJOINT
+    # tool does not raise either -- it silently returns the base unchanged
+    # (the designed void was never cut). A subtractive feature that removes
+    # no material is a spec error; fail loudly instead of shipping a part
+    # whose mates reference a bore/cavity that does not exist.
+    if feature.name in _SUBTRACTIVE_OPERATORS:
+        try:
+            if result.volume >= base.volume - 1e-6:
+                raise RuntimeError(
+                    f"subtractive feature {feature.name!r} at "
+                    f"{feature.attachment.attach_point_mm} removed no "
+                    f"material (volume {base.volume:.1f} -> "
+                    f"{result.volume:.1f} mm^3) -- the tool body misses the "
+                    f"base body; move the attach_point onto the base"
+                )
+        except AttributeError:  # noqa: PERF203 - shape without volume
+            pass
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -292,27 +471,22 @@ def _clevis_pin_axis(params: dict) -> str:
     return pin_axis
 
 
-def _clevis_placement_and_bore_cut(
+def _default_bar_thickness(tongue_thickness: float, clearance_side: float = 0.1) -> float:
+    """Default bar_thickness for clevis fork/tongue: tongue + 2*clearance + 2mm."""
+    return tongue_thickness + 2.0 * clearance_side + 2.0
+
+
+def _clevis_placement(
     attach: list[float],
     direction: str,
     pin_axis: str,
     bar_thickness: float,
-    bore_radius: float,
     feature_kind: str,
 ):
-    """Return (placement_lambda, bore_cut_lambda) for clevis_fork/tongue.
+    """Return the placement lambda for clevis_fork/tongue.
 
     placement_lambda(local_geom) returns the positioned compound:
         Pos(attach) * Rotation(rpy) * Pos(pre_shift) * local_geom
-
-    bore_cut_lambda(assembly_bb) is preserved for API compatibility but
-    NO LONGER CALLED by _op_clevis_fork / _op_clevis_tongue. The previous
-    design subtracted a cylinder through the base body at attach_point
-    ("bore-through-base cut") so the pin could pass through; this left
-    half the bore embedded inside the base body when attach_point sat on
-    the base body's surface. The v3 fork/tongue geometry now places bore
-    entirely on the clevis ear (at local X=body_len, far from attach),
-    so no base-body cut is needed.
 
     Convention (placement):
       - pin_axis="z" (legacy): bore world = (attach_x + body_len,
@@ -348,36 +522,7 @@ def _clevis_placement_and_bore_cut(
             * local_geom
         )
 
-    bore_rot_rpy = _PIN_BORE_ROTATIONS[pin_axis]
-
-    def bore_cut(assembly):
-        # Preserved for API compatibility; no longer called by v3
-        # operators (bore now lives entirely on the clevis ear, so no
-        # base-body cut is needed). Kept so legacy callers don't break.
-        from build123d import Align, Cylinder, Pos, Rotation
-        bb = assembly.bounding_box()
-        if pin_axis == "x":
-            extent = bb.max.X - bb.min.X
-            center_along = (bb.min.X + bb.max.X) / 2.0
-            pos = (center_along, attach[1], attach[2])
-        elif pin_axis == "y":
-            extent = bb.max.Y - bb.min.Y
-            center_along = (bb.min.Y + bb.max.Y) / 2.0
-            pos = (attach[0], center_along, attach[2])
-        else:  # z
-            extent = bb.max.Z - bb.min.Z
-            center_along = (bb.min.Z + bb.max.Z) / 2.0
-            pos = (attach[0], attach[1], center_along)
-        return (
-            Pos(pos[0], pos[1], pos[2])
-            * Rotation(bore_rot_rpy[0], bore_rot_rpy[1], bore_rot_rpy[2])
-            * Cylinder(
-                radius=bore_radius, height=extent + 2.0,
-                align=(Align.CENTER, Align.CENTER, Align.CENTER),
-            )
-        )
-
-    return placement, bore_cut
+    return placement
 
 
 def _v3_fork_local(
@@ -394,7 +539,7 @@ def _v3_fork_local(
 
     Ear body extends in +X direction from local origin (attach_point)
     to local X=body_len. Tip + bore sit at local X=body_len. After
-    placement by ``_clevis_placement_and_bore_cut``, the ear body sits
+    placement by ``_clevis_placement``, the ear body sits
     OUTSIDE the base body (in +direction from attach_point), and the
     bore sits at ``attach + direction * body_len`` -- far from the base
     body surface. Bore's circular cross-section is entirely contained
@@ -409,17 +554,24 @@ def _v3_fork_local(
         boolean union -- avoids coincident-face union failure)
       - Upper ear Z: (bar_thickness + fork_gap_z)/2 .. bar_thickness
       - Lower ear Z: 0 .. (bar_thickness - fork_gap_z)/2
+
+    Design rule (ear_length > ear_width): enforced below via
+    ``builders._require_body_longer_than_tip`` (shared with the v2 clevis
+    local geometry -- the two conventions differ in where the bore sits,
+    not in the hinge design rule).
     """
     from build123d import Align, Box, Cylinder, Pos
 
     R_tip = ear_width / 2.0
     fork_gap_z = tongue_thickness + 2.0 * clearance_side
-    upper_ear_z_extent = (bar_thickness - fork_gap_z) / 2.0
-    lower_ear_z_extent = (bar_thickness - fork_gap_z) / 2.0
+    # Symmetric gap: both ears have the same Z extent (R6).
+    ear_z_extent = (bar_thickness - fork_gap_z) / 2.0
     upper_ear_z_min = (bar_thickness + fork_gap_z) / 2.0
-    lower_ear_z_max = (bar_thickness - fork_gap_z) / 2.0
+    lower_ear_z_max = ear_z_extent
 
     body_len = ear_length - R_tip
+    from mac_assembly.builders import _require_body_longer_than_tip
+    _require_body_longer_than_tip("fork", body_len, R_tip, ear_length, ear_width)
     body_x_min = -overshoot_mm
     body_x_max = body_len
     body_len_total = body_x_max - body_x_min
@@ -428,19 +580,19 @@ def _v3_fork_local(
     lower_ear_z_center = lower_ear_z_max / 2.0
 
     upper_body = Pos(body_center_x, 0, upper_ear_z_center) * Box(
-        body_len_total, ear_width, upper_ear_z_extent,
+        body_len_total, ear_width, ear_z_extent,
         align=(Align.CENTER, Align.CENTER, Align.CENTER),
     )
     upper_tip = Pos(body_len, 0, upper_ear_z_center) * Cylinder(
-        radius=R_tip, height=upper_ear_z_extent,
+        radius=R_tip, height=ear_z_extent,
         align=(Align.CENTER, Align.CENTER, Align.CENTER),
     )
     lower_body = Pos(body_center_x, 0, lower_ear_z_center) * Box(
-        body_len_total, ear_width, lower_ear_z_extent,
+        body_len_total, ear_width, ear_z_extent,
         align=(Align.CENTER, Align.CENTER, Align.CENTER),
     )
     lower_tip = Pos(body_len, 0, lower_ear_z_center) * Cylinder(
-        radius=R_tip, height=lower_ear_z_extent,
+        radius=R_tip, height=ear_z_extent,
         align=(Align.CENTER, Align.CENTER, Align.CENTER),
     )
     bore = Pos(body_len, 0, bar_thickness / 2.0) * Cylinder(
@@ -464,11 +616,17 @@ def _v3_tongue_local(
     Single mid-Z slab with a semicircular tip at +X end. Bore center at
     (body_len, 0, bar_thickness/2). Body extends +X (with overshoot_mm
     extending into -X to overlap the base body for clean boolean union).
+
+    Design rule (ear_length > ear_width): enforced below via
+    ``builders._require_body_longer_than_tip`` (shared with the v2 clevis
+    local geometry).
     """
     from build123d import Align, Box, Cylinder, Pos
 
     R_tip = ear_width / 2.0
     body_len = ear_length - R_tip
+    from mac_assembly.builders import _require_body_longer_than_tip
+    _require_body_longer_than_tip("tongue", body_len, R_tip, ear_length, ear_width)
     body_x_min = -overshoot_mm
     body_x_max = body_len
     body_len_total = body_x_max - body_x_min
@@ -508,7 +666,7 @@ def _op_clevis_fork(base: Any, feature: Feature) -> Any:
     ear_width = float(params["ear_width"])
     tongue_thickness = float(params["tongue_thickness"])
     bore_radius = float(params["bore_radius"])
-    bar_thickness = float(params.get("bar_thickness", tongue_thickness + 2 * 0.1 + 2.0))
+    bar_thickness = float(params.get("bar_thickness", _default_bar_thickness(tongue_thickness)))
     clearance_side = float(params.get("clearance_side", 0.1))
 
     _clevis_validate(bar_thickness, bore_radius, ear_length, ear_width,
@@ -518,13 +676,16 @@ def _op_clevis_fork(base: Any, feature: Feature) -> Any:
     pin_axis = _clevis_pin_axis(params)
     attach = feature.attachment.attach_point_mm
 
-    snapped, warning = _snap_to_surface(base, attach, direction)
+    snapped, warning = _snap_to_surface(
+        base, attach, direction,
+        getattr(feature.attachment, "surface_axis", None),
+    )
     if warning:
         print(f"  [feature_operator] WARNING: {warning}")
     attach = snapped
 
-    placement, _bore_cut_unused = _clevis_placement_and_bore_cut(
-        attach, direction, pin_axis, bar_thickness, bore_radius, "clevis_fork"
+    placement = _clevis_placement(
+        attach, direction, pin_axis, bar_thickness, "clevis_fork"
     )
 
     fork = _v3_fork_local(ear_length, ear_width, tongue_thickness, bore_radius,
@@ -546,7 +707,7 @@ def _op_clevis_tongue(base: Any, feature: Feature) -> Any:
     ear_width = float(params["ear_width"])
     tongue_thickness = float(params["tongue_thickness"])
     bore_radius = float(params["bore_radius"])
-    bar_thickness = float(params.get("bar_thickness", tongue_thickness + 2 * 0.1 + 2.0))
+    bar_thickness = float(params.get("bar_thickness", _default_bar_thickness(tongue_thickness)))
     clearance_side = float(params.get("clearance_side", 0.1))
 
     _clevis_validate(bar_thickness, bore_radius, ear_length, ear_width,
@@ -556,13 +717,16 @@ def _op_clevis_tongue(base: Any, feature: Feature) -> Any:
     pin_axis = _clevis_pin_axis(params)
     attach = feature.attachment.attach_point_mm
 
-    snapped, warning = _snap_to_surface(base, attach, direction)
+    snapped, warning = _snap_to_surface(
+        base, attach, direction,
+        getattr(feature.attachment, "surface_axis", None),
+    )
     if warning:
         print(f"  [feature_operator] WARNING: {warning}")
     attach = snapped
 
-    placement, _bore_cut_unused = _clevis_placement_and_bore_cut(
-        attach, direction, pin_axis, bar_thickness, bore_radius, "clevis_tongue"
+    placement = _clevis_placement(
+        attach, direction, pin_axis, bar_thickness, "clevis_tongue"
     )
 
     tongue = _v3_tongue_local(ear_length, ear_width, tongue_thickness,
@@ -723,12 +887,7 @@ def _op_ball_stem(base: Any, feature: Feature) -> Any:
         # from attach along -direction to reach the ball). Lookup in
         # _Z_AXIS_ROTATIONS which maps direction string -> rotation that
         # takes +Z to that direction string.
-        _OPPOSITE = {
-            "+x": "-x", "-x": "+x",
-            "+y": "-y", "-y": "+y",
-            "+z": "-z", "-z": "+z",
-        }
-        stem_dir = _OPPOSITE.get(direction, direction)
+        stem_dir = _OPPOSITE_DIRECTION.get(direction, direction)
         # stem_base: 0.2mm INTO the base body (along +protrusion, opposite
         # of stem_dir) for clean boolean union with the base.
         stem_base = (
@@ -819,7 +978,7 @@ FEATURE_OPERATORS: dict[str, Callable[[Any, Feature], Any]] = {
 def _build_only_clevis_fork(feature: Feature) -> Any:
     """Build the feature geometry alone (no base) for the disjoint fallback."""
     params = dict(feature.params)
-    bar_thickness = float(params.get("bar_thickness", params["tongue_thickness"] + 2.2))
+    bar_thickness = float(params.get("bar_thickness", _default_bar_thickness(float(params["tongue_thickness"]))))
     fork = _v3_fork_local(
         float(params["ear_length"]), float(params["ear_width"]),
         float(params["tongue_thickness"]), float(params["bore_radius"]),
@@ -828,16 +987,16 @@ def _build_only_clevis_fork(feature: Feature) -> Any:
     )
     attach = feature.attachment.attach_point_mm
     pin_axis = _clevis_pin_axis(params)
-    placement, _ = _clevis_placement_and_bore_cut(
+    placement = _clevis_placement(
         attach, feature.attachment.direction, pin_axis, bar_thickness,
-        float(params["bore_radius"]), "clevis_fork"
+        "clevis_fork"
     )
     return placement(fork)
 
 
 def _build_only_clevis_tongue(feature: Feature) -> Any:
     params = dict(feature.params)
-    bar_thickness = float(params.get("bar_thickness", params["tongue_thickness"] + 2 * 0.1 + 2.0))
+    bar_thickness = float(params.get("bar_thickness", _default_bar_thickness(float(params["tongue_thickness"]))))
     tongue = _v3_tongue_local(
         float(params["ear_length"]), float(params["ear_width"]),
         float(params["tongue_thickness"]), float(params["bore_radius"]),
@@ -845,38 +1004,23 @@ def _build_only_clevis_tongue(feature: Feature) -> Any:
     )
     attach = feature.attachment.attach_point_mm
     pin_axis = _clevis_pin_axis(params)
-    placement, _ = _clevis_placement_and_bore_cut(
+    placement = _clevis_placement(
         attach, feature.attachment.direction, pin_axis, bar_thickness,
-        float(params["bore_radius"]), "clevis_tongue"
+        "clevis_tongue"
     )
     return placement(tongue)
 
 
-def _build_only_through_bore(feature: Feature) -> Any:
-    from build123d import Align, Cylinder, Pos, Rotation
-    params = dict(feature.params)
-    radius = float(params["radius"])
-    height = float(params.get("height", 10.0)) + 2.0
-    direction = feature.attachment.direction
-    # Z-axis feature (Cylinder default +Z): use _Z_AXIS_ROTATIONS to match
-    # _op_through_bore. Previous code used _PROTRUSION_ROTATIONS (for +X
-    # protrusions), leaving the bore along +Z instead of `direction`.
-    rot_rpy = _Z_AXIS_ROTATIONS.get(direction, (0.0, 0.0, 0.0))
-    attach = feature.attachment.attach_point_mm
-    bore = Cylinder(radius=radius, height=height, align=(Align.CENTER, Align.CENTER, Align.CENTER))
-    return Pos(attach[0], attach[1], attach[2]) * Rotation(*rot_rpy) * bore
-
-
-def _build_only_ball_cavity(feature: Feature) -> Any:
-    # Cavity is subtractive; "build only" doesn't really make sense --
-    # return an empty sphere that won't fuse with anything.
-    from build123d import Pos, Sphere
-    params = dict(feature.params)
-    attach = feature.attachment.attach_point_mm
-    return Pos(attach[0], attach[1], attach[2]) * Sphere(radius=float(params["sphere_radius"]))
-
-
 def _build_only_ball_stem(feature: Feature) -> Any:
+    """Ball+stem geometry alone (no base). Mirrors _op_ball_stem EXACTLY:
+    ball center at ``attach + (-direction) * (stem_length + sphere_radius)``
+    (fully OUTSIDE the base body footprint); stem starts
+    ``_ADDITIVE_OVERSHOOT_MM`` into where the base would be and pierces the
+    ball surface by the same overshoot. The previous build-only version
+    placed the ball center ON attach_point with the stem along +direction
+    -- the "ball embedded in the base" layout _op_ball_stem was rewritten
+    to fix.
+    """
     from build123d import Align, Cylinder, Pos, Rotation, Sphere
     params = dict(feature.params)
     sphere_radius = float(params["sphere_radius"])
@@ -884,23 +1028,27 @@ def _build_only_ball_stem(feature: Feature) -> Any:
     stem_length = float(params.get("stem_length", 0.0))
     attach = feature.attachment.attach_point_mm
     direction = feature.attachment.direction
-    # Mirror _op_ball_stem: protrusion from _PROTRUSION_ROTATIONS (positions
-    # stem_base on the sphere surface); stem_rot_rpy from _Z_AXIS_ROTATIONS
-    # (cylinder default axis +Z, rotate to `direction`). The previous code
-    # unpacked both from _PROTRUSION_ROTATIONS, so for direction=+x the
-    # rot_rpy was (0,0,0) -> stem cylinder stayed along +Z instead of +X.
     _rot_rpy_unused, protrusion = _PROTRUSION_ROTATIONS.get(direction, ((0, 0, 0), (0, 0, 1)))
-    stem_rot_rpy = _Z_AXIS_ROTATIONS.get(direction, (0.0, 0.0, 0.0))
-    sphere = Pos(attach[0], attach[1], attach[2]) * Sphere(radius=sphere_radius)
+    anti = (-protrusion[0], -protrusion[1], -protrusion[2])
+    ball_center = (
+        attach[0] + anti[0] * (stem_length + sphere_radius),
+        attach[1] + anti[1] * (stem_length + sphere_radius),
+        attach[2] + anti[2] * (stem_length + sphere_radius),
+    )
+    sphere = Pos(ball_center[0], ball_center[1], ball_center[2]) * Sphere(radius=sphere_radius)
     if stem_length > 0 and stem_radius > 0:
+        stem_dir = _OPPOSITE_DIRECTION.get(direction, direction)
         stem_base = (
-            attach[0] + protrusion[0] * sphere_radius,
-            attach[1] + protrusion[1] * sphere_radius,
-            attach[2] + protrusion[2] * sphere_radius,
+            attach[0] + protrusion[0] * _ADDITIVE_OVERSHOOT_MM,
+            attach[1] + protrusion[1] * _ADDITIVE_OVERSHOOT_MM,
+            attach[2] + protrusion[2] * _ADDITIVE_OVERSHOOT_MM,
         )
+        stem_height = stem_length + 2.0 * _ADDITIVE_OVERSHOOT_MM
+        stem_rot_rpy = _Z_AXIS_ROTATIONS.get(stem_dir, (0.0, 0.0, 0.0))
         stem = (
             Pos(*stem_base) * Rotation(*stem_rot_rpy)
-            * Cylinder(radius=stem_radius, height=stem_length, align=(Align.CENTER, Align.CENTER, Align.MIN))
+            * Cylinder(radius=stem_radius, height=stem_height,
+                       align=(Align.CENTER, Align.CENTER, Align.MIN))
         )
         return sphere + stem
     return sphere
@@ -923,11 +1071,11 @@ def _build_only_knuckle_ear(feature: Feature) -> Any:
     return Pos(attach[0], attach[1], attach[2]) * Rotation(*rot_rpy) * ear_with_bore
 
 
+# Additive operators only. Subtractive ops (_SUBTRACTIVE_OPERATORS) have no
+# build-only form by design -- see apply_feature.
 FEATURE_OPERATORS_BUILD_ONLY: dict[str, Callable[[Feature], Any]] = {
     "clevis_fork": _build_only_clevis_fork,
     "clevis_tongue": _build_only_clevis_tongue,
-    "through_bore": _build_only_through_bore,
-    "ball_cavity": _build_only_ball_cavity,
     "ball_stem": _build_only_ball_stem,
     "knuckle_ear": _build_only_knuckle_ear,
 }

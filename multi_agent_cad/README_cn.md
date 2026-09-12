@@ -25,7 +25,7 @@
 
 下面是 Web UI 一次完整 pipeline 运行的录屏。
 
-![Web UI 全流程演示](assets/ui_demo.gif)
+![Web UI 全流程演示](../assets/ui_demo.gif)
 
 ## 📖 目录
 - [1. 📸 实物打印画廊](#1-实物打印画廊)
@@ -38,9 +38,9 @@
 
 ## 1. 📸 实物打印画廊
 
-![3D打印模型实物总览](assets/overview.jpg)
+![3D打印模型实物总览](../assets/overview.jpg)
 
-下方 10 个基准测试零件（P1–P10，与 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) 同源 prompt）、10 件演示画廊（S1–S10，原创 prompt）与 1 个可动演示均由 MAC 流水线生成。上图实物打印模型的 3D 旋转视图与 prompt 见 [qwen3.7_token.md](docs/qwen3.7_token.md)。
+下方 10 个基准测试零件（P1–P10，与 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) 同源 prompt）、10 件演示画廊（S1–S10，原创 prompt）与 1 个可动演示均由 MAC 流水线生成。上图实物打印模型的 3D 旋转视图与 prompt 见 [qwen3.7_token.md](../docs/qwen3.7_token.md)。
 
 ### 🤖 可动样例（print-in-place articulable）
 
@@ -48,41 +48,41 @@
 
 | 描述 | 实拍图 |
 |---|---|
-| **笼中小球玩具（Ball-in-Cage Fidget Toy）**<br>经典一体化打印解压玩具：实心球被关在立方笼内，一次打印成形 —— 球可自由滚动但无法脱出。<br>• 40×40×40 mm 立方笼，内部 16 mm 半径球形空腔，居中于原点<br>• 15 mm 半径实心球，与笼内壁四周保持 1 mm 间隙<br>• 六面各开一个 12 mm 半径通孔，便于观察和触摸小球<br><br>**可动陀螺仪玩具（Articulable Gyroscope Toy）**<br>一体化打印的旋转结构：内环通过两根 pivot pin 在外环内自由旋转。<br>• 外环：30 mm 外 / 23 mm 内半径，高 10 mm，居中于 XY 平面<br>• 外环上沿 X 轴开两个 2.4 mm 半径的 pivot 孔<br>• 内旋转体：22 mm 外 / 15 mm 内半径，高 10 mm，内壁 8 个凹槽<br>• 两根 pivot pin（半径 2.0 mm，长 6 mm）向外伸入外环孔内<br>• 0.4 mm 径向间隙使内环绕 X 轴 360° 自由旋转 | <img src="assets/articulable.gif" width="320" alt="可动模型实拍图"> |
+| **笼中小球玩具（Ball-in-Cage Fidget Toy）**<br>经典一体化打印解压玩具：实心球被关在立方笼内，一次打印成形 —— 球可自由滚动但无法脱出。<br>• 40×40×40 mm 立方笼，内部 16 mm 半径球形空腔，居中于原点<br>• 15 mm 半径实心球，与笼内壁四周保持 1 mm 间隙<br>• 六面各开一个 12 mm 半径通孔，便于观察和触摸小球<br><br>**可动陀螺仪玩具（Articulable Gyroscope Toy）**<br>一体化打印的旋转结构：内环通过两根 pivot pin 在外环内自由旋转。<br>• 外环：30 mm 外 / 23 mm 内半径，高 10 mm，居中于 XY 平面<br>• 外环上沿 X 轴开两个 2.4 mm 半径的 pivot 孔<br>• 内旋转体：22 mm 外 / 15 mm 内半径，高 10 mm，内壁 8 个凹槽<br>• 两根 pivot pin（半径 2.0 mm，长 6 mm）向外伸入外环孔内<br>• 0.4 mm 径向间隙使内环绕 X 轴 360° 自由旋转 | <img src="../assets/articulable.gif" width="320" alt="可动模型实拍图"> |
 
 ### 🎨 演示画廊（S1–S10）
 
-10 个演示零件，展示 MAC 在创意打印品上的能力 —— 装饰摆件、可动玩具、机械机构等。与 P1–P10（同源 prompt）不同，这些 prompt 为本项目原创。详细 prompt 与 3D 旋转视图见 [qwen3.7_token.md](docs/qwen3.7_token.md)。
+10 个演示零件，展示 MAC 在创意打印品上的能力 —— 装饰摆件、可动玩具、机械机构等。与 P1–P10（同源 prompt）不同，这些 prompt 为本项目原创。详细 prompt 与 3D 旋转视图见 [qwen3.7_token.md](../docs/qwen3.7_token.md)。
 
 | S1 | S2 | S3 | S4 | S5 |
 |---|---|---|---|---|
 | 蜂巢收纳座 | 陀螺仪摆件 | 灯塔摆件 | 手机支架 | 笼中小球 |
-| ![S1](assets/show1.gif) | ![S2](assets/show2.gif) | ![S3](assets/show3.gif) | ![S4](assets/show4.gif) | ![S5](assets/show5.gif) |
+| ![S1](../assets/show1.gif) | ![S2](../assets/show2.gif) | ![S3](../assets/show3.gif) | ![S4](../assets/show4.gif) | ![S5](../assets/show5.gif) |
 
 | S6 | S7 | S8 | S9 | S10 |
 |---|---|---|---|---|
 | 可动陀螺仪 | 多环链 | 马尔他机构 | 等离子反应堆 | 通风刹车盘 |
-| ![S6](assets/show6.gif) | ![S7](assets/show7.gif) | ![S8](assets/show8.gif) | ![S9](assets/show9.gif) | ![S10](assets/show10.gif) |
+| ![S6](../assets/show6.gif) | ![S7](../assets/show7.gif) | ![S8](../assets/show8.gif) | ![S9](../assets/show9.gif) | ![S10](../assets/show10.gif) |
 
 ### 📐 基准测试零件（P1–P10）
 
-10 个机械零件涵盖阵列特征、布尔运算、旋转阵列、螺旋扫掠、多体装配等典型 CAD 操作。下方演示模型均由本项目根据 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD skill）提供的 prompt 生成。详细 prompt 与每条几何特征通过率见 [qwen3.7_token.md](docs/qwen3.7_token.md)。
+10 个机械零件涵盖阵列特征、布尔运算、旋转阵列、螺旋扫掠、多体装配等典型 CAD 操作。下方演示模型均由本项目根据 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD skill）提供的 prompt 生成。详细 prompt 与每条几何特征通过率见 [qwen3.7_token.md](../docs/qwen3.7_token.md)。
 
 #### Benchmark 模型视图
 
 | P1 | P2 | P3 | P4 | P5 |
 |---|---|---|---|---|
 | 带通孔的矩形块 | 圆形法兰 | L 形支架 | 阶梯轴 | 顶部开放外壳 |
-| ![P1](assets/benchmark01.gif) | ![P2](assets/benchmark02.gif) | ![P3](assets/benchmark03.gif) | ![P4](assets/benchmark04.gif) | ![P5](assets/benchmark05.gif) |
+| ![P1](../assets/benchmark01.gif) | ![P2](../assets/benchmark02.gif) | ![P3](../assets/benchmark03.gif) | ![P4](../assets/benchmark04.gif) | ![P5](../assets/benchmark05.gif) |
 | ¥5.53 → **¥0.31** (17.8×) | ¥8.07 → **¥0.34** (23.7×) | ¥13.07 → **¥1.08** (12.1×) | ¥6.53 → **¥0.57** (11.5×) | ¥2.88 → **¥0.36** (8.0×) |
 
 | P6 | P7 | P8 | P9 | P10 |
 |---|---|---|---|---|
 | 航空 U 形支架 | 径向发动机气缸 | 离心叶轮 | 微型螺旋楼梯 | 行星齿轮组件 |
-| ![P6](assets/benchmark06.gif) | ![P7](assets/benchmark07.gif) | ![P8](assets/benchmark08.gif) | ![P9](assets/benchmark09.gif) | ![P10](assets/benchmark10.gif) |
+| ![P6](../assets/benchmark06.gif) | ![P7](../assets/benchmark07.gif) | ![P8](../assets/benchmark08.gif) | ![P9](../assets/benchmark09.gif) | ![P10](../assets/benchmark10.gif) |
 | ¥15.21 → **¥3.10** (4.9×) | ¥17.42 → **¥0.53** (32.9×) | ¥32.75 → **¥1.20** (27.3×) | ¥12.80 → **¥1.45** (8.8×) | ¥11.43 → **¥0.73** (15.7×) |
 
-> 单 prompt 成本（CNY）：**CAD Skills → MAC**（成本降低倍数）。总计：**¥125.69 → ¥9.67（13.0×）**。原始数据见 [docs/qwen3.7_token.md](docs/qwen3.7_token.md)。
+> 单 prompt 成本（CNY）：**CAD Skills → MAC**（成本降低倍数）。总计：**¥125.69 → ¥9.67（13.0×）**。原始数据见 [docs/qwen3.7_token.md](../docs/qwen3.7_token.md)。
 
 > 设计你自己的打印品！参见 [§2 快速上手](#2-快速上手) 了解如何生成模型。
 
@@ -120,13 +120,13 @@ pip install --no-deps "aider-chat==0.82.3"
 > pip install --no-deps -e .
 > ```
 >
-> 最后一步同时注册 `mac-config-reset` 命令行脚本、并允许在任意目录（不只是仓库根）跑 `python -m multi_agent_cad.graph`。完整依赖清单见 [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml)。
+> 最后一步同时注册 `mac-config-reset` 命令行脚本、并允许在任意目录（不只是仓库根）跑 `python -m multi_agent_cad.graph`。完整依赖清单见 [requirements.txt](../requirements.txt) / [pyproject.toml](../pyproject.toml)。
 
 > **Windows**：在 Windows 上同样的 `conda env create` + `pip install --no-deps aider-chat==0.82.3` 流程可用——`trimesh` 和 `rtree` 来自 conda-forge 预编译包；`OCP` 由 `build123d` 的 PyPI 依赖 `cadquery-ocp-novtk` 传递性拉入。Windows 上不要走下面的纯 pip workaround——`trimesh`/`rtree` 的 native wheel 在 Windows 上不可靠。PowerShell 设 API key：`$env:DASHSCOPE_API_KEY = "sk-..."`（cmd.exe 用 `set DASHSCOPE_API_KEY=sk-...`）。conda 环境内跑 Web UI 用 `pip install -e ".[web]"`——`uvloop` 在 Windows 上自动跳过。Windows 不在 CI 里，但代码避开 Unix 专属 API、全程 UTF-8；遇到问题欢迎反馈。
 
 ### 配置
 
-编辑 [multi_agent_cad/config.py](multi_agent_cad/config.py)：
+编辑 [multi_agent_cad/config.py(config.py)：
 
 | 字段 | 作用 |
 |---|---|
@@ -154,7 +154,7 @@ MAC 通过 **OpenAI 兼容端点**调用模型。仓库默认指向阿里云百�
 | 本地（Ollama） | `http://localhost:11434/v1` | `qwen3-coder:32b` | 无需 API key |
 | Anthropic Claude | 经 OpenAI 兼容网关（OpenRouter / LiteLLM 代理） | `claude-sonnet-4-6` | Aider 修复阶段可经 litellm 原生支持 Claude |
 
-以 OpenAI 为例，编辑 [config.py](multi_agent_cad/config.py)：
+以 OpenAI 为例，编辑 [config.py(config.py)：
 
 ```python
 DS_BASE_URL = "https://api.openai.com/v1"
@@ -172,7 +172,7 @@ export DASHSCOPE_API_KEY="sk-..."              # bash / zsh
 # PowerShell:  $env:DASHSCOPE_API_KEY = "sk-..."
 ```
 
-> **关于模型名 `qwen3.8-max`**——它只是所配置端点上的模型 ID，此处指阿里云百炼的旗舰推理模型（多模态：支持文本 + 图像输入）。每个 `*_MODEL` 字段都接受你所选 provider 暴露的任意模型 ID，代码中没有任何 Qwen 专属逻辑。唯一的 Qwen 专属项是 `*_KWARGS` 里的 `enable_thinking` 开关——换其它 provider 时设 `*_KWARGS = {}`（[config.py](multi_agent_cad/config.py) 内附更多 provider 示例）。
+> **关于模型名 `qwen3.8-max`**——它只是所配置端点上的模型 ID，此处指阿里云百炼的旗舰推理模型（多模态：支持文本 + 图像输入）。每个 `*_MODEL` 字段都接受你所选 provider 暴露的任意模型 ID，代码中没有任何 Qwen 专属逻辑。唯一的 Qwen 专属项是 `*_KWARGS` 里的 `enable_thinking` 开关——换其它 provider 时设 `*_KWARGS = {}`（[config.py(config.py) 内附更多 provider 示例）。
 
 ### 两种运行方式
 
@@ -183,7 +183,7 @@ MAC 的同一套流水线既可从终端、也可从浏览器 UI 驱动。产出
 | 适用场景 | 中途介入修改 | 直观预览、更好上手 |
 | 中途注入修改 / 停止 | ✅ 每次 QA 后 10s checkpoint（`1` 自动 / `2` 注入 / `3` 停止） | ❌ 仅自动迭代 |
 | 3D 预览结果 | ❌ 需外部工具打开 STEP/STL | ✅ 浏览器内 `<model-viewer>` + 一键下载 |
-| 配置方式 | 编辑 [config.py](multi_agent_cad/config.py) | 表单填写 |
+| 配置方式 | 编辑 [config.py(config.py) | 表单填写 |
 | 输出位置 | 仓库根目录（`temp_*`） | 每任务临时目录（可选拷到指定路径） |
 
 详见下方 [终端](#终端) 与 [Web UI](#-web-ui)。
@@ -236,11 +236,11 @@ python -m multi_agent_cad.web                 # 监听 http://0.0.0.0:8000
 rm pipeline_cache/cad_brief.json pipeline_cache/architect_plan.json
 ```
 
-或代码层面绕过：在 [multi_agent_cad/graph.py](multi_agent_cad/graph.py) 的 `get_default_initial_state` 中设 `force_refresh: True`。
+或代码层面绕过：在 [multi_agent_cad/graph.py(graph.py) 的 `get_default_initial_state` 中设 `force_refresh: True`。
 
 ### 自定义 prompt
 
-编辑 [multi_agent_cad/config.py](multi_agent_cad/config.py) 的 `USER_REQUEST`，例如：
+编辑 [multi_agent_cad/config.py(config.py) 的 `USER_REQUEST`，例如：
 
 ```python
 USER_REQUEST = "Create a single solid circular flange as a STEP model in millimeters. The flange is a cylinder with an outside diameter of 80 mm and a thickness of 10 mm. Add a central vertical through-bore with diameter 30 mm."
@@ -278,7 +278,7 @@ USER_REQUEST = "Create a single solid circular flange as a STEP model in millime
 
 MAC 同时是一个白盒系统：每个中间产物（`CADBrief`、`ArchitectPlan`、`temp_design.py`、`temp_measurements_*.json`、`temp_missed_*.json`、QA 报告）都序列化到磁盘，可供人工审计。你可以在每次迭代的 checkpoint 处介入，覆盖通过的结果，并直接把额外的修改需求喂给 Aider 修复 prompt。
 
-完整基准方法论、每 prompt 的 token/成本明细、公平性分析与失败模式分析见 [quantified_quality.md](docs/quantified_quality.md) / [quantified_quality_cn.md](docs/quantified_quality_cn.md)。
+完整基准方法论、每 prompt 的 token/成本明细、公平性分析与失败模式分析见 [quantified_quality.md](../docs/quantified_quality.md) / [quantified_quality_cn.md](../docs/quantified_quality_cn.md)。
 
 ---
 
@@ -292,10 +292,10 @@ CAD 生成天生是多轮迭代过程：代码生成 → 执行 → 错误分析
 每个 agent 的输入是上一阶段的结构化 JSON 产出（`CADBrief`、`ArchitectPlan`），不是重新塞满的对话历史。Spec Planner 只读用户需求；Architect 只读 `CADBrief`；Coder 只读 `ArchitectPlan`；Aider 只读 QA 错误报告 + `build123d_reference.md`。没有任何 agent 需要反复阅读完整对话历史。在 10 个 prompt 基准测试中，这把总 token 数从 **103.9M → 0.90M（116×）**、总成本从 **¥125.69 → ¥9.67（13×）** 降下来，同时把特征通过率从 97.9% 提升到 99.3%。
 
 ### 🔍 白盒透明度 —— 任意阶段可审计或修改
-每个中间产物都在磁盘上：[pipeline_cache/cad_brief.json](pipeline_cache/cad_brief.json)、[pipeline_cache/architect_plan.json](pipeline_cache/architect_plan.json)、`temp_design_*.py`、`temp_measurements_*.json`（白盒特征尺寸）、`temp_missed_*.json`（运行时诊断，分类为 `MISSED_CUT` / `FILLET_FAILED` / `CHAMFER_FAILED`）、QA 报告。Autonomous Skill Loop 还暴露了一个**迭代 checkpoint** —— 每次 QA 完成后打印 STEP/STL 路径、QA 状态，并提供 10 秒窗口让用户选择自动迭代 / 用户介入 / 停止。中途介入时，你的修改需求会原样前置到 Aider 修复 prompt。
+每个中间产物都在磁盘上：[pipeline_cache/cad_brief.json](../pipeline_cache/cad_brief.json)、[pipeline_cache/architect_plan.json](../pipeline_cache/architect_plan.json)、`temp_design_*.py`、`temp_measurements_*.json`（白盒特征尺寸）、`temp_missed_*.json`（运行时诊断，分类为 `MISSED_CUT` / `FILLET_FAILED` / `CHAMFER_FAILED`）、QA 报告。Autonomous Skill Loop 还暴露了一个**迭代 checkpoint** —— 每次 QA 完成后打印 STEP/STL 路径、QA 状态，并提供 10 秒窗口让用户选择自动迭代 / 用户介入 / 停止。中途介入时，你的修改需求会原样前置到 Aider 修复 prompt。
 
 ### 🧠 混合路由 —— 每阶段独立选模，调用更自由，二次开发空间更大
-传统单 agent 把所有任务（需求解析、几何设计、代码生成、错误修复）压在一个模型上，只能选一个"全能型"昂贵模型。MAC 把这 4 个阶段解耦，**每个阶段可以独立选择模型**（见 [config.py](multi_agent_cad/config.py) 的 `SPEC_PLANNER_*` / `ARCHITECT_*` / `CODER_*` / `AIDER_*` / `REPAIR_*` 块，每块都有独立的 `MODEL` / `TEMPERATURE` / `MAX_TOKENS` / `KWARGS`，如思维链开关）：
+传统单 agent 把所有任务（需求解析、几何设计、代码生成、错误修复）压在一个模型上，只能选一个"全能型"昂贵模型。MAC 把这 4 个阶段解耦，**每个阶段可以独立选择模型**（见 [config.py(config.py) 的 `SPEC_PLANNER_*` / `ARCHITECT_*` / `CODER_*` / `AIDER_*` / `REPAIR_*` 块，每块都有独立的 `MODEL` / `TEMPERATURE` / `MAX_TOKENS` / `KWARGS`，如思维链开关）：
 
 - **Spec Planner**（需求解析）这种"读一段文字、产出结构化 JSON"的简单工作，可以挂便宜的轻量模型或本地小模型
 - **Geometric Architect**（几何设计）和 **Python Coder**（代码生成）这种需要空间想象和算法推理的复杂工作，才挂 qwen3.8-max 这类强模型
@@ -305,7 +305,7 @@ CAD 生成天生是多轮迭代过程：代码生成 → 执行 → 错误分析
 
 ### 🛡️ 确定性翻译器 —— 常见 CAD 操作零 token
 
-LLM-only CAD agent 每次生成代码都要烧 token。MAC 反其道而行：用确定性翻译器 [`_plan_to_code`](multi_agent_cad/nodes.py) 把 Coder 阶段的"读 JSON 写代码"工作完全脱离 LLM —— 直接从 `ArchitectPlan` 翻译成 build123d 代码，**零 token 成本**。支持 `extrude`、`revolve`、`hole`、`boolean_union/cut`、`pattern_linear/circular`、`mirror`、`fillet`、`chamfer`、`shell` 等常见 CAD 操作；只有不支持的步骤类型（`draft`、`rib`、无 `control_points` 的自定义多边形）才生成 `# TODO_AIDER` 占位符由 Aider 填充。
+LLM-only CAD agent 每次生成代码都要烧 token。MAC 反其道而行：用确定性翻译器 [`_plan_to_code`(nodes.py) 把 Coder 阶段的"读 JSON 写代码"工作完全脱离 LLM —— 直接从 `ArchitectPlan` 翻译成 build123d 代码，**零 token 成本**。支持 `extrude`、`revolve`、`hole`、`boolean_union/cut`、`pattern_linear/circular`、`mirror`、`fillet`、`chamfer`、`shell` 等常见 CAD 操作；只有不支持的步骤类型（`draft`、`rib`、无 `control_points` 的自定义多边形）才生成 `# TODO_AIDER` 占位符由 Aider 填充。
 
 这是 token 用量降到 1/116 的关键之一：常见几何操作走翻译器，只在边界情况调用 LLM。这也是 §4.4 混合路由的极致——把 Coder 阶段的模型调用降到零。
 
@@ -317,9 +317,9 @@ Token 效率（116×）和 API 调用次数减少（26×）直接转化为时间
 
 ### 🧐 QA Judge —— 模型自决终止迭代
 
-收到 QA 报告之后，模型自己评估报告是否合理，可选择提前结束迭代（ACCEPT/HALT），避免被强制跑满 5 轮重试。三种决策对应三种场景：**HALT** 用于需求自相矛盾（如 Ø80mm 孔在 60mm 宽块体里数学上切断），**REPAIR + `DEFENSIVE CORRECTION:` 前缀** 用于物理常识不足但数学可修的几何（如踏步 tangent 会断裂——Aider 按防御性覆盖执行，保留用户意图），**ACCEPT** 用于 QA 误报或设计意图已实质满足。当 `JUDGE_MULTIMODAL="auto"`（默认）时，Judge 同时收到从当前 STL 渲染出的 4 张等轴测 PNG 视图——让模型基于实际几何视觉判断而非单纯猜数字；非多模态模型自动回退到纯文本路径。用户也可以把参考图（草图、照片、截图）放到项目根目录的 `user_input_images/`——CLI 和 Web UI 模式共用同一份图片文件夹（Web UI 在 per-job tempdir 没图时自动 fallback 到项目根目录）。Spec Planner 读图提取几何意图，Judge 对比用户图 vs 渲染图。设计、反幻觉 5 层防御、配置与验证见 [multi_agent_cad/WORKFLOW.md §5 QA Judge](multi_agent_cad/WORKFLOW.md#5-qa-judge-node_judge_qa--phase-25)。
+收到 QA 报告之后，模型自己评估报告是否合理，可选择提前结束迭代（ACCEPT/HALT），避免被强制跑满 5 轮重试。三种决策对应三种场景：**HALT** 用于需求自相矛盾（如 Ø80mm 孔在 60mm 宽块体里数学上切断），**REPAIR + `DEFENSIVE CORRECTION:` 前缀** 用于物理常识不足但数学可修的几何（如踏步 tangent 会断裂——Aider 按防御性覆盖执行，保留用户意图），**ACCEPT** 用于 QA 误报或设计意图已实质满足。当 `JUDGE_MULTIMODAL="auto"`（默认）时，Judge 同时收到从当前 STL 渲染出的 4 张等轴测 PNG 视图——让模型基于实际几何视觉判断而非单纯猜数字；非多模态模型自动回退到纯文本路径。用户也可以把参考图（草图、照片、截图）放到项目根目录的 `user_input_images/`——CLI 和 Web UI 模式共用同一份图片文件夹（Web UI 在 per-job tempdir 没图时自动 fallback 到项目根目录）。Spec Planner 读图提取几何意图，Judge 对比用户图 vs 渲染图。设计、反幻觉 5 层防御、配置与验证见 [multi_agent_cad/WORKFLOW.md §5 QA Judge](WORKFLOW.md#5-qa-judge-node_judge_qa--phase-25)。
 
-完整流水线图（Mermaid）、GraphState 定义、各阶段设计理据与关键实现特性见 [multi_agent_cad/WORKFLOW.md](multi_agent_cad/WORKFLOW.md)。
+完整流水线图（Mermaid）、GraphState 定义、各阶段设计理据与关键实现特性见 [multi_agent_cad/WORKFLOW.md(WORKFLOW.md)。
 
 ---
 
@@ -355,14 +355,14 @@ Token 效率（116×）和 API 调用次数减少（26×）直接转化为时间
 
 ## 📄 许可证
 
-MIT —— 见 [LICENSE](LICENSE)。
+MIT —— 见 [LICENSE](../LICENSE)。
 
-内置的 [`packages/cadpy`](packages/cadpy) STEP/GLB 运行时源自 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD Skills），按其原始 MIT 协议再分发——见 [packages/cadpy/LICENSE](packages/cadpy/LICENSE)。
+内置的 [`packages/cadpy`](../packages/cadpy) STEP/GLB 运行时源自 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD Skills），按其原始 MIT 协议再分发——见 [packages/cadpy/LICENSE](../packages/cadpy/LICENSE)。
 
 ## 🙏 致谢
 
 - [Tsinghua University, IEI Lab](https://maureenzou.github.io/lab.html) —— 本项目所属实验室，提供研究环境与导师指导
-- [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD Skills）—— 对比基线 `cad skill` 的来源；本项目的 10 个 benchmark prompt（P1–P10）取自该项目 [benchmarks/](https://github.com/earthtojake/text-to-cad/tree/main/benchmarks) 目录。内置的 [`packages/cadpy`](packages/cadpy) 运行时同样源自该项目，保留其原始 MIT 版权
+- [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD Skills）—— 对比基线 `cad skill` 的来源；本项目的 10 个 benchmark prompt（P1–P10）取自该项目 [benchmarks/](https://github.com/earthtojake/text-to-cad/tree/main/benchmarks) 目录。内置的 [`packages/cadpy`](../packages/cadpy) 运行时同样源自该项目，保留其原始 MIT 版权
 - [build123d](https://github.com/gumyr/build123d) —— 代数 B-rep CAD 内核
 - [LangGraph](https://langchain-ai.github.io/langgraph/) —— 有状态 agent 编排
 - [Aider](https://aider.chat/) —— LLM 驱动的代码修复

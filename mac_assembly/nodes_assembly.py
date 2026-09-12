@@ -17,7 +17,9 @@ Stages and their reuse profile:
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -27,6 +29,8 @@ if str(_REPO_ROOT) not in sys.path:
 
 from mac_assembly import config_assembly as cfg
 from mac_assembly.assembly_codegen import (
+    _anchor_axis_letter,
+    _toposort_mates,
     postprocess_axial_offsets,
     run_assembly_script,
     write_assembly_script,
@@ -42,6 +46,9 @@ from mac_assembly.llm_utils import (
     encode_png_data_url,
 )
 from mac_assembly.part_generator import (
+    _load_cumulative_tokens,
+    is_non_retryable_error,
+    load_explicit_accepted_cache,
     run_part,
     run_part_builder,
     run_part_builder_remodel,
@@ -50,16 +57,22 @@ from mac_assembly.part_generator import (
     run_part_with_features,
 )
 from mac_assembly.schemas_assembly import (
+    AnchorKind,
     AssemblyBrief,
     AssemblyErrorType,
     AssemblyGraphState,
     AssemblyJudgeAction,
     AssemblyJudgeDecision,
     AssemblyQAReport,
+    MateType,
     MatingPlan,
     PartResult,
+    PartSpec,
+    part_spec_fingerprint,
 )
+from multi_agent_cad.config import LLM_API_TIMEOUT as _LLM_API_TIMEOUT
 from multi_agent_cad.image_preprocess import (
+    _SUPPORTED_EXTENSIONS,
     _encode_jpeg_data_url,
     _load_user_images,
 )
@@ -92,6 +105,115 @@ def _image_fingerprint(images_dir: Path) -> str:
     return h.hexdigest()[:16]
 
 
+def _dir_has_images(directory: Path) -> bool:
+    """True when the directory holds at least one loadable image file --
+    the same extension set ``_load_user_images`` scans for."""
+    try:
+        return any(
+            f.is_file() and f.suffix.lower() in _SUPPORTED_EXTENSIONS
+            for f in directory.iterdir()
+        )
+    except OSError:
+        return False
+
+
+def _input_images_dir(work_dir: Path) -> Path:
+    """Resolve the user-input images directory WITHOUT depending on the
+    process CWD (a resume launched from another directory previously
+    fingerprinted/loaded a different -- empty -- directory, silently
+    invalidating the Decomposer cache and starving the Judge's
+    user_image[N] evidence).
+
+    Resolution order: a ``user_input_images`` INSIDE the job directory
+    that actually CONTAINS images (stable across resumes; an empty one --
+    e.g. left behind by a failed bootstrap -- no longer shadows the CWD
+    source), then the legacy repo-root CWD location (backward compatible:
+    same-directory runs are unchanged).
+
+    Persistence: when images are found at the CWD location, they are
+    COPIED into the job directory on first use (idempotent, copy2 keeps
+    mtime_ns so ``_image_fingerprint``'s name+mtime_ns+size hash is stable
+    across the copy and the Decomposer cache does not invalidate). Every
+    later caller -- including a resume launched from a different CWD --
+    then resolves the SAME images from the self-contained job directory,
+    so the CWD fallback is a one-time bootstrap, not a permanent
+    dependency. If the copy fails (read-only job dir etc.) the CWD path
+    is still returned (old behaviour, with a warning).
+    """
+    wd_images = Path(work_dir) / "user_input_images"
+    if wd_images.is_dir() and _dir_has_images(wd_images):
+        return wd_images
+    cwd_images = Path.cwd() / "user_input_images"
+    if not cwd_images.is_dir():
+        return cwd_images
+    if not _dir_has_images(cwd_images):
+        return cwd_images
+    try:
+        import shutil
+
+        files = sorted(f for f in cwd_images.iterdir() if f.is_file())
+        wd_images.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            dest = wd_images / f.name
+            if not dest.exists():
+                shutil.copy2(f, dest)
+        return wd_images
+    except OSError as exc:
+        print(f"[assembly] WARNING: cannot persist user input images into "
+              f"{wd_images} ({exc}); falling back to the CWD directory")
+    return cwd_images
+
+
+def _prune_part_results_for_brief(
+    brief: AssemblyBrief, part_results: dict[str, PartResult] | None
+) -> dict[str, PartResult]:
+    """Drop stale PartResults after a (re)composition (P0-2).
+
+    - entries for part_ids that no longer exist in the brief are removed;
+    - entries whose ``spec_fingerprint`` no longer matches the current
+      PartSpec are removed, so ``prev.ok`` can never resurrect stale
+      geometry after a recompose changed the spec under the same part_id
+      (description / builder params / base_body / features / attachment);
+    - a template whose entry was dropped also drops its reuse instances
+      (they would copy a stale template STEP -- geometry is shared);
+    - legacy results without a fingerprint are treated as unvalidated and
+      dropped (rebuild), matching the "no fingerprint -> needs validation"
+      compatibility rule.
+
+    Returns a NEW dict; the input is never mutated.
+    """
+    results = dict(part_results or {})
+    if not results:
+        return results
+    fps = _effective_part_fingerprints(brief)
+    results = {pid: r for pid, r in results.items() if pid in fps}
+    dropped: set[str] = set()
+    for pid, r in results.items():
+        if getattr(r, "spec_fingerprint", "") != fps[pid]:
+            dropped.add(pid)
+    # Propagate through the reuse relation: an instance's geometry IS its
+    # template's geometry.
+    for p in brief.parts:
+        if p.reuses_part_id in dropped:
+            dropped.add(p.part_id)
+    for pid in dropped:
+        results.pop(pid, None)
+    return results
+
+
+def _effective_part_fingerprints(brief: AssemblyBrief) -> dict[str, str]:
+    """Include template geometry identity in reuse-instance cache keys."""
+    import hashlib
+
+    base = {p.part_id: part_spec_fingerprint(p) for p in brief.parts}
+    out = dict(base)
+    for p in brief.parts:
+        if p.reuses_part_id is not None:
+            payload = f"{base[p.part_id]}:{base[p.reuses_part_id]}"
+            out[p.part_id] = hashlib.sha256(payload.encode()).hexdigest()[:16]
+    return out
+
+
 def _log(state, msg: str) -> list[str]:
     return list(state.get("execution_log", [])) + [msg]
 
@@ -111,27 +233,39 @@ def node_decomposer(state: AssemblyGraphState) -> dict:
     work_dir = Path(state["work_dir"])
     recompose_feedback = state.get("repair_context", "")
 
-    images_dir = Path.cwd() / "user_input_images"
+    images_dir = _input_images_dir(work_dir)
     image_fp = _image_fingerprint(images_dir)
+    request_fp = hashlib.sha256(user_request.encode("utf-8")).hexdigest()
+    decomposer_prompt = _prompt("decomposer.md")
+    prompt_fp = hashlib.sha256(decomposer_prompt.encode("utf-8")).hexdigest()
 
     cache = work_dir / "assembly_cache" / "assembly_brief.json"
     if cache.is_file() and not recompose_feedback:
         try:
             raw_data = json.loads(cache.read_text(encoding="utf-8"))
             cached_fp = raw_data.pop("__image_fingerprint", "") if isinstance(raw_data, dict) else ""
+            cached_request_fp = raw_data.pop("__request_fingerprint", "") if isinstance(raw_data, dict) else ""
+            cached_prompt_fp = raw_data.pop("__decomposer_prompt_fingerprint", "") if isinstance(raw_data, dict) else ""
             # Cache invalidation: changing images (add/remove/edit) MUST
             # invalidate the brief even when the text prompt is unchanged --
             # the Decomposer is multimodal and the previous brief may have
             # read geometry from a now-replaced image. Also invalidate when
             # the user first adds images to a previously text-only brief.
-            if cached_fp == image_fp:
+            if (cached_fp == image_fp and cached_request_fp == request_fp
+                    and cached_prompt_fp == prompt_fp):
                 brief = AssemblyBrief.model_validate(raw_data)
                 return {
                     "assembly_brief": brief,
                     "execution_log": _log(state, "decomposer: cache hit"),
                     "node_history": state.get("node_history", []) + ["decomposer"],
                 }
-            print(f"[assembly] decomposer: cache miss (images changed)")
+            if cached_fp != image_fp:
+                reason = "images changed"
+            elif cached_request_fp != request_fp:
+                reason = "request changed"
+            else:
+                reason = "decomposer prompt changed"
+            print(f"[assembly] decomposer: cache miss ({reason})")
         except Exception:  # noqa: BLE001 - stale cache -> regenerate
             cache.unlink(missing_ok=True)
 
@@ -154,7 +288,7 @@ def node_decomposer(state: AssemblyGraphState) -> dict:
 
     try:
         raw = call_llm_json(
-            _prompt("decomposer.md"),
+            decomposer_prompt,
             content,
             model=cfg.DECOMPOSER_MODEL,
             temperature=cfg.DECOMPOSER_TEMPERATURE,
@@ -172,6 +306,13 @@ def node_decomposer(state: AssemblyGraphState) -> dict:
         traceback.print_exc()
         return {
             "assembly_brief": None,
+            # BUG-007: a failed LLM call still consumes the
+            # DECOMPOSER_MAX_RUNS budget. Previously the counter was
+            # only incremented on the success path, so failed calls
+            # looped unbounded via the FATAL -> repair -> decomposer
+            # route, burning the outer ASSEMBLY_MAX_ITERATIONS budget
+            # instead of the per-route DECOMPOSER_MAX_RUNS.
+            "decomposer_llm_calls": state.get("decomposer_llm_calls", 0) + 1,
             "execution_log": _log(state, f"decomposer FAILED: {exc}"),
             "node_history": state.get("node_history", []) + ["decomposer"],
         }
@@ -181,16 +322,28 @@ def node_decomposer(state: AssemblyGraphState) -> dict:
     # with changed images skips the stale cache and regenerates.
     cache_data = brief.model_dump(mode="json")
     cache_data["__image_fingerprint"] = image_fp
+    cache_data["__request_fingerprint"] = request_fp
+    cache_data["__decomposer_prompt_fingerprint"] = prompt_fp
     cache.write_text(json.dumps(cache_data, indent=2), encoding="utf-8")
+
+    # A (re)composed brief invalidates stale part results NOW (not in
+    # part_builder) so route_after_mating sees changed parts as not-ready
+    # and routes through part_builder instead of assembling old geometry.
+    pruned_results = _prune_part_results_for_brief(
+        brief, state.get("part_results")
+    )
+    dropped = sorted(set((state.get("part_results") or {})) - set(pruned_results))
 
     return {
         "assembly_brief": brief,
-        "decomposer_runs": state.get("decomposer_runs", 0) + 1,
+        "part_results": pruned_results,
+        "decomposer_llm_calls": state.get("decomposer_llm_calls", 0) + 1,
         "repair_context": "",
         "execution_log": _log(
             state,
             f"decomposer: {len(brief.parts)} parts, "
-            f"{len(brief.interfaces)} interfaces",
+            f"{len(brief.interfaces)} interfaces"
+            + (f"; invalidated stale results: {dropped}" if dropped else ""),
         ),
         "node_history": state.get("node_history", []) + ["decomposer"],
     }
@@ -199,6 +352,20 @@ def node_decomposer(state: AssemblyGraphState) -> dict:
 # ---------------------------------------------------------------------------
 # Agent 1b: Mating Architect (the HOW -- structured MateSpecs)
 # ---------------------------------------------------------------------------
+
+
+def _anchor_axis_for_validation(anchor) -> str | None:
+    """Principal axis an anchor defines, for plan validation.
+
+    Differs from codegen's ``_get_anchor_axis`` for AXIS_POINT anchors:
+    there, ``None`` for |offset_mm| > 1 means "postprocess_axial_offsets
+    must leave the LLM's axial_offset_mm alone", not "this anchor defines
+    no axis" -- reusing it as a validation gate rejected the mating
+    prompt's own documented pattern (joint-end datums at half the part
+    extent; the prompt's canonical revolute example uses offsets 12.5 and
+    -30.0, which killed the telescopic-crane run on 2026-09-09).
+    """
+    return _anchor_axis_letter(anchor)
 
 
 def _validate_mating_plan(plan: MatingPlan, brief: AssemblyBrief) -> list[str]:
@@ -211,9 +378,6 @@ def _validate_mating_plan(plan: MatingPlan, brief: AssemblyBrief) -> list[str]:
     deterministic translator can actually express (face_to_face +Z
     stacking requires top/bottom faces).
     """
-    from mac_assembly.assembly_codegen import _get_anchor_axis, _toposort_mates
-    from mac_assembly.schemas_assembly import AnchorKind, MateType
-
     errors: list[str] = []
     part_ids = {p.part_id for p in brief.parts}
 
@@ -252,6 +416,15 @@ def _validate_mating_plan(plan: MatingPlan, brief: AssemblyBrief) -> list[str]:
                     f"mate {m.mate_id!r}: {m.mate_type.value} requires 'slide_axis' "
                     "(the slide/rotation direction x/y/z)"
                 )
+        if m.mate_type == MateType.LINEAR and abs(
+            math.remainder(float(m.angle_deg), 360.0)
+        ) > 1e-6:
+            errors.append(
+                f"mate {m.mate_id!r}: linear mates cannot carry a static "
+                f"angle_deg (got {m.angle_deg}) -- build123d LinearJoint "
+                f"silently forces angle=0 for a RigidJoint counterpart; use "
+                f"cylindrical if the rotation about the slide axis matters"
+            )
         if m.mate_type == MateType.FACE_TO_FACE:
             if m.fixed_anchor.kind == AnchorKind.FACE and m.fixed_anchor.face != "top":
                 errors.append(
@@ -266,8 +439,8 @@ def _validate_mating_plan(plan: MatingPlan, brief: AssemblyBrief) -> list[str]:
                     f"got {m.moving_anchor.face!r}"
                 )
         # Revolute/coaxial/linear/cylindrical mates need both anchors to
-        # define a principal axis (cylinder selector, small-offset
-        # axis_point, or face normal) and the axes must agree. Without
+        # define a principal axis (cylinder selector, axis_point, or face
+        # normal) and the axes must agree. Without
         # this check, AssemblyHelper.revolute_frame()/coaxial()/linear_frame()
         # raises at codegen time -- catch the LLM drift at the stage
         # boundary instead.
@@ -275,13 +448,13 @@ def _validate_mating_plan(plan: MatingPlan, brief: AssemblyBrief) -> list[str]:
             MateType.REVOLUTE, MateType.COAXIAL,
             MateType.LINEAR, MateType.CYLINDRICAL,
         ):
-            fa_axis = _get_anchor_axis(m.fixed_anchor)
-            ma_axis = _get_anchor_axis(m.moving_anchor)
+            fa_axis = _anchor_axis_for_validation(m.fixed_anchor)
+            ma_axis = _anchor_axis_for_validation(m.moving_anchor)
             if fa_axis is None or ma_axis is None:
                 errors.append(
                     f"mate {m.mate_id!r}: {m.mate_type.value} requires both "
                     f"anchors to define a principal axis (cylinder selector, "
-                    f"small-offset axis_point, or face); got fixed="
+                    f"axis_point, or face); got fixed="
                     f"{fa_axis!r}, moving={ma_axis!r}"
                 )
             elif fa_axis != ma_axis:
@@ -391,8 +564,22 @@ def _validate_mating_plan(plan: MatingPlan, brief: AssemblyBrief) -> list[str]:
                     f"at one feature root."
                 )
 
+    # Template-only parts (referenced by reuses_part_id but never directly
+    # mated) participate in geometry generation but NOT in the assembly
+    # tree. Exclude them from the single-root check so the validator
+    # doesn't flag them as "unmoved roots".
+    mated_ids = {
+        m.fixed_part_id for m in plan.mates
+    } | {m.moving_part_id for m in plan.mates}
+    template_only_ids = {
+        p.part_id for p in brief.parts
+        if any(q.reuses_part_id == p.part_id for q in brief.parts)
+        and p.part_id not in mated_ids
+    }
+    graph_part_ids = part_ids - template_only_ids
+
     moved = [m.moving_part_id for m in plan.mates]
-    unmoved = part_ids - set(moved)
+    unmoved = graph_part_ids - set(moved)
     if plan.mates:
         if not unmoved:
             errors.append("every part is moved by some mate -- need a fixed root")
@@ -403,17 +590,29 @@ def _validate_mating_plan(plan: MatingPlan, brief: AssemblyBrief) -> list[str]:
             )
         else:
             # B6: acyclicity -- a mate that never becomes ready is on a cycle.
-            ordered = _toposort_mates(plan.mates, part_ids)
+            ordered = _toposort_mates(plan.mates, graph_part_ids)
             if len(ordered) < len(plan.mates):
-                stuck = [m.mate_id for m in plan.mates if m not in ordered]
+                ordered_ids = {m.mate_id for m in ordered}
+                stuck = [m.mate_id for m in plan.mates if m.mate_id not in ordered_ids]
                 errors.append(f"mate graph contains a cycle involving: {stuck}")
 
-    covered = {(m.fixed_part_id, m.moving_part_id) for m in plan.mates}
+    # Coverage is checked on the UNORDERED part pair: the brief's
+    # part_a/part_b direction is advisory (the Decomposer picks it before
+    # the root is known), and the Architect may legitimately flip
+    # fixed/moving on a mate to satisfy the single-root-tree constraint
+    # above -- flipping does not change the assembled geometry (a mate
+    # fixes the RELATIVE pose; direction only picks the placement order).
+    # Directionality is owned by the tree checks above; this check only
+    # verifies each interface is realized by SOME mate between the same
+    # two parts (matching the Architect prompt's "between the same two
+    # parts" contract).
+    covered = {frozenset((m.fixed_part_id, m.moving_part_id)) for m in plan.mates}
     for itf in brief.interfaces:
-        if (itf.part_a, itf.part_b) not in covered:
+        if frozenset((itf.part_a, itf.part_b)) not in covered:
             errors.append(
-                f"interface {itf.interface_id!r} ({itf.part_a} -> {itf.part_b}) "
-                "has no covering mate"
+                f"interface {itf.interface_id!r} ({itf.part_a} <-> {itf.part_b}) "
+                "has no covering mate between its two parts (in either "
+                "direction)"
             )
     return errors
 
@@ -451,6 +650,10 @@ def node_mating_architect(state: AssemblyGraphState) -> dict:
                 plan = MatingPlan.model_validate(raw_data)
                 errs = _validate_mating_plan(plan, brief)
                 if not errs:
+                    # Apply deterministic normalizers to cached plans too.
+                    # Previously only newly generated plans were processed,
+                    # so a known double-offset bug survived every resume.
+                    plan = postprocess_axial_offsets(plan, brief)
                     return {
                         "mating_plan": plan,
                         "execution_log": _log(state, "mating_architect: cache hit"),
@@ -491,6 +694,12 @@ def node_mating_architect(state: AssemblyGraphState) -> dict:
             if not validation_errors:
                 plan = candidate
                 break
+            print(
+                f"[assembly] mating_architect attempt {attempt+1}: "
+                f"{len(validation_errors)} validation error(s):"
+            )
+            for e in validation_errors[:8]:
+                print(f"  - {e}")
         except Exception as exc:  # noqa: BLE001
             validation_errors = [f"parse/validation error: {exc}"]
             print(f"[assembly] mating_architect attempt {attempt+1}: parse/validation error: {exc}")
@@ -501,6 +710,17 @@ def node_mating_architect(state: AssemblyGraphState) -> dict:
             print(f"  - {e}")
         return {
             "mating_plan": None,
+            # Feed the errors back so route_after_mating can loop into
+            # another architect run (remate machinery) while the
+            # MATING_MAX_RUNS budget lasts -- a first-pass failure used to
+            # be terminal, killing runs in minutes (telescopic crane,
+            # 2026-09-09).
+            "mating_architect_runs": state.get("mating_architect_runs", 0) + 1,
+            "repair_context": (
+                "The previous mating plan was rejected by deterministic "
+                "validation. Fix ALL of these:\n"
+                + "\n".join(f"- {e}" for e in validation_errors[:8])
+            ),
             "execution_log": _log(
                 state,
                 "mating_architect FAILED: " + " | ".join(validation_errors[:4]),
@@ -526,12 +746,12 @@ def node_mating_architect(state: AssemblyGraphState) -> dict:
 
     return {
         "mating_plan": plan,
-        "mating_runs": state.get("mating_runs", 0) + 1,
+        "mating_architect_runs": state.get("mating_architect_runs", 0) + 1,
         "repair_context": "",
         "execution_log": _log(
             state,
             f"mating_architect: {len(plan.mates)} mates "
-            f"(run {state.get('mating_runs', 0) + 1})",
+            f"(run {state.get('mating_architect_runs', 0) + 1})",
         ),
         "node_history": state.get("node_history", []) + ["mating_architect"],
     }
@@ -548,7 +768,13 @@ def node_part_builder(state: AssemblyGraphState) -> dict:
     work_dir = Path(state["work_dir"])
     parts_root = work_dir / "parts"
 
-    existing: dict[str, PartResult] = dict(state.get("part_results") or {})
+    # Defensive prune (idempotent): the decomposer already pruned after a
+    # recompose, but part_builder can also be entered from the
+    # REMODEL_PARTS / PART_MISSING routes with results from an older brief
+    # shape in state.
+    existing: dict[str, PartResult] = _prune_part_results_for_brief(
+        brief, state.get("part_results")
+    )
     remodel_ids = set(state.get("remodel_part_ids") or [])
     feedback = state.get("repair_context", "")
 
@@ -580,39 +806,90 @@ def node_part_builder(state: AssemblyGraphState) -> dict:
     # Stable two-bucket sort: templates first, then instances. Within
     # each bucket the Decomposer's order is preserved. This guarantees
     # the template's STEP exists before any instance tries to copy it.
+    # (Index map instead of list.index: list.index is a linear scan with
+    # pydantic __eq__ per element -- O(n^2) with surprising equality
+    # semantics; the map is exact and O(n).)
+    brief_order = {p.part_id: i for i, p in enumerate(brief.parts)}
     ordered_parts = sorted(
         brief.parts,
         key=lambda p: (
             1 if p.reuses_part_id is not None else 0,
-            brief.parts.index(p),
+            brief_order[p.part_id],
         ),
     )
+
+    fps = _effective_part_fingerprints(brief)
+
+    def _stamp(spec: PartSpec, result: PartResult) -> PartResult:
+        """Attach the spec fingerprint so a later recompose can tell this
+        result apart from one generated under a different spec."""
+        fp = fps.get(spec.part_id, "")
+        if getattr(result, "spec_fingerprint", "") == fp:
+            return result
+        return result.model_copy(update={"spec_fingerprint": fp})
+
+    def _keep_best(spec: PartSpec, new_result: PartResult,
+                   prev: PartResult | None) -> PartResult:
+        """Regression guard: a FAILED rebuild never evicts a usable (ok,
+        possibly degraded) result built from the SAME spec. Without this, a
+        remodel round replaces a working degraded part with ok=False and
+        the whole assembly dies at part_missing even though usable geometry
+        existed a round earlier. Only same-spec results are protected --
+        _prune_part_results_for_brief already drops fingerprint-mismatched
+        entries, this is defense in depth."""
+        if (
+            prev is not None
+            and prev.ok
+            and not new_result.ok
+            and getattr(prev, "spec_fingerprint", "") == fps[spec.part_id]
+        ):
+            print(f"[assembly] part {spec.part_id}: rebuild FAILED "
+                  f"({new_result.error}); regression guard keeps the "
+                  f"previous usable result "
+                  f"(degraded={bool(getattr(prev, 'degraded', False))})")
+            return prev
+        return new_result
 
     results = dict(existing)
     for spec in ordered_parts:
         prev = existing.get(spec.part_id)
-        if prev is not None and prev.ok and spec.part_id not in remodel_ids:
+        # Reuse guard: a previous result may only be reused when it is a
+        # CLEAN success (ok, not degraded) produced from the CURRENT spec
+        # (fingerprint match). A degraded result (generation failed but a
+        # STEP exists) must be rebuilt whenever part_builder is entered,
+        # never silently skipped by prev.ok.
+        if (
+            prev is not None
+            and prev.ok
+            and not getattr(prev, "degraded", False)
+            and spec.part_id not in remodel_ids
+            and getattr(prev, "spec_fingerprint", "") == fps[spec.part_id]
+        ):
             continue
         part_feedback = ""
         if spec.part_id in remodel_ids and feedback:
             part_feedback = feedback
 
+        # Explicit user-approved disk caches apply uniformly before choosing
+        # v2, v3, builder, reuse, or remodel generation.  Acceptance is an
+        # operator decision and therefore supersedes stale QA/remodel feedback
+        # carried in workflow state; invalidation is explicit (remove/update
+        # accepted_part_cache.json or change the request fingerprint).
+        accepted = load_explicit_accepted_cache(spec, parts_root)
+        if accepted is not None:
+            results[spec.part_id] = _stamp(spec, accepted)
+            continue
+
         # Reuse path: skip MAC pipeline, copy template's STEP/STL/py.
-        # Prefer the result from THIS iteration (templates-first sort
-        # means the template was just processed one or more iterations
-        # ago in the same loop) so a freshly generated or remodeled
-        # template's new STEP is what gets copied; fall back to the
-        # pre-node state only if the template wasn't touched this round.
-        # Without this lookup order, `existing.get` returns the STALE
-        # pre-iteration result and the instance copies the template's
-        # old (pre-remodel) STEP.
+        # `results` starts as a copy of the pruned pre-node state and every
+        # processed template writes its fresh result into it, so a plain
+        # lookup already prefers the THIS-iteration result (a remodeled
+        # template's new STEP) and falls back to the pre-node result only
+        # when the template wasn't touched this round.
         if spec.reuses_part_id is not None:
-            tmpl_res = (
-                results.get(spec.reuses_part_id)
-                or existing.get(spec.reuses_part_id)
-            )
+            tmpl_res = results.get(spec.reuses_part_id)
             result = run_part_reuse(spec, parts_root, template_result=tmpl_res)
-            results[spec.part_id] = result
+            results[spec.part_id] = _stamp(spec, _keep_best(spec, result, prev))
             status = "OK (reuse)" if result.ok else f"FAILED ({result.error})"
             print(f"[assembly] part {spec.part_id}: {status}")
             continue
@@ -628,13 +905,19 @@ def node_part_builder(state: AssemblyGraphState) -> dict:
         # detected inside run_part_with_features via temp_v3_spec.json.
         if spec.base_body is not None:
             result = run_part_with_features(spec, parts_root, part_feedback)
-            results[spec.part_id] = result
+            results[spec.part_id] = _stamp(spec, _keep_best(spec, result, prev))
             if result.ok:
-                status = "OK (v3 base+features)"
-                if result.error:
-                    # continue-on-failure: base body failed but STEP exists,
-                    # assembly will use the failed geometry as-is.
-                    status += f" [WARN: {result.error}]"
+                if getattr(result, "degraded", False):
+                    # continue-on-failure: base body generation failed but a
+                    # STEP exists; the assembly proceeds with that geometry
+                    # for inspection. NOT a clean success -- the result is
+                    # flagged degraded and will be rebuilt on any later
+                    # part_builder pass instead of being reused from cache.
+                    status = "DEGRADED (v3 base+features)"
+                    for w in getattr(result, "warnings", None) or []:
+                        status += f" [WARN: {w}]"
+                else:
+                    status = "OK (v3 base+features)"
             else:
                 status = f"FAILED ({result.error})"
             print(f"[assembly] part {spec.part_id}: {status}")
@@ -652,65 +935,109 @@ def node_part_builder(state: AssemblyGraphState) -> dict:
         if spec.builder:
             if not part_feedback:
                 result = run_part_builder(spec, parts_root)
-                results[spec.part_id] = result
+                results[spec.part_id] = _stamp(spec, _keep_best(spec, result, prev))
                 status = "OK (builder)" if result.ok else f"FAILED ({result.error})"
                 print(f"[assembly] part {spec.part_id}: {status}")
                 continue
             patched = run_part_builder_remodel(spec, parts_root, part_feedback)
-            if patched is not None:
-                # run_part_builder_remodel returns None on any failure
-                # (LLM call, param validation, build crash) -- a non-None
-                # result is success.
-                results[spec.part_id] = patched
+            if patched.ok:
+                results[spec.part_id] = _stamp(spec, patched)
                 print(f"[assembly] part {spec.part_id}: OK (builder remodel)")
                 continue
-            # Builder remodel failed: store a failed result and let the
-            # Judge / FeedbackRouter route (REMODEL_PARTS / RECOMPOSE /
-            # HALT). Does NOT fall through to run_part (LLM full regen)
-            # -- the regen geometry's topology may not match the builder-
-            # derived SELECTOR anchors the Mating Architect specified,
-            # and it re-introduces the LLM-writes-kinematic-features
-            # failure mode builders avoid. Symmetric with the v3
-            # base_body path (no fall-through, see L597-602).
-            results[spec.part_id] = PartResult(
-                part_id=spec.part_id,
-                ok=False,
-                attempts=1,
-                error="builder remodel unavailable/failed (LLM param adjust or build)",
-            )
-            print(f"[assembly] part {spec.part_id}: FAILED (builder remodel)")
+            # Builder remodel failed: store the failed result with its
+            # specific error (LLM call failed / param validation failed /
+            # build crashed) so the Judge / FeedbackRouter can route
+            # accordingly (REMODEL_PARTS / RECOMPOSE / HALT). Does NOT
+            # fall through to run_part (LLM full regen) -- the regen
+            # geometry's topology may not match the builder-derived
+            # SELECTOR anchors the Mating Architect specified, and it
+            # re-introduces the LLM-writes-kinematic-features failure
+            # mode builders avoid. Symmetric with the v3 base_body path
+            # (no fall-through, see L597-602).
+            results[spec.part_id] = _stamp(spec, _keep_best(spec, patched, prev))
+            print(f"[assembly] part {spec.part_id}: FAILED (builder remodel: {patched.error})")
             continue
 
         # Remodel path: patch the existing design with Aider (preserves
         # verified features, fewer tokens) before falling back to a full
         # from-scratch regeneration. Skipped for builder parts (handled
-        # above) because their audit py file is non-executable.
-        if spec.part_id in remodel_ids and part_feedback and not spec.builder:
+        # above by the `if spec.builder:` block, which always continues)
+        # because their audit py file is non-executable.
+        if spec.part_id in remodel_ids and part_feedback:
             patched = run_part_remodel(spec, parts_root, part_feedback)
             if patched is not None and patched.ok:
-                results[spec.part_id] = patched
+                results[spec.part_id] = _stamp(spec, patched)
                 print(f"[assembly] part {spec.part_id}: OK (aider remodel)")
+                continue
+            if (
+                patched is not None
+                and not patched.ok
+                and is_non_retryable_error(patched.error)
+            ):
+                # P0-2: auth/endpoint/dependency failure -- full
+                # regeneration cannot succeed either; store the classified
+                # error and skip the fallback (the router routes to END).
+                results[spec.part_id] = _stamp(
+                    spec, _keep_best(spec, patched, prev))
+                print(f"[assembly] part {spec.part_id}: FAILED "
+                      f"(aider remodel, non-retryable: {patched.error})")
                 continue
             print(f"[assembly] part {spec.part_id}: aider remodel unavailable/"
                   f"failed -> full regeneration")
 
         result: PartResult | None = None
         for attempt in range(cfg.PART_MAX_ATTEMPTS):
+            # Retry feedback policy: attempt 0 carries the full QA feedback
+            # (the corrective phrasing may itself have contributed to the
+            # failure), later attempts keep a COMPACTED version -- the
+            # leading hard-constraint lines -- instead of dropping all
+            # feedback, so the regeneration still knows what was wrong.
+            if attempt == 0 or not part_feedback:
+                attempt_feedback = part_feedback
+            else:
+                attempt_feedback = (
+                    "Previous correction attempt failed. Regenerate from "
+                    "scratch, strictly honouring these constraints:\n"
+                    + "\n".join(part_feedback.splitlines()[:6])
+                )
             result = run_part(
                 spec,
                 parts_root,
-                feedback=part_feedback if attempt == 0 else "",
+                feedback=attempt_feedback,
                 force_refresh=attempt > 0 or bool(part_feedback),
             )
             result.attempts = attempt + 1
             if result.ok:
                 break
-        results[spec.part_id] = result
+            if is_non_retryable_error(result.error):
+                # P0-2: configuration/infrastructure failure (missing API
+                # key, auth rejection, bad endpoint/model, missing
+                # dependency) -- retrying the identical environment is a
+                # deterministic no-op; stop without consuming the attempt
+                # budget (2026-09-10: a blanked DS_API_KEY burned the
+                # whole PART_BUILDER_MAX_RUNS on "key not set" failures).
+                print(f"[assembly] part {spec.part_id}: non-retryable "
+                      f"failure (configuration/infrastructure) -- not "
+                      f"retrying: {result.error}")
+                break
+        results[spec.part_id] = _stamp(spec, _keep_best(spec, result, prev))
         status = "OK" if result.ok else f"FAILED ({result.error})"
         print(f"[assembly] part {spec.part_id}: {status}")
 
+    # P1-3: refresh the cross-attempt token ledger. Read the LEDGER FILE for
+    # each part -- a PartResult surviving _keep_best may be an OLDER success
+    # whose token_usage predates newer attempts, and writing that back would
+    # silently revert the cumulative state. The file on disk is authoritative.
+    cumulative = dict(state.get("cumulative_part_token_usage") or {})
+    for pid in results:
+        ledger = _load_cumulative_tokens(parts_root / pid)
+        u = ledger or (getattr(results[pid], "token_usage", {}) or {})
+        if u:
+            cumulative[pid] = u
+
     return {
         "part_results": results,
+        "cumulative_part_token_usage": cumulative,
         "remodel_part_ids": [],
         "execution_log": _log(
             state,
@@ -731,17 +1058,27 @@ def _llm_repair_assembly(
     brief: AssemblyBrief,
     qa: AssemblyQAReport | None,
     exec_error: str = "",
+    repair_context: str = "",
 ) -> str | None:
     """LLM fallback that edits the generated assembly script.
 
     B4 fix: the script execution traceback (when present) is the primary
     evidence -- without it the repair agent was guessing blind.
+    repair_context carries the feedback_router's accumulated errors + judge
+    rationale for REPAIR_ASSEMBLY routes where the script RUNS but the
+    geometry/semantics are wrong (no traceback exists in that case).
     """
     sections = ["## AssemblyBrief\n\n```json\n" + brief.model_dump_json(indent=2) + "\n```"]
     if exec_error:
         sections.append(
             "## Script execution failure (the script produced no STEP -- "
             "fix this first)\n\n```\n" + exec_error[-2000:] + "\n```"
+        )
+    if repair_context:
+        sections.append(
+            "## Router feedback (why this script rebuild was requested -- "
+            "the script runs but the assembled result failed QA/Judge)\n\n"
+            + repair_context
         )
     if qa is not None and qa.error_details:
         sections.append(
@@ -764,15 +1101,24 @@ def _llm_repair_assembly(
             messages=messages,
             temperature=cfg.ASSEMBLY_REPAIR_TEMPERATURE,
             max_tokens=cfg.ASSEMBLY_REPAIR_MAX_TOKENS,
-            timeout=180,
+            timeout=_LLM_API_TIMEOUT,
             **cfg.ASSEMBLY_REPAIR_KWARGS,
         )
         raw = resp.choices[0].message.content or ""
         fixed = _extract_code_from_llm_response(raw)
         if "AssemblyHelper" in fixed and "asm.build" in fixed:
             return fixed
+        print(
+            f"[assembly] LLM script repair rejected: extracted "
+            f"{len(fixed)} chars without the AssemblyHelper/asm.build markers"
+        )
         return None
-    except Exception:  # noqa: BLE001 - repair is best-effort
+    except Exception as exc:  # noqa: BLE001 - repair is best-effort
+        # Best-effort, never fatal -- but never silent either: a bare
+        # except hid a 180s timeout (thinking-mode model on a ~70KB
+        # prompt) for a whole run while the outer loop burned its budget
+        # on identical scripts (2026-09-09).
+        print(f"[assembly] LLM script repair failed: {exc}")
         return None
 
 
@@ -803,15 +1149,31 @@ def node_assembler(state: AssemblyGraphState) -> dict:
         if not (part_results.get(p.part_id) and part_results[p.part_id].ok)
     ]
     if missing:
+        # v3 no-op loop guard (P0-3): a part whose failure says the spec is
+        # UNCHANGED since the last failed generation has no part-level
+        # repair channel (same base + same features = same failure). Route
+        # those to RECOMPOSE instead of burning PART_BUILDER_MAX_RUNS on
+        # deterministic no-op rebuilds.
+        recompose_ids = [
+            pid for pid in missing
+            if str(getattr(part_results.get(pid), "error", "") or "")
+            .startswith("v3 spec unchanged")
+        ]
+        details = [f"part generation failed: {missing}"]
+        for pid in missing:
+            err = getattr(part_results.get(pid), "error", None)
+            if err:
+                details.append(f"{pid}: {err}")
         report = AssemblyQAReport(
             part_count_expected=brief.expected_part_count,
             part_count_measured=len(brief.parts) - len(missing),
             part_count_passed=False,
             missing_parts=missing,
-            error_details=[f"part generation failed: {missing}"],
+            error_details=details,
             all_passed=False,
             error_type=AssemblyErrorType.PART_MISSING,
             needs_remodel_part_ids=missing,
+            needs_recompose_ids=recompose_ids,
         )
         return {
             "qa_report": report,
@@ -823,24 +1185,61 @@ def node_assembler(state: AssemblyGraphState) -> dict:
 
     # Zero-token dimension reconciliation: verify the mating plan against
     # MEASURED part bboxes before spending an assembly+QA cycle on it.
-    reconcile_errors = reconcile_dimensions(brief, plan.mates, part_results)
-    if reconcile_errors:
+    reconcile = reconcile_dimensions(brief, plan.mates, part_results)
+    # Radius compatibility splits into two paths (BUG-002):
+    #   * "radii incompatible" -- DEFINITE incompatibility (roles known +
+    #     no bore/shaft pair fits). This is now BLOCKING: remate cannot
+    #     change measured radii, so the parts themselves are wrong.
+    #   * "radii UNVERIFIABLE" -- role detection was inconclusive or the
+    #     arrangement is implicit-pin-without-explicit-marker. Stay on the
+    #     warning path; downstream collision/kinematic QA is authoritative.
+    radius_warnings = [
+        e for e in reconcile.errors
+        if e.startswith("reconcile: axis joint ") and "radii UNVERIFIABLE" in e
+    ]
+    blocking_reconcile = [e for e in reconcile.errors if e not in radius_warnings]
+    for warning in radius_warnings:
+        print(f"[assembly] reconcile WARNING (degraded continue): {warning}")
+    if blocking_reconcile:
         report = AssemblyQAReport(
-            error_details=reconcile_errors,
+            error_details=blocking_reconcile,
             all_passed=False,
             error_type=AssemblyErrorType.RECONCILE,
             needs_mate_fix_ids=[m.mate_id for m in plan.mates],
+            # Structured attribution (P1-8): a radius-incompatibility
+            # failure is a PART-GEOMETRY defect (remate cannot change
+            # measured radii); the router sends these part ids to
+            # part_builder instead of the Mating Architect.
+            error_attribution=reconcile.attribution,
+            attribution_part_ids=reconcile.part_ids,
         )
         return {
             "qa_report": report,
             "assembly_step_path": "",
             "qa_skipped_iter": True,  # no STEP produced, no QA detector run
-            "execution_log": _log(state, "assembler: " + reconcile_errors[0][:120]),
+            "execution_log": _log(state, "assembler: " + blocking_reconcile[0][:120]),
             "node_history": state.get("node_history", []) + ["assembler"],
         }
 
+    # Authoritative per-part STEP paths (relative to the job dir) from THIS
+    # iteration's PartResults -- keeps a stale temp_output_*.step left in a
+    # part directory by a failed regeneration out of the mtime glob.
+    part_step_overrides: dict[str, str] = {}
+    _work_dir_abs = work_dir.resolve()
+    for pid, r in part_results.items():
+        if getattr(r, "ok", False) and getattr(r, "step_path", ""):
+            try:
+                part_step_overrides[pid] = str(
+                    Path(r.step_path).resolve().relative_to(_work_dir_abs)
+                )
+            except ValueError:
+                pass  # STEP outside the job dir: let codegen glob instead
+
     # 1) Deterministic codegen (zero tokens) -- always regenerate the base.
-    script_path = write_assembly_script(brief, plan.mates, work_dir, _REPO_ROOT, iteration)
+    script_path = write_assembly_script(
+        brief, plan.mates, work_dir, _REPO_ROOT, iteration,
+        part_step_overrides=part_step_overrides,
+    )
 
     ok, tail = run_assembly_script(
         script_path, work_dir,
@@ -848,11 +1247,19 @@ def node_assembler(state: AssemblyGraphState) -> dict:
         python_bin=cfg.PYTHON_BIN or sys.executable,
     )
 
+    # repair_context is set by the feedback_router on the repair_assembly
+    # route (judge REPAIR_ASSEMBLY / non-mate-level failures). Without
+    # consuming it here, that route was a no-op loop: deterministic codegen
+    # is a pure function of (brief, plan), so the regenerated script is
+    # byte-identical to the one that just failed QA.
+    repair_ctx = state.get("repair_context", "")
+
     # 2) LLM repair fallback on ANY execution failure (B4: previously
     #    first-round failures with qa=None skipped repair entirely).
     if not ok:
         repaired = _llm_repair_assembly(
-            script_path.read_text(encoding="utf-8"), brief, qa, exec_error=tail
+            script_path.read_text(encoding="utf-8"), brief, qa,
+            exec_error=tail, repair_context=repair_ctx,
         )
         if repaired:
             script_path = work_dir / f"temp_assembly_{iteration}_repaired.py"
@@ -862,11 +1269,69 @@ def node_assembler(state: AssemblyGraphState) -> dict:
                 timeout=cfg.ASSEMBLY_SCRIPT_TIMEOUT,
                 python_bin=cfg.PYTHON_BIN or sys.executable,
             )
+    elif repair_ctx:
+        # 3) Script RUNS but the router sent us back with failure context
+        #    (geometry/semantics wrong, e.g. judge REPAIR_ASSEMBLY). Force
+        #    the LLM pass even without a traceback -- otherwise this
+        #    iteration reproduces the identical script and the identical
+        #    QA failure until the outer budget is exhausted. If the
+        #    repaired script fails to execute, keep the runnable
+        #    deterministic one and let QA judge its geometry.
+        repaired = _llm_repair_assembly(
+            script_path.read_text(encoding="utf-8"), brief, qa,
+            repair_context=repair_ctx,
+        )
+        if repaired:
+            rep_path = work_dir / f"temp_assembly_{iteration}_repaired.py"
+            rep_path.write_text(repaired, encoding="utf-8")
+            ok2, tail2 = run_assembly_script(
+                rep_path, work_dir,
+                timeout=cfg.ASSEMBLY_SCRIPT_TIMEOUT,
+                python_bin=cfg.PYTHON_BIN or sys.executable,
+            )
+            if ok2:
+                script_path, tail = rep_path, tail2
+            else:
+                # The repaired script failed to execute. run_assembly_script
+                # deletes the stale outputs BEFORE running, so the
+                # deterministic script's good STEP/STL are gone at this
+                # point -- re-run the deterministic script to restore them.
+                # Without this, QA would see no STEP and synthesize FATAL
+                # instead of judging the deterministic geometry (the stated
+                # intent of keeping the runnable script), and every such
+                # event would waste an outer-loop iteration + repair call.
+                ok, tail = run_assembly_script(
+                    script_path, work_dir,
+                    timeout=cfg.ASSEMBLY_SCRIPT_TIMEOUT,
+                    python_bin=cfg.PYTHON_BIN or sys.executable,
+                )
 
     return {
         "assembly_py_path": str(script_path),
-        "assembly_step_path": str(work_dir / "assembly_output.step"),
-        "assembly_stl_path": str(work_dir / "assembly_output.stl"),
+        # BUG-024: on script failure the STEP/STL files don't exist.
+        # Writing their expected paths to state as if valid made
+        # _final_report print "Assembly: <nonexistent path>" and the
+        # handoff could pick up stale artifacts from a previous run.
+        # Only emit the path when the file was actually produced.
+        "assembly_step_path": (
+            str(work_dir / "assembly_output.step")
+            if ok and (work_dir / "assembly_output.step").is_file()
+            else ""
+        ),
+        "assembly_stl_path": (
+            str(work_dir / "assembly_output.stl")
+            if ok and (work_dir / "assembly_output.stl").is_file()
+            else ""
+        ),
+        # Exec tail of the last failed run ("" on success). Without this,
+        # the QA node's FATAL synthesis reports a generic "STEP was not
+        # produced" and the Judge/Router never see WHY the script died
+        # (telescopic-crane run 2026-09-09: the SELECTOR-miss traceback
+        # was discarded three iterations in a row).
+        "assembly_exec_error": "" if ok else tail[-1500:],
+        # Consumed above (or irrelevant on this path); clear so a stale
+        # context can never force LLM repair on a future plain rebuild.
+        "repair_context": "",
         # Clear the qa_report on the normal path so the downstream QA node
         # can distinguish "assembler produced a (possibly failed) script"
         # (no existing report -> synthesize fresh FATAL) from "assembler
@@ -948,8 +1413,19 @@ def node_assembly_qa(state: AssemblyGraphState) -> dict:
                     part_count_passed=False,
                 )
             else:
+                exec_tail = str(state.get("assembly_exec_error", "") or "").strip()
+                details = ["assembly STEP was not produced"]
+                if exec_tail:
+                    # The assembler's real traceback (selector misses,
+                    # import failures, codegen crashes) -- without it the
+                    # Judge and feedback_router only ever see the generic
+                    # line above and guess repair_assembly, which
+                    # regenerates a byte-identical script.
+                    details.append(
+                        "script execution failure:\n" + exec_tail[-1200:]
+                    )
                 report = AssemblyQAReport(
-                    error_details=["assembly STEP was not produced"],
+                    error_details=details,
                     all_passed=False,
                     error_type=AssemblyErrorType.FATAL,
                 )
@@ -971,7 +1447,7 @@ def node_assembly_qa(state: AssemblyGraphState) -> dict:
     # missing parts / reconcile errors), it set qa_skipped_iter=True; the
     # QA node just propagates the existing report without mesh / envelope
     # / kinematic checks, so it should NOT burn the outer-loop budget. The
-    # per-route sub-budgets (MATINGS_MAX_RUNS / DECOMPOSER_MAX_RUNS) still
+    # per-route sub-budgets (MATING_MAX_RUNS / DECOMPOSER_MAX_RUNS) still
     # bind for their respective routes; this only stops the outer
     # ASSEMBLY_MAX_ITERATIONS from being consumed by reconcile-failure
     # spam (D8: 4 consecutive reconcile failures previously halved the
@@ -1027,20 +1503,44 @@ def _judge_gate(decision: AssemblyJudgeDecision, qa: AssemblyQAReport) -> Assemb
 
 def node_assembly_judge(state: AssemblyGraphState) -> dict:
     qa: AssemblyQAReport | None = state.get("qa_report")
-    # Skip Judge only when (a) disabled, (b) no QA report, (c) QA passed, or
-    # (d) iteration_count below MIN_RETRY AND the failure is not a borderline
-    # false-positive. The is_likely_false_positive override lets the Judge
-    # run on the first iteration when the only failures are envelope overshoot
-    # within 2x tolerance or interference volume under 2x tolerance -- so an
-    # ACCEPT can terminate the loop instead of forcing a route back to
-    # part_builder / assembler for what is really a too-strict envelope.
+    # Skip Judge only when (a) disabled, (b) no QA report, (c) QA passed
+    # with NO degraded parts, or (d) iteration_count below MIN_RETRY AND
+    # the failure is neither a borderline false-positive NOR an
+    # ENVELOPE/RECONCILE failure.
+    # - QA-passed-but-degraded: a degraded PartResult (e.g. v3 base failed,
+    #   fallback STEP kept) can pass every geometric check, yet it is NOT a
+    #   clean success. Run the Judge at least once so the delivery is a
+    #   deliberate accept-for-showcase (with the warnings cited) or a
+    #   corrective remodel_parts/recompose -- never a silent pass.
+    # - The is_likely_false_positive override lets the Judge run on the
+    #   first iteration when the only failures are envelope overshoot within
+    #   2x tolerance or interference volume under 2x tolerance -- so an
+    #   ACCEPT can terminate the loop instead of forcing a route back for
+    #   what is really a too-strict envelope.
+    # - ENVELOPE / RECONCILE failures may be part-geometry defects (a part
+    #   too big for the envelope, incompatible bore radii) that a blind
+    #   first-round REMATE cannot fix -- it burns a Mating Architect call
+    #   that the Judge's attribution (REMODEL_PARTS) would have avoided
+    #   (P1-8). Let the Judge run on them from iteration 0.
+    _qa_passed_degraded = bool(
+        qa is not None and qa.all_passed
+        and getattr(qa, "has_degraded_parts", False)
+    )
+    _needs_judge_early = (
+        getattr(qa, "is_likely_false_positive", False)
+        or _qa_passed_degraded
+        or (qa is not None and qa.error_type in (
+            AssemblyErrorType.ENVELOPE,
+            AssemblyErrorType.RECONCILE,
+        ))
+    )
     if (
         not cfg.ASSEMBLY_JUDGE_ENABLED
         or qa is None
-        or qa.all_passed
+        or (qa.all_passed and not _qa_passed_degraded)
         or (
             state.get("iteration_count", 0) < cfg.ASSEMBLY_JUDGE_MIN_RETRY
-            and not getattr(qa, "is_likely_false_positive", False)
+            and not _needs_judge_early
         )
     ):
         return {
@@ -1066,14 +1566,16 @@ def node_assembly_judge(state: AssemblyGraphState) -> dict:
     views = render_assembly_views(work_dir)
     image_urls: list[str] = []
     # B7 fix: the judge prompt promises user_image[N] -- actually feed them
-    # (same loader as the Decomposer, deterministic alphabetical order).
-    user_images = _load_user_images(Path.cwd() / "user_input_images")
+    # (same loader as the Decomposer, deterministic alphabetical order; same
+    # CWD-independent directory resolution).
+    user_images = _load_user_images(_input_images_dir(work_dir))
     image_urls += [_encode_jpeg_data_url(b) for b in user_images]
     image_urls += [encode_png_data_url(v) for v in views]
     if image_urls and cfg.ASSEMBLY_JUDGE_MULTIMODAL != "never":
         content = build_multimodal_content(user_prompt, image_urls)
 
     decision: AssemblyJudgeDecision | None = None
+    judge_failure_msg: str = ""
     multimodal_mode = cfg.ASSEMBLY_JUDGE_MULTIMODAL
     try:
         raw = call_llm_json(
@@ -1087,6 +1589,7 @@ def node_assembly_judge(state: AssemblyGraphState) -> dict:
         decision = _judge_gate(AssemblyJudgeDecision.model_validate(raw), qa)
     except Exception as exc:  # noqa: BLE001
         err = str(exc)
+        judge_failure_msg = f"{type(exc).__name__}: {err[:200]}"
         if (
             image_urls
             and isinstance(content, list)
@@ -1108,13 +1611,30 @@ def node_assembly_judge(state: AssemblyGraphState) -> dict:
                 )
             except Exception:  # noqa: BLE001
                 decision = None
+        # BUG-025: when every Judge attempt fails, return decision=None
+        # and let node_feedback_router route via its existing
+        # decision=None path (which already picks the right stage from
+        # qa.error_type: PART_MISSING -> part_builder, MATE-level ->
+        # mating_architect, FATAL -> assembler). The previous fallback
+        # fabricated REPAIR_ASSEMBLY for every failure type, routing
+        # part_missing and mate-level errors to the assembler, which
+        # cannot fix them.
         if decision is None:
-            decision = AssemblyJudgeDecision(
-                action=AssemblyJudgeAction.REPAIR_ASSEMBLY,
-                confidence="medium",
-                reason=f"judge call failed ({err[:200]}); safe default repair",
-                evidence=[],
+            print(
+                f"[assembly] JUDGE FAILED ({judge_failure_msg}); "
+                f"routing via decision=None path (qa.error_type="
+                f"{qa.error_type.value if qa else 'none'})"
             )
+            return {
+                "judge_decision": None,
+                "execution_log": _log(
+                    state,
+                    f"judge: call failed ({judge_failure_msg}); "
+                    f"router will route by qa.error_type="
+                    f"{qa.error_type.value if qa else 'none'}",
+                ),
+                "node_history": state.get("node_history", []) + ["judge"],
+            }
 
     print(f"[assembly] JUDGE -> {decision.action.value} "
           f"(conf={decision.confidence}, evidence={len(decision.evidence)})")

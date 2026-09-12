@@ -34,7 +34,7 @@ The Assembler translates your mates deterministically into
 | `revolute` | hinge about a shared axis **with a static pose locked by `angle_deg`** (free rotation only if you want the hinge at angle=0) | `angle_deg`; optional `axial_offset_mm` |
 | `linear` | slider along the fixed part's axis | `axis_point` anchors + `position_mm` |
 | `cylindrical` | rotation + translation along a shared axis | `axis_point` anchors + `position_mm` (+ optional `angle_deg`) |
-| `ball` | 2-DOF spherical (ball-and-socket): sphere-center datum on both sides; static pose set by pitch+yaw (roll constrained to 0 by the socket -- 2-DOF only, NOT 3-DOF) | `kind=sphere` anchors **required on both sides**; `ball_pitch_deg` + `ball_yaw_deg` for static pose |
+| `ball` | 2-DOF spherical (ball-and-socket): sphere-center datum on both sides; static pose set by pitch+yaw about two configurable axes (the third axis is constrained to 0 -- 2-DOF only, NOT 3-DOF) | `kind=sphere` anchors **required on both sides**; `ball_axis_1`/`ball_axis_2` + `ball_pitch_deg`/`ball_yaw_deg` for static pose |
 
 **BALL mate (2-DOF spherical joint)** -- mechanically:
 - Use for ball-and-socket joints (gimbal mount, dexterous-hand thumb root,
@@ -48,15 +48,30 @@ The Assembler translates your mates deterministically into
 - The ball's `sphere_radius_mm` MUST be ≤ the socket's `sphere_radius_mm`
   (clearance for the ball to fit). The validator flags geometry where the
   ball is larger than the cavity.
-- Static pose: `ball_pitch_deg` (rotation about Y) and `ball_yaw_deg`
-  (rotation about Z). Roll (rotation about X) is constrained to 0 by the
-  socket -- 2-DOF only. Use `pitch=0, yaw=0` for a static assembly pose.
+- The two rotation axes are configurable via `ball_axis_1` (the axis
+  `ball_pitch_deg` turns about) and `ball_axis_2` (for `ball_yaw_deg`),
+  each one of "x"/"y"/"z", and they MUST differ (equal axes collapse the
+  joint to 1-DOF; the validator rejects them). The remaining third axis
+  is constrained to 0 -- 2-DOF only.
+- **CHOOSE THE TWO AXES PERPENDICULAR TO THE LIMB/STEM DIRECTION.**
+  Rotation about the limb's own long axis is pure twist -- it cannot
+  bend the limb, so a DOF spent on it is wasted. Examples: a finger or
+  thumb extending along +/-Y needs `ball_axis_1="x", ball_axis_2="z"`
+  (pitch about X bends the fingertip toward +/-Z, yaw about Z bends it
+  toward +/-X); a limb along +/-X uses the defaults `y`+`z`; a limb
+  along +/-Z uses `x`+`y`.
+- Static pose: `ball_pitch_deg` (rotation about `ball_axis_1`) and
+  `ball_yaw_deg` (rotation about `ball_axis_2`, applied in the
+  post-pitch frame). Use `pitch=0, yaw=0` for a static assembly pose.
 - Codegen emits `asm.ball_frame(socket, sphere_center)` +
   `asm.rigid_frame(ball, sphere_center)` + `asm.ball(_f, _m,
-  angles=(pitch, yaw, 0.0), label=...)`.
-- URDF export decomposes ball into 2 orthogonal revolute joints sharing a
-  tiny-mass dummy link (socket -> dummy [revolute about Y = pitch] -> ball
-  [revolute about Z = yaw]); standard URDF has no `<joint type="ball">`.
+  angles=(eX, eY, eZ), label=...)`, where (eX, eY, eZ) is the
+  intrinsic-XYZ Euler triple equivalent to the two axis rotations
+  (for the default y/z axes that is exactly (0.0, pitch, yaw)).
+- URDF export decomposes ball into 2 revolute joints sharing a
+  tiny-mass dummy link (socket -> dummy [revolute about ball_axis_1 =
+  pitch] -> ball [revolute about ball_axis_2 = yaw]); standard URDF has
+  no `<joint type="ball">`.
 - **Do NOT use `rigid` or `coaxial` as a "fallback" for a ball joint** --
   that loses the 2-DOF motion AND misplaces the geometry (an `axis_point`
   anchor at offset=0 resolves to the bbox centre, not the sphere centre;
@@ -81,6 +96,24 @@ The Assembler translates your mates deterministically into
 
 If you find yourself writing `coaxial` "to align two axes and the
 moving part should not rotate", you actually want `rigid`.
+
+**FACE_TO_FACE vs RIGID (parts that hang BELOW their parent)** --
+mechanically:
+- `face_to_face` ALWAYS seats the moving part ABOVE (+Z) the fixed
+  part. It is for lids, caps, and stacked parts -- NEVER for a part
+  hanging UNDER its parent.
+- If the moving part hangs BELOW the fixed part and the interface is
+  a top/bottom face contact (e.g. a finger or jaw bolted under a
+  sliding carriage, a swing arm under a rail), that is NOT a
+  face_to_face case: emit `mate_type: "rigid"` with the fixed part's
+  `bottom` face and the moving part's `top` face as plain bbox-face
+  anchors (the translator joins them face-centre to face-centre with
+  identity orientation -- the exact behaviour a hanging mount needs).
+- Rewriting such a mount as face_to_face flips the seating direction
+  and is rejected by validation ("face_to_face seats the moving part
+  above (+Z)"), so the attempt always fails -- do not try it, even
+  when the brief describes the interface as faces "seated against"
+  each other.
 
 ### `axial_offset_mm` (revolute / coaxial / rigid)
 
@@ -131,6 +164,41 @@ Leave `axial_offset_mm=0` when the moving anchor should land exactly at
 the fixed anchor (true midpoint-to-midpoint coaxial, or rigid attachment
 at the same datum).
 
+**No double placement (hard rule):** anchor coordinates are already consumed
+when the two datum frames are aligned. Never repeat an anchor's absolute
+height/position in `axial_offset_mm` or `translation_mm`. In particular:
+
+- rigid `axis_point(top)` to `axis_point(bottom)`: use `axial_offset_mm=0`;
+- rigid planar top-to-bottom seating: the translation component along the
+  plane normal must be zero;
+- use `translation_mm` only for the remaining in-plane/lateral displacement.
+
+Example: if a fixed SELECTOR already resolves the deck plane at local Z=95
+and the moving anchor is its bottom face, place an item at X=-100 with
+`translation_mm=[-100,0,0]`, **not** `[-100,0,95]`.
+
+Every direct parent-child mate must also create a physically continuous
+mechanical path: after placement the two real surfaces should touch or remain
+within 2 mm modelling clearance. Coincident virtual axes in empty space are
+not sufficient. If a larger gap is intentional, add a real connecting part;
+never bridge it only with an abstract mate.
+
+For a rigid accessory on a broad but subdivided top surface, do not use a
+`selector` face centroid unless that exact face is the intended mounting pad.
+`closest_to` may resolve a small corner patch and subsequent lateral
+translation can move the accessory entirely off its parent. Prefer a centred
+`axis_point`/explicit `point_mm` datum at the known top height, and reserve
+translation for the desired in-plane offset.
+
+### `translation_mm` (rigid only)
+
+For a rigid attachment that needs displacement on more than one axis, set
+`translation_mm=[x, y, z]` in the **fixed part's local frame**. The vector is
+rotated with the fixed part, so it remains correct in an articulated chain.
+Do not approximate a multi-axis placement with `axial_offset_mm`, which can
+move along only one anchor direction. Example: two transport wheels under
+opposite sides of a floor plate use `[0,-60,-30]` and `[0,60,-30]`.
+
 Anchor rules:
 
 - `kind=face` requires `face` in top/bottom/left/right/front/back.
@@ -140,6 +208,11 @@ Anchor rules:
   `kind=selector` instead.
 - `kind=axis_point` requires `axis` in x/y/z plus `offset_mm` from the
   part's bounding-box centre along that axis. Bbox sizes come from the
+  part geometry. When the joint axis does not pass through the bbox centre,
+  use `point_mm=[x,y,z]` for its explicit part-local position; `axis` still
+  defines the direction. This is the normal representation for an X-axis
+  hinge located above the part centre, for example `axis="x",
+  point_mm=[0,0,26]`.
   part's stated overall dimensions (e.g. a part "60 x 60 x 35 mm,
   centered on XY origin, bottom at Z=0" has its bbox centre at Z=17.5;
   its top-face anchor is at Z=35).
@@ -293,8 +366,9 @@ default frame alignment):
                    "sphere_center_mm": [0, 0, 5],
                    "sphere_radius_mm": 6.0},
  "ball_pitch_deg": 0.0, "ball_yaw_deg": 0.0,
+ "ball_axis_1": "y", "ball_axis_2": "z",
  "tolerance_mm": 0.3,
- "notes": "palm cavity sphere at local (-45,0,5) aligns with thumb ball sphere at local (0,0,5); static pose pitch=yaw=0 -> thumb body (local X=-L..0) lands at world X<-45, extending away from the palm"}
+ "notes": "palm cavity sphere at local (-45,0,5) aligns with thumb ball sphere at local (0,0,5); static pose pitch=yaw=0 -> thumb body (local X=-L..0) lands at world X<-45, extending away from the palm; thumb extends along -X so the two DOF axes are y+z (both perpendicular to -X: bending, not twist)"}
 ```
 
 Brief interface: hinge between a base post (25 tall) and an arm (60 long
@@ -320,22 +394,26 @@ the selector resolver picks the first matching cylinder for every
 mate (Python stable sort on `min`/`max`), causing all moving parts to
 stack at one feature root.
 
-For each mate on a v3 multi-feature part, set `target_x_mm` /
-`target_y_mm` to the corresponding feature's `attach_point_mm` (from
-the PartSpec's `features` list). Example: if finger_2 mates with the
-palm's clevis_fork at attach_point `(30, 25, 12)`, the palm-side
-anchor is:
+For each mate on a v3 multi-feature part, target the feature's ACTUAL
+kinematic datum, not blindly its `attach_point_mm`. For `clevis_fork` and
+`clevis_tongue`, compute `body_len = ear_length - ear_width/2`. With
+`pin_axis=x|y`, the bore centre is
+`attach_point_mm + direction_vector * body_len`; with legacy `pin_axis=z`,
+the XY centre follows that same protrusion formula and bore Z is
+`attach_z + bar_thickness/2`. Example: if a +Y fork attaches at
+`(30, 25, 12)`, has `ear_length=20`, `ear_width=16`, and `pin_axis=z`, its
+bore centre is `(30, 37, 12 + bar_thickness/2)`, so the palm-side anchor is:
 
 ```json
 {"kind": "selector",
  "selector_query": {"surface": "cylinder", "axis": "z",
   "select": "closest_to", "value_mm": 2.5,
-  "target_x_mm": 30, "target_y_mm": 25}}
+  "target_x_mm": 30, "target_y_mm": 37,
+  "target_z_mm": 12 + bar_thickness/2}}
 ```
 
-The deterministic link: the Decomposer's feature `attach_point_mm`
-becomes the Mating Architect's SELECTOR `target_x_mm` / `target_y_mm`
-for the mate on that feature. The validator (`_validate_mating_plan`)
+The deterministic link is the feature operator's derived bore centre, not the
+raw attachment point. The validator (`_validate_mating_plan`)
 rejects v3 SELECTOR anchors on multi-cylinder-feature parts without
 `target_x_mm` / `target_y_mm` -- the error message names the part +
 the missing disambiguation, so you can fix it by adding the target

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "multi-agent-cad"
 version = "1.0.0"
 description = "MAC (multi agent cad): A decoupled multi-agent framework for text-to-CAD generation via constrained test-time compute."
-readme = "README.md"
+readme = "multi_agent_cad/README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "PUMA" }]
@@ -70,7 +70,7 @@ all = [
 [project.scripts]
 # Restore config.py to defaults (the only module with a callable main()).
 # Run the workflows themselves via `python -m multi_agent_cad.graph` /
-# `python -m multi_agent_cad.graph_aider` — see README §6 for details.
+# `python -m multi_agent_cad.graph_aider` — see multi_agent_cad/README.md §6 for details.
 mac-config-reset = "multi_agent_cad._config_defaults:main"
 
 [tool.setuptools.packages.find]

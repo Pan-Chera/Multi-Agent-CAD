@@ -71,6 +71,7 @@ from multi_agent_cad.config import (
     MAX_RETRIES as _CFG_MAX_RETRIES,
     MAX_EXEC_RETRIES as _CFG_MAX_EXEC_RETRIES,
     LLM_API_TIMEOUT as _CFG_LLM_API_TIMEOUT,
+    LLM_CODEGEN_API_TIMEOUT as _CFG_LLM_CODEGEN_API_TIMEOUT,
     CHECK_MESH_TIMEOUT as _CFG_CHECK_MESH_TIMEOUT,
     CAD_SCRIPT_TIMEOUT as _CFG_CAD_SCRIPT_TIMEOUT,
     CHECKPOINT_INPUT_TIMEOUT as _CFG_CHECKPOINT_INPUT_TIMEOUT,
@@ -322,18 +323,58 @@ def _call_llm_json_with_retry(
                 raise
 
         except Exception as e:
-            # Handle timeout and other API errors
+            # BUG-022: narrow retryability classification. Previously
+            # only "timeout" was retried, so 429 / 5xx / connection
+            # errors (transient) were treated as permanent. Conversely,
+            # 401/403/invalid-api-key/model-not-found (permanent) must
+            # NOT be retried -- they burn the retry budget on errors
+            # that no amount of retrying will fix.
             error_msg = str(e).lower()
-            if 'timeout' in error_msg or 'timed out' in error_msg:
+            # Permanent failures: auth / config / missing dependency.
+            # Match the same patterns used by is_non_retryable_error in
+            # part_generator -- single source of truth for retryability.
+            _non_retryable_patterns = (
+                "dashscope_api_key is not set",
+                "error code: 401",
+                "error code: 403",
+                "authenticationerror",
+                "permissiondeniederror",
+                "invalid api key",
+                "invalid api-key",
+                "incorrect api key",
+                "unauthorized",
+                "model not found",
+                "model not exist",
+                "invalid model",
+                "invalid url",
+                "modulenotfounderror",
+            )
+            if any(p in error_msg for p in _non_retryable_patterns):
+                raise
+            # Transient failures: retry on timeout, 429, 5xx, or
+            # connection errors. These often self-resolve on retry.
+            _retryable_patterns = (
+                "timeout", "timed out",
+                "error code: 429", "rate limit", "rate_limit",
+                "error code: 500", "error code: 502", "error code: 503",
+                "error code: 504", "server error", "service unavailable",
+                "connection error", "connection aborted", "connection reset",
+                "connection refused", "remote disconnected",
+                "apiconnectionerror", "apierror",
+            )
+            is_retryable = any(p in error_msg for p in _retryable_patterns)
+            if is_retryable:
                 print(
-                    f"\n[DEBUG JSON-RETRY] Timeout on attempt {attempt + 1}/{max_retries}: {e}"
+                    f"\n[DEBUG JSON-RETRY] Retryable error on attempt "
+                    f"{attempt + 1}/{max_retries}: {e}"
                 )
                 if attempt < max_retries - 1:
-                    print(f"[DEBUG JSON-RETRY] Retrying in 2 seconds...")
                     import time
                     time.sleep(2)
                     continue
-            # Re-raise non-timeout errors or final timeout
+            # Re-raise non-retryable-but-unrecognized errors or final
+            # retry of a retryable class (conservative: do not loop
+            # forever).
             raise
 
     raise RuntimeError("Unreachable: retry loop should have raised or returned")
@@ -353,10 +394,24 @@ def _parse_missed_cuts(missed: list[str]) -> dict[str, list[str]]:
         "fillet_failed": [],
         "chamfer_failed": [],
         "cut_error": [],
+        "cosmetic_warning": [],
     }
     for entry in missed:
         s = str(entry)
-        if s.startswith("FILLET_FAILED"):
+        # A partial/degraded edge treatment leaves valid geometry behind.  A
+        # FAILED entry with no selected edges is likewise non-structural: the
+        # requested cosmetic operation was omitted, but no boolean or mating
+        # feature failed.  Keep these visible without trapping the autonomous
+        # loop in expensive rewrites of an otherwise valid part.
+        if s.startswith((
+            "FILLET_DEGRADED", "FILLET_PARTIAL",
+            "CHAMFER_DEGRADED", "CHAMFER_PARTIAL",
+        )) or (
+            s.startswith(("FILLET_FAILED", "CHAMFER_FAILED"))
+            and "no edges matched filter" in s.lower()
+        ):
+            categories["cosmetic_warning"].append(s)
+        elif s.startswith("FILLET_FAILED"):
             categories["fillet_failed"].append(s)
         elif s.startswith("CHAMFER_FAILED"):
             categories["chamfer_failed"].append(s)
@@ -374,7 +429,12 @@ def _format_missed_cuts_errors(categories: dict[str, list[str]]) -> tuple[list[s
     dominant error type (e.g. "CUT_POSITION_ERROR", "FILLET_FAILED").
     """
     error_details: list[str] = []
-    counts = {k: len(v) for k, v in categories.items() if v}
+    # ``cosmetic_warning`` is intentionally omitted: callers still print the
+    # raw diagnostics, but only structurally meaningful failures block PASS.
+    counts = {
+        k: len(v) for k, v in categories.items()
+        if v and k != "cosmetic_warning"
+    }
 
     if categories["missed_cut"]:
         n = len(categories["missed_cut"])
@@ -419,6 +479,17 @@ def _format_missed_cuts_errors(categories: dict[str, list[str]]) -> tuple[list[s
         label = "CUT_ERROR"
 
     return error_details, label
+
+
+def _runtime_diagnostics_path(cwd: Path, iteration: int) -> Path | None:
+    """Return diagnostics produced by this exact execution iteration only.
+
+    Never fall back to ``temp_missed_0.json``: generated scripts omit the
+    file when an Aider repair removes every issue, so such a fallback revives
+    stale failures and makes a corrected part impossible to pass.
+    """
+    path = cwd / f"temp_missed_{iteration}.json"
+    return path if path.is_file() else None
 
 
 def _normalize_architect_plan(plan_dict: dict) -> dict:
@@ -2624,6 +2695,28 @@ def _has_unsupported_placeholders(code: str) -> bool:
     return "# TODO_AIDER:" in code
 
 
+def _join_aider_summarizer(coder) -> None:
+    """Join aider's background chat-summarizer thread after coder.run().
+
+    When the conversation outgrows the model's chat-history budget, aider
+    spawns a NON-daemon thread that compresses the history via an LLM call.
+    MAC's pipeline finishes its last coder.run() without building another
+    prompt, so aider's own summarize_end() (which joins the thread) never
+    runs. At interpreter exit Python runs the concurrent.futures atexit
+    handler -- shutting litellm's global executor down -- BEFORE joining
+    non-daemon threads, so an in-flight summary call dies with "cannot
+    schedule new futures after shutdown": a full-conversation API call is
+    billed but discarded, and the noise it prints lands at the tail of
+    subprocess stdout where _tail_error looks for the REAL failure reason
+    (on the 2026-09-08 gantry run it masked the actual
+    "AUTONOMOUS LOOP -- MAX RETRIES EXHAUSTED" fatal).
+    """
+    try:
+        coder.summarize_end()
+    except Exception:
+        pass  # summary bookkeeping must never fail the pipeline
+
+
 def _fill_unsupported_with_aider(
     script_path: Path, code: str, user_request: str,
     special_features: list[str] | None = None,
@@ -2763,6 +2856,8 @@ Fillets/chamfers MUST come after ALL boolean operations (union, cut).
         model = Model(_AIDER_MODEL_NAME)
         model.extra_params = {
             "max_tokens": _AIDER_MAX_TOKENS,  # avoid truncation
+            # litellm-level request timeout (s): see LLM_CODEGEN_API_TIMEOUT.
+            "timeout": _CFG_LLM_CODEGEN_API_TIMEOUT,
             "extra_body": {"enable_thinking": False},  # thinking off
         }
         io = InputOutput(
@@ -2776,9 +2871,14 @@ Fillets/chamfers MUST come after ALL boolean operations (union, cut).
             io=io,
             fnames=[str(script_path), _BUILD123D_REF],
             auto_commits=False,
+            # Assembly jobs are intentionally gitignored runtime artifacts.
+            # These paths are explicitly supplied by the workflow and must
+            # remain editable even though their parent directory is ignored.
+            add_gitignore_files=True,
         )
 
         coder.run(prompt)
+        _join_aider_summarizer(coder)
         print(f"[HYBRID CODER] Aider successfully filled {len(matches)} placeholders")
         return True
 
@@ -2955,7 +3055,7 @@ def node_python_coder(state: GraphState) -> dict:
                 {"role": "user", "content": user_prompt},
             ],
             max_tokens=_CODER_MAX_TOKENS,
-            timeout=_CFG_LLM_API_TIMEOUT,
+            timeout=_CFG_LLM_CODEGEN_API_TIMEOUT,
             **_CODER_KWARGS,
         )
         raw_response = response.choices[0].message.content or ""
@@ -3060,13 +3160,15 @@ def node_python_coder(state: GraphState) -> dict:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=_CFG_LLM_API_TIMEOUT,  # configurable via config.py
+            timeout=_CFG_CAD_SCRIPT_TIMEOUT,
             cwd=str(cwd),
         )
     except subprocess.TimeoutExpired:
         return _coder_failure_state(
             iteration=iteration,
-            error_message="Script execution timed out after 120 seconds.",
+            error_message=(
+                f"Script execution timed out after {_CFG_CAD_SCRIPT_TIMEOUT} seconds."
+            ),
             script_path=str(script_path),
             node_history=_coder_history,
         )
@@ -6588,6 +6690,9 @@ Please replace the 'pass' statement in gen_step() with the full implementation.
                 model = Model(_AIDER_MODEL_NAME)
                 model.extra_params = {
             "max_tokens": _AIDER_MAX_TOKENS,  # avoid truncation
+            # litellm-level request timeout (s): full-script generation
+            # runs 30k-65k output tokens; 120s truncated these mid-file.
+            "timeout": _CFG_LLM_CODEGEN_API_TIMEOUT,
             "extra_body": {"enable_thinking": False},  # thinking off
         }
                 io = InputOutput(
@@ -6600,8 +6705,10 @@ Please replace the 'pass' statement in gen_step() with the full implementation.
                     io=io,
                     fnames=[script_path, _BUILD123D_REF],
                     auto_commits=False,
+                    add_gitignore_files=True,
                 )
                 coder.run(generation_prompt)
+                _join_aider_summarizer(coder)
 
                 # Verify the file was modified
                 try:
@@ -6669,7 +6776,7 @@ Output the COMPLETE Python script with the implementation."""
                 temperature=_REPAIR_TEMP,
                 max_tokens=_REPAIR_MAX_TOKENS,
                 **_REPAIR_KWARGS,
-                timeout=_CFG_LLM_API_TIMEOUT,  # configurable via config.py
+                timeout=_CFG_LLM_CODEGEN_API_TIMEOUT,  # configurable via config.py
             )
 
             generated_code = response.choices[0].message.content.strip()
@@ -6774,6 +6881,9 @@ def _run_repair_on_script(
                 model = Model(_AIDER_MODEL_NAME)
                 model.extra_params = {
             "max_tokens": _AIDER_MAX_TOKENS,  # avoid truncation
+            # litellm-level request timeout (s): full-script generation
+            # runs 30k-65k output tokens; 120s truncated these mid-file.
+            "timeout": _CFG_LLM_CODEGEN_API_TIMEOUT,
             "extra_body": {"enable_thinking": False},  # thinking off
         }
                 io = InputOutput(
@@ -6786,8 +6896,10 @@ def _run_repair_on_script(
                     io=io,
                     fnames=[script_path, _BUILD123D_REF],
                     auto_commits=False,
+                    add_gitignore_files=True,
                 )
                 coder.run(repair_prompt)
+                _join_aider_summarizer(coder)
 
                 # Verify the file still has valid content
                 try:
@@ -6908,7 +7020,7 @@ def _run_direct_repair_fallback(
                     {"role": "user", "content": user_prompt},
                 ],
                 max_tokens=_REPAIR_MAX_TOKENS,
-                timeout=_CFG_LLM_API_TIMEOUT,  # configurable via config.py
+                timeout=_CFG_LLM_CODEGEN_API_TIMEOUT,  # configurable via config.py
                 **_REPAIR_KWARGS,
             )
             raw_response = response.choices[0].message.content or ""
@@ -7727,10 +7839,8 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
         # Without this check, a silently-failed chamfer/fillet would be missed
         # and the loop would report SUCCESS prematurely.
         if not _skip_qa or retry > 0:
-            missed_path = cwd / f"temp_missed_{retry_iter}.json"
-            if not missed_path.is_file():
-                missed_path = cwd / "temp_missed_0.json"
-            if missed_path.is_file():
+            missed_path = _runtime_diagnostics_path(cwd, retry_iter)
+            if missed_path is not None:
                 try:
                     missed = json.loads(missed_path.read_text(encoding="utf-8"))
                     if missed:
@@ -8103,10 +8213,8 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                 )
 
                 # -- Check for missed cuts / fillet failures (runtime diagnostics) --
-                missed_path = cwd / f"temp_missed_{retry_iter}.json"
-                if not missed_path.is_file():
-                    missed_path = cwd / "temp_missed_0.json"  # fallback
-                if missed_path.is_file():
+                missed_path = _runtime_diagnostics_path(cwd, retry_iter)
+                if missed_path is not None:
                     try:
                         missed = json.loads(missed_path.read_text(encoding="utf-8"))
                         if missed:

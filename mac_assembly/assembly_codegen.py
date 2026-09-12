@@ -24,8 +24,10 @@ Generated script contract
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
+from mac_assembly.geometry_utils import FACE_AXIS, FACE_NORMALS
 from mac_assembly.schemas_assembly import (
     AnchorKind,
     AssemblyBrief,
@@ -51,8 +53,15 @@ from mac_assembly.selector_resolver import resolve_selector_anchor
 
 
 def _anchor_point(shape, face, axis, offset_mm):
-    """Deterministic named-datum -> part-local 3D point (positioning.md)."""
-    bb = shape.bounding_box()
+    """Deterministic named datum transformed from part-local to world.
+
+    ``shape.bounding_box()`` is world-axis aligned after a parent mate has
+    rotated the part, so reading a named face/axis point directly from it
+    selects a different physical datum. Recover the original local bbox,
+    evaluate the datum there, then apply the full current Location.
+    """
+    loc = shape.location
+    bb = shape.moved(loc.inverse()).bounding_box()
     c = bb.center()
     faces = {{
         "top": (c.X, c.Y, bb.max.Z),
@@ -63,10 +72,20 @@ def _anchor_point(shape, face, axis, offset_mm):
         "front": (c.X, bb.min.Y, c.Z),
     }}
     if face is not None:
-        return faces[face]
+        p = faces[face]
+        w = loc * Location(p)
+        return (w.position.X, w.position.Y, w.position.Z)
     d = {{"x": (offset_mm, 0.0, 0.0), "y": (0.0, offset_mm, 0.0),
          "z": (0.0, 0.0, offset_mm)}}[axis]
-    return (c.X + d[0], c.Y + d[1], c.Z + d[2])
+    p = (c.X + d[0], c.Y + d[1], c.Z + d[2])
+    w = loc * Location(p)
+    return (w.position.X, w.position.Y, w.position.Z)
+
+
+def _local_point(shape, point):
+    """Transform an explicit part-local point through the current pose."""
+    w = shape.location * Location(point)
+    return (w.position.X, w.position.Y, w.position.Z)
 
 
 def _axis_direction(axis):
@@ -79,19 +98,87 @@ def _axis_direction(axis):
 # diverge). The subprocess PYTHONPATH includes _PROJECT_ROOT so the import
 # resolves at runtime.
 from mac_assembly.geometry_utils import shift_pt as _shift_pt
+from mac_assembly.geometry_utils import snap_axis as _snap_axis
+
+
+def _world_axis_dir(part, axis_name):
+    # A mate's slide/joint axis is principal (x/y/z) in the FIXED part's
+    # LOCAL frame. When the fixed part was itself placed by an earlier mate
+    # (chained joints), its local axis is rotated in world -- transform it
+    # through the part's current location (rotation only: the transformed
+    # endpoint minus the transformed origin cancels the translation), then
+    # snap away the ~1e-16 float noise so OCP's gp_Ax3 branch stays
+    # deterministic (see geometry_utils.snap_axis). Identity for unmoved
+    # parts, so pure-translation assemblies are byte-identical to before.
+    _d = {{"x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0),
+          "z": (0.0, 0.0, 1.0)}}[axis_name]
+    _o = part.location * Location((0.0, 0.0, 0.0))
+    _e = part.location * Location(_d)
+    _ax = (_e.position.X - _o.position.X,
+           _e.position.Y - _o.position.Y,
+           _e.position.Z - _o.position.Z)
+    if abs(_ax[0]) + abs(_ax[1]) + abs(_ax[2]) < 1e-9:
+        return _d
+    return _snap_axis(_ax)
+
+
+def _shift_xyz(point, part, delta_local):
+    """Shift a world point by a vector expressed in ``part`` local axes."""
+    _x = _world_axis_dir(part, "x")
+    _y = _world_axis_dir(part, "y")
+    _z = _world_axis_dir(part, "z")
+    return (
+        point[0] + delta_local[0] * _x[0] + delta_local[1] * _y[0] + delta_local[2] * _z[0],
+        point[1] + delta_local[0] * _x[1] + delta_local[1] * _y[1] + delta_local[2] * _z[1],
+        point[2] + delta_local[0] * _x[2] + delta_local[1] * _y[2] + delta_local[2] * _z[2],
+    )
 
 
 def _resolve_part_step(part_id):
-    cand = sorted((Path("parts") / part_id).glob("temp_output_*.step"))
-    if not cand:
+    # 1. AUTHORITATIVE path: the PartResult's step_path recorded by the
+    #    part_builder this iteration (passed in via _PART_STEP_OVERRIDES).
+    #    Guards against a stale STEP file left in the part directory (e.g.
+    #    a failed regeneration keeps the previous temp_output_features.step)
+    #    being picked up by the mtime glob below and masquerading as this
+    #    round's geometry. When an override IS recorded but the file is
+    #    gone, we FAIL LOUDLY (FileNotFoundError) instead of falling back
+    #    to the glob: the fallback could resurrect exactly the stale
+    #    geometry the override exists to prevent, silently assembling
+    #    last round's part as this round's result.
+    # 2. Legacy compatibility mode (NO override recorded for this part,
+    #    e.g. a script generated before part_step_overrides existed):
+    #    newest temp_output_*.step by mtime (delegates to
+    #    mac_assembly.file_utils.newest_file, single source of truth, R3):
+    #    mtime primary, trailing iteration number as tiebreak -- NEVER
+    #    alphabetical ("temp_output_10" < "temp_output_2" lexicographically).
+    #    The subprocess PYTHONPATH includes the project root, so the import
+    #    resolves at runtime (same as geometry_utils).
+    _ovr = _PART_STEP_OVERRIDES.get(part_id)
+    if _ovr is not None:
+        _p = Path(_ovr)
+        if _p.is_file():
+            return _p
+        raise FileNotFoundError(
+            f"authoritative STEP for part {{part_id!r}} recorded at {{_ovr}} "
+            f"is missing -- refusing the stale-glob fallback (it could pick "
+            f"up an older temp_output_*.step and masquerade as this round's "
+            f"geometry); rebuild the part or clear the override"
+        )
+    from mac_assembly.file_utils import newest_file as _nf
+    p = _nf(Path("parts") / part_id, "temp_output_*.step")
+    if p is None:
         raise FileNotFoundError(f"no STEP for part {{part_id!r}} under parts/")
-    return cand[-1]
+    return p
 
 
 asm = AssemblyHelper({assembly_name!r})
 _parts = {{}}
 _part_steps = {{}}          # part_id -> STEP path (for SELECTOR resolution)
 _audit_selectors = []       # resolved cadpy numeric selectors (audit trail)
+# part_id -> authoritative STEP path (relative to this cwd) from THIS
+# iteration's PartResults -- see _resolve_part_step. Empty dict when the
+# caller has no part results (legacy behaviour: mtime glob only).
+_PART_STEP_OVERRIDES = {part_step_overrides!r}
 '''
 
 _FOOTER = '''\
@@ -139,9 +226,16 @@ for _label, _shape in _parts.items():
 with open({manifest_out!r}, "w", encoding="utf-8") as _f:
     json.dump(manifest, _f, indent=2)
 
+# Merge MateSpec joint limits into the relation records by mate label
+# (build123d relations don't carry them). Consumed by urdf_export (D3).
+_mate_limits = {mate_limits!r}
+_recs = [r.__dict__ if hasattr(r, "__dict__") else str(r)
+         for r in asm.relations]
+for _rec in _recs:
+    if isinstance(_rec, dict):
+        _rec.update(_mate_limits.get(_rec.get("label"), {{}}))
 with open({mates_out!r}, "w", encoding="utf-8") as _f:
-    json.dump([r.__dict__ if hasattr(r, "__dict__") else str(r)
-               for r in asm.relations], _f, indent=2, default=str)
+    json.dump(_recs, _f, indent=2, default=str)
 
 # Audit trail: the cadpy numeric selectors each SELECTOR anchor resolved to.
 with open({audit_out!r}, "w", encoding="utf-8") as _f:
@@ -152,15 +246,9 @@ print("[assembly] ASSEMBLY_DONE "
 '''
 
 
-# Outward normal of each bbox face, as a literal direction tuple.
-_FACE_NORMALS = {
-    "top": "(0.0, 0.0, 1.0)",
-    "bottom": "(0.0, 0.0, -1.0)",
-    "right": "(1.0, 0.0, 0.0)",
-    "left": "(-1.0, 0.0, 0.0)",
-    "back": "(0.0, 1.0, 0.0)",
-    "front": "(0.0, -1.0, 0.0)",
-}
+# Outward normals of bbox faces come from geometry_utils.FACE_NORMALS
+# (single source of truth, R1); str(tuple) reproduces the literal form the
+# generated source expects.
 
 
 def _emit_anchor(anchor, part_id: str, tag: str):
@@ -217,9 +305,13 @@ def _emit_anchor(anchor, part_id: str, tag: str):
         # Axis direction: the transformed resolver axis (always non-zero
         # for a valid cylinder face). Fall back to the raw resolver axis
         # only if the rotation transform produced a degenerate vector.
+        # _snap_axis: the transform through the fixed part's placed Location
+        # injects ~1e-16 noise into axis-aligned bore axes, which can flip
+        # OCP gp_Ax3's default-x_dir branch (see geometry_utils.snap_axis)
+        # and roll the mated part 90 deg about the joint axis.
         return setup, point_expr, (
-            f"{var}_ax if abs({var}_ax[0])+abs({var}_ax[1])+abs({var}_ax[2]) > 1e-9 "
-            f"else {var}['axis']"
+            f"_snap_axis({var}_ax) if abs({var}_ax[0])+abs({var}_ax[1])+abs({var}_ax[2]) > 1e-9 "
+            f"else _snap_axis({var}['axis'])"
         )
 
     if getattr(anchor, "kind", None) == AnchorKind.SPHERE:
@@ -230,6 +322,10 @@ def _emit_anchor(anchor, part_id: str, tag: str):
         # for both asm.ball_frame() (fixed/socket) and asm.rigid_frame
         # (moving/ball).
         sc = anchor.sphere_center_mm or [0.0, 0.0, 0.0]
+        # The schema is the strict layer: Anchor._check_kind_fields already
+        # enforces len==3 at parse time (B12), and QA bare-indexes sc[0..2]
+        # under that guarantee. This raise is a defense-in-depth assert for
+        # objects that bypassed validation (e.g. model_construct).
         if len(sc) != 3:
             raise ValueError(
                 f"sphere_center_mm must have 3 elements [x, y, z], got "
@@ -239,14 +335,75 @@ def _emit_anchor(anchor, part_id: str, tag: str):
         return [], point, None
 
     point = (
-        f"_anchor_point(_parts[{part_id!r}], {anchor.face!r}, "
-        f"{anchor.axis!r}, {anchor.offset_mm!r})"
+        f"_local_point(_parts[{part_id!r}], {tuple(anchor.point_mm)!r})"
+        if anchor.kind == AnchorKind.AXIS_POINT and anchor.point_mm is not None
+        else f"_anchor_point(_parts[{part_id!r}], {anchor.face!r}, "
+             f"{anchor.axis!r}, {anchor.offset_mm!r})"
     )
     if anchor.kind == AnchorKind.FACE:
-        dir_expr = _FACE_NORMALS[anchor.face]
+        # str() of the tuple reproduces the "(0.0, 0.0, 1.0)" literal form
+        # the generated source expects.
+        dir_expr = str(FACE_NORMALS[anchor.face])
     else:
         dir_expr = f"_axis_direction({(anchor.axis or 'z')!r})"
     return [], point, dir_expr
+
+
+def _axis_rot_matrix(axis: str, deg: float) -> list[list[float]]:
+    """3x3 rotation matrix about a principal axis (right-hand rule)."""
+    r = math.radians(deg)
+    c, s = math.cos(r), math.sin(r)
+    if axis == "x":
+        return [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]]
+    if axis == "y":
+        return [[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]]
+    return [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]
+
+
+def _mat3_mul(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:
+    return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)]
+            for i in range(3)]
+
+
+def _to_intrinsic_xyz(r: list[list[float]]) -> tuple[float, float, float]:
+    """Decompose R into build123d's intrinsic-XYZ Euler triple (degrees).
+
+    build123d ``Rotation(X, Y, Z)`` (Intrinsic.XYZ) composes as
+    ``R = Rx(X) @ Ry(Y) @ Rz(Z)`` -- verified numerically against
+    build123d. Extraction: Y = atan2(R02, hypot(R00, R01)),
+    X = atan2(-R12, R22), Z = atan2(-R01, R00); at gimbal lock
+    (|R02| = 1) set X = 0 and recover Z = atan2(R10, R11), which is
+    correct for both Y = +90 and Y = -90.
+    """
+    y = math.atan2(r[0][2], math.hypot(r[0][0], r[0][1]))
+    if abs(abs(r[0][2]) - 1.0) < 1e-9:
+        x, z = 0.0, math.atan2(r[1][0], r[1][1])
+    else:
+        x = math.atan2(-r[1][2], r[2][2])
+        z = math.atan2(-r[0][1], r[0][0])
+    return (math.degrees(x), math.degrees(y), math.degrees(z))
+
+
+def _ball_angles_euler(axis1: str, angle1: float, axis2: str,
+                       angle2: float) -> tuple[float, float, float]:
+    """Static pose of a ball mate as an intrinsic-XYZ Euler triple.
+
+    The joint's two DOFs are rotations about ``axis1`` (first, in the
+    joint frame) then ``axis2`` (in the post-first-rotation frame) --
+    matching the URDF decomposition's serial chain, whose total world
+    rotation is ``R_axis1(a1) @ R_axis2(a2)``. BallJoint only accepts an
+    Euler triple or a single Rotation, and ``Rotation * Rotation``
+    returns a plain Location (rejected by ``relative_to``), so the
+    composed rotation is converted to the equivalent Euler triple here
+    at generation time (zero-token deterministic math). Slots stay
+    signed (the natural +-180 decomposition): the emitted ball_frame
+    widens angular_range to +-360 per slot, because ``relative_to``
+    re-derives the orientation and range-checks THAT, so a normalized
+    [0,360) input like 330 would still fail as -30.
+    """
+    r = _mat3_mul(_axis_rot_matrix(axis1, angle1),
+                  _axis_rot_matrix(axis2, angle2))
+    return tuple(round(v, 9) for v in _to_intrinsic_xyz(r))
 
 
 def _toposort_mates(mates: list, part_ids: set[str]) -> list:
@@ -270,14 +427,9 @@ def _toposort_mates(mates: list, part_ids: set[str]) -> list:
         for m in ready:
             order.append(m)
             settled.add(m.moving_part_id)
-        remaining = [m for m in remaining if m not in order]
+        ordered_ids = {m.mate_id for m in order}
+        remaining = [m for m in remaining if m.mate_id not in ordered_ids]
     return order
-
-
-def _unsortable_mates(mates: list, part_ids: set[str]) -> list:
-    """Mates left over after topological ordering (i.e. on a cycle)."""
-    ordered = _toposort_mates(mates, part_ids)
-    return [m for m in mates if m not in ordered]
 
 
 def _axis_ranges_from_spec(part) -> dict[str, dict]:
@@ -477,12 +629,32 @@ def _get_anchor_axis(anchor) -> str | None:
             return str(anchor.axis).lower() if anchor.axis else None
         return None
     if anchor.kind == AnchorKind.FACE:
-        face_axis_map = {
-            "top": "z", "bottom": "z",
-            "left": "x", "right": "x",
-            "front": "y", "back": "y",
-        }
-        return face_axis_map.get(str(anchor.face).lower()) if anchor.face else None
+        return FACE_AXIS.get(str(anchor.face).lower()) if anchor.face else None
+    return None
+
+
+def _anchor_axis_letter(anchor) -> str | None:
+    """The anchor's principal axis letter (x/y/z), offset-agnostic.
+
+    Unlike ``_get_anchor_axis`` -- whose ``None`` for |offset_mm| > 1
+    axis_points tells ``postprocess_axial_offsets`` to leave the LLM's
+    ``axial_offset_mm`` alone -- this is the plain axis the anchor names:
+    ``axis_point.axis`` at ANY offset (the mating prompt's canonical
+    revolute example uses offsets 12.5/-30.0, and its guidance recommends
+    joint-end datums at half the part extent), selector_query.axis for
+    cylinder AND plane queries (a plane's normal is a valid hinge axis --
+    the turntable pattern), or the FACE normal axis. Consumers: plan
+    validation's principal-axis gate and the revolute precompensation
+    matrix (which previously fell back to 'z' for large-offset axis_point
+    anchors, mis-rotating x/y-axis hinges).
+    """
+    kind = getattr(anchor, "kind", None)
+    if kind == AnchorKind.SELECTOR and anchor.selector_query is not None:
+        return str(anchor.selector_query.axis).lower() or None
+    if kind == AnchorKind.AXIS_POINT:
+        return str(anchor.axis).lower() if anchor.axis else None
+    if kind == AnchorKind.FACE:
+        return FACE_AXIS.get(str(anchor.face).lower()) if anchor.face else None
     return None
 
 
@@ -503,11 +675,7 @@ def postprocess_axial_offsets(plan, brief) -> "MatingPlan":  # type: ignore[no-u
     Generalized from Z-only to any principal axis: the override fires
     whenever both anchors reference the SAME principal axis (SELECTOR
     cylinder axis=<x|y|z>, AXIS_POINT axis=<x|y|z> with small offset,
-    or FACE whose normal is along that axis). The chain offset tracking
-    is per-axis, so mixed-axis chains (e.g. shoulder yaw + elbow pitch)
-    are handled correctly when each joint's static pose is a pure
-    translation (no rotation); rotated static poses break the chain
-    tracking and the override skips (LLM's value kept).
+    or FACE whose normal is along that axis).
 
     Pattern matched (all must hold for an override):
       - mate_type == REVOLUTE
@@ -518,38 +686,67 @@ def postprocess_axial_offsets(plan, brief) -> "MatingPlan":  # type: ignore[no-u
     Formula ("seat on +axis face" semantics -- moving's -axis face
     lands on fixed's +axis face):
 
-        fixed_anchor_local = (post_min + post_max) / 2  if protrusion
-                                                           else overall midpoint
-        fixed_top_local    = overall_max  (+axis face)
+        fixed_anchor_local  = (post_min + post_max) / 2  if protrusion
+                                                        else overall midpoint
+        fixed_top_local     = overall_max  (+axis face)
         moving_anchor_local = (overall_min + overall_max) / 2  (through-bore)
 
-        fixed_anchor_world = fixed_anchor_local + world_offset[axis][fixed_pid]
-        fixed_top_world    = fixed_top_local     + world_offset[axis][fixed_pid]
-        axial_offset_mm    = fixed_top_world + moving_anchor_local
-                                              - fixed_anchor_world
-        world_offset[axis][moving_pid] = fixed_top_world  (chain tracking)
+        axial_offset_mm = fixed_top_local + moving_anchor_local
+                                           - fixed_anchor_local
 
-    For the unmoved root, world_offset[axis][pid] = 0. For moved parts,
-    it is the fixed_top_world of the mate that placed them. Mates are
-    processed in toposort order so the fixed part's chain is settled
-    first. Per-axis tracking means a part on a Z-chain gets
-    world_offset[z] set, while a part on an X-chain gets world_offset[x]
-    set; mixed-axis chains with translation-only static poses work
-    (each axis tracked independently).
+    The formula is purely LOCAL: axial_offset_mm is applied to the fixed
+    part's frame, so any world translation of the fixed part (its own
+    placement in a chain) would add to both fixed_top and fixed_anchor
+    and cancels out -- an earlier "chain tracking" mechanism propagated
+    such offsets per axis and algebraically never changed a single
+    override value, so it was removed (R2).
 
     Returns the plan with overridden mates (original mate order
     preserved). Mates that don't match the pattern keep the LLM's value.
     """
+    # Normalize a common rigid-placement failure before the revolute
+    # heuristics below: the anchors already define the datum coincidence,
+    # but the LLM repeats the same absolute coordinate in axial_offset or in
+    # the normal component of translation_mm.  That double-applies stacking
+    # height and creates obviously floating decks/sensors.
+    normalized_mates = []
+    for mate in plan.mates:
+        if mate.mate_type != MateType.RIGID:
+            normalized_mates.append(mate)
+            continue
+        fa, ma = mate.fixed_anchor, mate.moving_anchor
+        # Offset-agnostic axis identity is required here: large axis_point
+        # offsets are exactly the top/bottom datum pattern being normalized,
+        # and planar SELECTOR anchors also have a meaningful normal axis.
+        axis = _anchor_axis_letter(fa)
+        same_axis = axis is not None and axis == _anchor_axis_letter(ma)
+        updates = {}
+        if same_axis and (
+            (fa.kind == AnchorKind.AXIS_POINT and ma.kind == AnchorKind.AXIS_POINT)
+            or (
+                (fa.kind == AnchorKind.FACE or (
+                    fa.kind == AnchorKind.SELECTOR
+                    and fa.selector_query is not None
+                    and fa.selector_query.surface == "plane"
+                ))
+                and (ma.kind == AnchorKind.FACE or (
+                    ma.kind == AnchorKind.SELECTOR
+                    and ma.selector_query is not None
+                    and ma.selector_query.surface == "plane"
+                ))
+            )
+        ):
+            updates["axial_offset_mm"] = 0.0
+            translation = list(mate.translation_mm)
+            translation[{"x": 0, "y": 1, "z": 2}[axis]] = 0.0
+            updates["translation_mm"] = translation
+        normalized_mates.append(mate.model_copy(update=updates) if updates else mate)
+    plan = plan.model_copy(update={"mates": normalized_mates})
+
     pids = {p.part_id for p in brief.parts}
     part_by_id = {p.part_id: p for p in brief.parts}
     ordered = _toposort_mates(plan.mates, pids)
 
-    # Per-axis chain offset: world_offset[axis][pid] = world coord of
-    # pid's local origin along `axis`. Independent per axis so mixed-axis
-    # chains with translation-only static poses work.
-    world_offset: dict[str, dict[str, float]] = {
-        ax: {pid: 0.0 for pid in pids} for ax in ("x", "y", "z")
-    }
     overrides: dict[str, float] = {}
 
     # Structured axis_ranges (preferred over prose scrape): precompute
@@ -637,17 +834,10 @@ def postprocess_axial_offsets(plan, brief) -> "MatingPlan":  # type: ignore[no-u
             moving_r["overall_min"] + moving_r["overall_max"]
         ) / 2.0
 
-        fixed_off = world_offset[axis].get(mate.fixed_part_id, 0.0)
-        fixed_anchor_world = fixed_anchor_local + fixed_off
-        fixed_top_world = fixed_top_local + fixed_off
-
         axial_offset = (
-            fixed_top_world + moving_anchor_local - fixed_anchor_world
+            fixed_top_local + moving_anchor_local - fixed_anchor_local
         )
         overrides[mate.mate_id] = axial_offset
-
-        # Moving's -axis face lands on fixed's +axis face -> chain to children.
-        world_offset[axis][mate.moving_part_id] = fixed_top_world
 
     if not overrides:
         return plan
@@ -686,9 +876,25 @@ def _mate_block(i: int, mate) -> str:
             fx_eff = f"_shift_pt({fx}, {f_dir}, {mate.axial_offset_mm!r})"
         else:
             fx_eff = fx
+        translation = tuple(float(v) for v in mate.translation_mm)
+        if mate.mate_type == MateType.RIGID and translation != (0.0, 0.0, 0.0):
+            # translation_mm is expressed in the fixed part's local frame;
+            # rotate its basis into world so chained/rotated parents work.
+            fx_eff = (
+                f"_shift_xyz({fx_eff}, _parts[{fid!r}], {translation!r})"
+            )
+        moving_rpy = tuple(float(v) for v in mate.moving_rotation_euler_deg)
+        moving_frame = f"Location({mx})"
+        if moving_rpy != (0.0, 0.0, 0.0):
+            # Joint-frame pre-rotation is inverted by connect_to, yielding
+            # the requested final moving-part orientation.
+            moving_frame += (
+                f" * Rotation({-moving_rpy[0]!r}, {-moving_rpy[1]!r}, "
+                f"{-moving_rpy[2]!r})"
+            )
         lines += [
             f"_f{i} = asm.rigid_frame(_parts[{fid!r}], {('fixed_' + mate.mate_id)!r}, Location({fx_eff}))",
-            f"_m{i} = asm.rigid_frame(_parts[{mid!r}], {('moving_' + mate.mate_id)!r}, Location({mx}))",
+            f"_m{i} = asm.rigid_frame(_parts[{mid!r}], {('moving_' + mate.mate_id)!r}, {moving_frame})",
         ]
         if mate.mate_type == MateType.FACE_TO_FACE:
             lines.append(
@@ -729,12 +935,19 @@ def _mate_block(i: int, mate) -> str:
         #   axis=+X → Rotation(0, 90, 180)
         #   axis=+Y → Rotation(-90, 0, -90)
         #   axis=+Z → Rotation(0, 0, 0) (no precomp needed)
-        fixed_axis = _get_anchor_axis(mate.fixed_anchor) or "z"
+        fixed_axis = _anchor_axis_letter(mate.fixed_anchor) or "z"
         _PRECOMP_RPY = {
             "x": (0.0, 90.0, 180.0),
             "y": (-90.0, 0.0, -90.0),
             "z": (0.0, 0.0, 0.0),
         }
+        # The moving selector's physical cylinder axis is used to resolve the
+        # anchor point, but build123d's moving RigidJoint below receives only
+        # Location(point), not that axis.  Therefore real cylinder SELECTOR
+        # pairs need the same precompensation as FACE/AXIS_POINT anchors.
+        # Skipping it for Y/Y selector pairs leaves connect_to's implicit
+        # (-90, 0, -90) reframe on the part (observed in the manifest as a
+        # vertical jaw turning sideways).  Apply the axis map uniformly.
         precomp_rpy = _PRECOMP_RPY.get(fixed_axis, (0.0, 0.0, 0.0))
         if precomp_rpy == (0.0, 0.0, 0.0):
             moving_loc_expr = f"Location({mx})"
@@ -760,39 +973,78 @@ def _mate_block(i: int, mate) -> str:
     elif mate.mate_type in (MateType.LINEAR, MateType.CYLINDRICAL):
         # LinearJoint / CylindricalJoint.connect_to expect a RigidJoint on
         # the moving side; the fixed side carries the slide axis. The slide
-        # DIRECTION comes from mate.slide_axis; the anchor points locate the
-        # datum. Default linear_range is (0, inf) -- widen it so negative
-        # poses are legal. angle is the static rotation about the slide axis
-        # (normalized into [0,360) like revolute; R1 -- was silently dropped).
+        # DIRECTION comes from mate.slide_axis -- a principal axis in the
+        # FIXED part's LOCAL frame, so it is pushed through the part's
+        # current location via _world_axis_dir (identity for unmoved parts;
+        # chained joints where the fixed part was rotated by a parent mate
+        # previously slid along the wrong world axis). The anchor points
+        # locate the datum. _validate_mating_plan has already enforced
+        # slide_axis == both anchors' principal axis, so consuming slide_axis
+        # alone here is consistent with the anchors (the equality check
+        # exists to catch architect drift at the stage boundary, not
+        # because codegen needs the anchor axis). Default linear_range is
+        # (0, inf) -- widen it so negative poses are legal.
         sax = mate.slide_axis or "x"
+        sax_dir_expr = f"_world_axis_dir(_parts[{fid!r}], {sax!r})"
         frame_method = (
             "linear_frame" if mate.mate_type == MateType.LINEAR
             else "cylindrical_frame"
         )
         lines += [
-            f"_fa{i} = Axis({fx}, _axis_direction({sax!r}))",
+            f"_fa{i} = Axis({fx}, {sax_dir_expr})",
             f"_f{i} = asm.{frame_method}(_parts[{fid!r}], {('fixed_' + mate.mate_id)!r}, "
             f"_fa{i}, linear_range=(-100000.0, 100000.0))",
             f"_m{i} = asm.rigid_frame(_parts[{mid!r}], {('moving_' + mate.mate_id)!r}, Location({mx}))",
-            f"asm.connect(_f{i}, _m{i}, relation={mate.mate_type.value!r}, "
-            f"position={mate.position_mm!r}, angle={mate.angle_deg % 360!r}, "
-            f"label={mate.mate_id!r})",
         ]
+        if mate.mate_type == MateType.CYLINDRICAL:
+            # CylindricalJoint.relative_to honours `angle`: the static
+            # rotation about the slide axis (normalized into [0,360) like
+            # revolute).
+            lines.append(
+                f"asm.connect(_f{i}, _m{i}, relation={mate.mate_type.value!r}, "
+                f"position={mate.position_mm!r}, angle={mate.angle_deg % 360!r}, "
+                f"label={mate.mate_id!r})",
+            )
+        else:
+            # LinearJoint.relative_to FORCES angle=0.0 for a RigidJoint
+            # counterpart (build123d joints.py) -- a nonzero angle_deg would
+            # be silently dropped, so _validate_mating_plan rejects it and
+            # codegen does not emit it.
+            lines.append(
+                f"asm.connect(_f{i}, _m{i}, relation={mate.mate_type.value!r}, "
+                f"position={mate.position_mm!r}, label={mate.mate_id!r})",
+            )
     elif mate.mate_type == MateType.BALL:
         # Ball mate: BallJoint on the fixed (socket) side at the sphere
         # center; RigidJoint on the moving (ball) side at the ball's sphere
-        # center. asm.ball() connects them with a 3-tuple `angles`
-        # (RotationLike = X/Y/Z gimbal). 2-DOF constraint per spec: roll
-        # (the third element) is always 0 -- pitch + yaw only. Both
-        # anchors must be kind=sphere (validated in _validate_mating_plan);
-        # fx and mx are the sphere-center 3-tuples from _emit_anchor.
+        # center. asm.ball() connects them with a 3-tuple `angles` that
+        # build123d passes to Rotation(*angles) -- positional slots are
+        # (about X, about Y, about Z). The two DOFs are ball_pitch_deg
+        # about ball_axis_1 then ball_yaw_deg about ball_axis_2 (defaults
+        # y/z: the legacy (0.0, pitch, yaw) tuple); the composed rotation
+        # is converted to the equivalent intrinsic-XYZ Euler triple at
+        # generation time (see _ball_angles_euler), matching the URDF
+        # export's 2-revolute decomposition over the same two axes.
+        # Both anchors must be kind=sphere (validated in
+        # _validate_mating_plan); fx and mx are the sphere-center 3-tuples
+        # from _emit_anchor. angular_range is widened from the default
+        # (0,360) to +-360 per slot: relative_to re-derives the
+        # orientation and range-checks THAT, so a negative static angle
+        # (e.g. pitch=-30) would otherwise raise even though the pose is
+        # perfectly valid.
+        ex, ey, ez = _ball_angles_euler(
+            mate.ball_axis_1, mate.ball_pitch_deg,
+            mate.ball_axis_2, mate.ball_yaw_deg,
+        )
         lines += [
             f"_f{i} = asm.ball_frame(_parts[{fid!r}], "
-            f"{('fixed_' + mate.mate_id)!r}, Location({fx}))",
+            f"{('fixed_' + mate.mate_id)!r}, Location({fx}), "
+            f"angular_range=((-360.0, 360.0), (-360.0, 360.0), "
+            f"(-360.0, 360.0)))",
             f"_m{i} = asm.rigid_frame(_parts[{mid!r}], "
             f"{('moving_' + mate.mate_id)!r}, Location({mx}))",
             f"asm.ball(_f{i}, _m{i}, "
-            f"angles=({mate.ball_pitch_deg!r}, {mate.ball_yaw_deg!r}, 0.0), "
+            f"angles=({ex!r}, {ey!r}, {ez!r}), "
             f"label={mate.mate_id!r})",
         ]
     else:  # pragma: no cover - enum is closed
@@ -804,6 +1056,7 @@ def generate_assembly_script(
     brief: AssemblyBrief,
     mates: list,
     repo_root: Path,
+    part_step_overrides: "dict[str, str] | None" = None,
 ) -> str:
     """Render the full ``temp_assembly.py`` source text.
 
@@ -814,10 +1067,32 @@ def generate_assembly_script(
     head = _PRELUDE.format(
         repo_root=str(repo_root),
         assembly_name=brief.assembly_name,
+        part_step_overrides=dict(part_step_overrides or {}),
     )
+
+    # Template-only parts (referenced by reuses_part_id but never mated)
+    # are geometry sources for reuse instances -- they must NOT be added
+    # to the assembly (they would sit at the origin unplaced). The
+    # part_builder still generates their STEP; the codegen skips them.
+    mated_ids = {
+        m.fixed_part_id for m in mates
+    } | {m.moving_part_id for m in mates}
+    template_only_ids = {
+        p.part_id for p in brief.parts
+        if any(q.reuses_part_id == p.part_id for q in brief.parts)
+        and p.part_id not in mated_ids
+    }
 
     body_lines = []
     for spec in brief.parts:
+        if spec.part_id in template_only_ids:
+            # Still record the step path (for reuse copy verification)
+            # but do NOT asm.add the template into the assembly tree.
+            body_lines += [
+                f"_step_path = _resolve_part_step({spec.part_id!r})",
+                f"_part_steps[{spec.part_id!r}] = str(_step_path)",
+            ]
+            continue
         body_lines += [
             f"_step_path = _resolve_part_step({spec.part_id!r})",
             f"_parts[{spec.part_id!r}] = asm.add(import_step(_step_path), {spec.part_id!r})",
@@ -828,16 +1103,35 @@ def generate_assembly_script(
     # Cycle leftovers (invalid plans) are emitted best-effort after; the
     # validation layer flags them upstream before codegen is reached.
     pids = {p.part_id for p in brief.parts}
-    ordered = _toposort_mates(mates, pids) + _unsortable_mates(mates, pids)
+    ordered = _toposort_mates(mates, pids)
+    ordered_ids = {m.mate_id for m in ordered}
+    ordered += [m for m in mates if m.mate_id not in ordered_ids]
     for i, mate in enumerate(ordered):
         body_lines.append(_mate_block(i, mate))
 
+    # MateSpec joint limits (D3): carried into assembly_mates.json so the
+    # URDF exporter can emit real <limit> bounds instead of borrowing the
+    # QA sweep range. Ball mates additionally carry their two DOF axes so
+    # the URDF decomposition emits revolute joints about the SAME axes the
+    # CAD static pose was composed from.
+    mate_limits = {
+        m.mate_id: {"limit_lower": m.limit_lower, "limit_upper": m.limit_upper}
+        for m in mates
+        if getattr(m, "limit_lower", None) is not None
+        or getattr(m, "limit_upper", None) is not None
+    }
+    for m in mates:
+        if m.mate_type == MateType.BALL:
+            mate_limits.setdefault(m.mate_id, {}).update(
+                ball_axis_1=m.ball_axis_1, ball_axis_2=m.ball_axis_2,
+            )
     foot = _FOOTER.format(
         step_out="assembly_output.step",
         stl_out="assembly_output.stl",
         manifest_out="assembly_manifest.json",
         mates_out="assembly_mates.json",
         audit_out="assembly_selector_audit.json",
+        mate_limits=mate_limits,
     )
     return head + "\n".join(body_lines) + "\n" + foot
 
@@ -848,9 +1142,18 @@ def write_assembly_script(
     assembly_dir: Path,
     repo_root: Path,
     iteration: int = 0,
+    part_step_overrides: "dict[str, str] | None" = None,
 ) -> Path:
-    """Write ``temp_assembly_{iteration}.py`` into the assembly job dir."""
-    src = generate_assembly_script(brief, mates, repo_root)
+    """Write ``temp_assembly_{iteration}.py`` into the assembly job dir.
+
+    ``part_step_overrides`` (part_id -> path relative to ``assembly_dir``)
+    pins each part's authoritative STEP from the current iteration's
+    PartResults so the generated script cannot pick up a stale STEP via
+    the mtime glob (see ``_resolve_part_step`` in the prelude).
+    """
+    src = generate_assembly_script(
+        brief, mates, repo_root, part_step_overrides=part_step_overrides
+    )
     path = assembly_dir / f"temp_assembly_{iteration}.py"
     path.write_text(src, encoding="utf-8")
     return path
@@ -897,7 +1200,6 @@ def run_assembly_script(
 
     python = python_bin or sys.executable
     env = dict(os.environ)
-    env["ITERATION"] = "0"
     try:
         proc = subprocess.run(  # noqa: S603
             [python, str(script_path)],

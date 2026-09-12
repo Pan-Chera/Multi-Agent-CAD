@@ -100,8 +100,12 @@ def main(argv: list[str] | None = None) -> int:
         "node_history": [],
         "execution_log": [],
     }
+    explicit_code_path = os.environ.get("MAC_PART_CODE_PATH", "").strip()
+    if explicit_code_path:
+        initial_state["current_python_code_path"] = explicit_code_path
 
     final: dict = dict(initial_state)
+    crashed = False
     try:
         for event in app.stream(initial_state, {"recursion_limit": 60}):
             for _node, node_output in event.items():
@@ -112,26 +116,30 @@ def main(argv: list[str] | None = None) -> int:
         import traceback
 
         traceback.print_exc()
+        crashed = True
+    finally:
+        # Persist this subprocess's token usage so the parent can aggregate
+        # end-to-end cost (the project's core metric). In finally so a
+        # crashed pipeline's spend is still accounted (B11).
+        try:
+            import json
+
+            from multi_agent_cad.token_tracker import tracker
+
+            summary = tracker.summary()
+            summary.pop("calls", None)  # detail not needed for aggregation
+            (part_dir / "token_summary.json").write_text(
+                json.dumps(summary, indent=2), encoding="utf-8"
+            )
+        except Exception as exc:  # noqa: BLE001 - accounting must never fail the run
+            print(f"[part_runner:{mode}] token summary failed: {exc}")
+
+    if crashed:
         return 1
 
     error = final.get("error_type")
     error_str = getattr(error, "value", str(error)) if error else "none"
     ok = error_str == "none"
-
-    # Persist this subprocess's token usage so the parent can aggregate
-    # end-to-end cost (the project's core metric).
-    try:
-        import json
-
-        from multi_agent_cad.token_tracker import tracker
-
-        summary = tracker.summary()
-        summary.pop("calls", None)  # detail not needed for aggregation
-        (part_dir / "token_summary.json").write_text(
-            json.dumps(summary, indent=2), encoding="utf-8"
-        )
-    except Exception as exc:  # noqa: BLE001 - accounting must never fail the run
-        print(f"[part_runner:{mode}] token summary failed: {exc}")
 
     print(f"[part_runner:{mode}] PART_DONE error_type={error_str}")
     return 0 if ok else 1

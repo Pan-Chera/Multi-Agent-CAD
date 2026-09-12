@@ -15,6 +15,14 @@ import os
 from multi_agent_cad.config import DS_BASE_URL  # noqa: F401  (re-export)
 
 # ============================================================================
+# Default LLM model for assembly-stage agents (Decomposer / Mating /
+# Assembly Repair / Assembly Judge). Centralized so a model-ID swap is a
+# one-line change; override per-stage via MAC_*_MODEL env vars.
+# ============================================================================
+
+_DEFAULT_MODEL = "qwen3.8-max"
+
+# ============================================================================
 # Default assembly request (used when MAC_ASSEMBLY_REQUEST env is unset)
 # ============================================================================
 
@@ -32,7 +40,7 @@ DEFAULT_ASSEMBLY_REQUEST = (
 # Stage: Decomposer (assembly-level Spec Planner)
 # ============================================================================
 
-DECOMPOSER_MODEL = os.environ.get("MAC_DECOMPOSER_MODEL", "qwen3.8-max")
+DECOMPOSER_MODEL = os.environ.get("MAC_DECOMPOSER_MODEL", _DEFAULT_MODEL)
 DECOMPOSER_TEMPERATURE = 0.0
 DECOMPOSER_MAX_TOKENS = 32768
 DECOMPOSER_KWARGS: dict = {"extra_body": {"enable_thinking": False}}
@@ -42,7 +50,7 @@ DECOMPOSER_MULTIMODAL = "auto"   # "auto" | "always" | "never"
 # Stage: Mating Architect (assembly-level Geometric Architect -- the HOW)
 # ============================================================================
 
-MATING_MODEL = os.environ.get("MAC_MATING_MODEL", "qwen3.8-max")
+MATING_MODEL = os.environ.get("MAC_MATING_MODEL", _DEFAULT_MODEL)
 MATING_TEMPERATURE = 0.0
 MATING_MAX_TOKENS = 32768
 MATING_KWARGS: dict = {"extra_body": {"enable_thinking": False}}
@@ -51,7 +59,7 @@ MATING_KWARGS: dict = {"extra_body": {"enable_thinking": False}}
 # Stage: Assembly Repair (edits temp_assembly.py when mates fail QA)
 # ============================================================================
 
-ASSEMBLY_REPAIR_MODEL = os.environ.get("MAC_ASM_REPAIR_MODEL", "qwen3.8-max")
+ASSEMBLY_REPAIR_MODEL = os.environ.get("MAC_ASM_REPAIR_MODEL", _DEFAULT_MODEL)
 ASSEMBLY_REPAIR_TEMPERATURE = 0.0
 ASSEMBLY_REPAIR_MAX_TOKENS = 16384
 ASSEMBLY_REPAIR_KWARGS: dict = {"extra_body": {"enable_thinking": True}}
@@ -62,7 +70,7 @@ ASSEMBLY_REPAIR_KWARGS: dict = {"extra_body": {"enable_thinking": True}}
 
 ASSEMBLY_JUDGE_ENABLED = True
 ASSEMBLY_JUDGE_MIN_RETRY = 1        # judge only from retry >= this
-ASSEMBLY_JUDGE_MODEL = os.environ.get("MAC_ASM_JUDGE_MODEL", "qwen3.8-max")
+ASSEMBLY_JUDGE_MODEL = os.environ.get("MAC_ASM_JUDGE_MODEL", _DEFAULT_MODEL)
 ASSEMBLY_JUDGE_TEMPERATURE = 0.0
 ASSEMBLY_JUDGE_MAX_TOKENS = 8192
 ASSEMBLY_JUDGE_KWARGS: dict = {"extra_body": {"enable_thinking": True}}
@@ -77,27 +85,41 @@ ASSEMBLY_JUDGE_SAVE_VIEWS = True
 
 # Outer assembly loop: assembler -> QA -> (judge) -> route back.
 # This is the GLOBAL safety net across all route types (remate / remodel /
-# repair_assembly / recompose). The per-route sub-budgets (MATINGS_MAX_RUNS,
+# repair_assembly / recompose). The per-route sub-budgets (MATING_MAX_RUNS,
 # DECOMPOSER_MAX_RUNS) bind FIRST for their respective routes; this cap only
 # fires when a route has no sub-budget (e.g. repair_assembly) or as a final
 # backstop. With MATING_MAX_RUNS=4 the remate route is bounded by its
-# sub-budget at mating_runs=4 (iteration_count ~5); with DECOMPOSER_MAX_RUNS=2
+# sub-budget at mating_architect_runs=4 (iteration_count ~5); with DECOMPOSER_MAX_RUNS=2
 # the recompose route binds even earlier. The outer cap therefore primarily
 # constrains repair_assembly (no sub-budget) and guards against runaway loops.
 # Default 8 gives repair_assembly room for complex multi-part assemblies
 # (dexterous hand etc.); override via MAC_ASSEMBLY_MAX_ITER for quick local
 # runs. Lowering below 4 would gate remates prematurely and make
 # MATING_MAX_RUNS dead code.
-ASSEMBLY_MAX_ITERATIONS = int(os.environ.get("MAC_ASSEMBLY_MAX_ITER", "8"))
+ASSEMBLY_MAX_ITERATIONS = int(os.environ.get("MAC_ASSEMBLY_MAX_ITER") or "8")
 
-# Per-part generation retries inside part_builder.
-PART_MAX_ATTEMPTS = 2
+# Per-part full-pipeline launches inside one part_builder run.  The single-part
+# pipeline already owns its QA/Aider retry budget; launching it again used to
+# multiply MAX_RETRIES=3 into six iterations and overwrite accumulated work.
+PART_MAX_ATTEMPTS = 1
 
 # Decomposer re-planning cap (recompose route).
 DECOMPOSER_MAX_RUNS = 2
 
-# Mating Architect re-planning cap (remate route). Allows up to 3 remates
-# (mating_runs reaches 4 -> 4 < 4 False -> remate budget exhausted) on top
+# PartBuilder remodel-round cap (remodel_parts / part_missing routes). The
+# router counts rounds it sends back to part_builder (each round can cost
+# one full MAC pipeline run per failing part, or one
+# builder-remodel LLM call). Without this cap, a structurally infeasible
+# builder param set or a persistently failing MAC pipeline loops forever:
+# the assembler early-returns with qa_skipped_iter=True (no outer budget
+# consumed), the Judge is skipped at iteration_count=0, and the router
+# re-enters part_builder unbounded until recursion_limit crashes the run.
+PART_BUILDER_MAX_RUNS = 4
+
+# Mating Architect re-planning cap (remate route). Counts NODE RUNS of the
+# architect (each run may issue up to 2 structured calls: one in-node retry
+# when deterministic validation rejects the plan). Allows up to 3 remates
+# (mating_architect_runs reaches 4 -> 4 < 4 False -> budget exhausted) on top
 # of the initial mating. Pair with ASSEMBLY_MAX_ITERATIONS >= 5 so this
 # budget, not the outer cap, binds for the remate route.
 MATING_MAX_RUNS = 4

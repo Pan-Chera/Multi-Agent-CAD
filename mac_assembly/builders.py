@@ -20,7 +20,11 @@ correct rotation so the geometry is always valid.
 
 from __future__ import annotations
 
-from typing import Any
+from mac_assembly.geometry_utils import (
+    DIR_VECTORS as _DIR_VECTORS,
+    X_AXIS_ROTATIONS as _X_AXIS_ROTATIONS,
+    Z_AXIS_ROTATIONS as _Z_AXIS_ROTATIONS,
+)
 
 
 def knuckle_hinge_ear(
@@ -31,9 +35,7 @@ def knuckle_hinge_ear(
     ear_length: float,
     bore_radius: float,
     ear_z: float,
-    ear_at_plus_x: bool = True,
-    **_: Any,
-) -> "Compound":
+    ear_at_plus_x: bool = True,) -> "Compound":
     """A vertical rectangular plate with a horizontal cylindrical ear
     (knuckle) on one side, with a horizontal through-bore for a shaft.
 
@@ -107,9 +109,7 @@ def shaft_with_arm(
     arm_d: float,
     arm_offset_x: float = 0.0,
     arm_offset_y: float = 0.0,
-    arm_offset_z: float = 0.0,
-    **_: Any,
-) -> "Compound":
+    arm_offset_z: float = 0.0,) -> "Compound":
     """A rod (cylinder along LOCAL Z) with a perpendicular rectangular arm
     attached at the rod's midpoint. The arm extends +X from the rod.
 
@@ -172,9 +172,7 @@ def pivot_post(
     post_radius: float,
     post_height: float,
     post_x: float = 0.0,
-    post_y: float = 0.0,
-    **_: Any,
-) -> "Compound":
+    post_y: float = 0.0,) -> "Compound":
     """A flat plate with a vertical cylindrical post integral to the top
     face. The post is the revolute pivot for a mating arm with a through-hole.
 
@@ -209,9 +207,7 @@ def link_bar(
     width: float,
     thickness: float,
     bore_radius: float,
-    hole_offset: float = 0.0,
-    **_: Any,
-) -> "Compound":
+    hole_offset: float = 0.0,) -> "Compound":
     """A rectangular bar with vertical through-holes at both ends. The
     bar is along LOCAL X; the holes are along LOCAL Z (vertical), so the
     revolute mate can align local Z with the rotation axis (the pin).
@@ -256,9 +252,7 @@ def fork_end(
     ear_length: float,
     ear_spacing: float,
     bore_radius: float,
-    bore_axis: str = "z",
-    **_: Any,
-) -> "Compound":
+    bore_axis: str = "z",) -> "Compound":
     """A bar with a fork (two parallel ears) at the +X end, each with a
     coaxial through-bore. The fork receives a single mating ear (from
     another part) between the two ears, forming a knuckle joint.
@@ -281,7 +275,7 @@ def fork_end(
     The gap between the ears (width=ear_spacing) receives the mating
     single ear (use `knuckle_hinge_ear` with appropriate thickness).
     """
-    from build123d import Align, Box, Cylinder, Pos, Rotation
+    from build123d import Align, Box, Compound, Cylinder, Pos, Rotation
 
     bar = Box(
         bar_length, bar_width, bar_thickness,
@@ -302,9 +296,20 @@ def fork_end(
     # 90° around X (turns +Z -> +Y).
     if bore_axis == "y":
         rot = Rotation(90, 0, 0)
-    else:  # "z"
+    elif bore_axis == "z":
         rot = Rotation(0, 0, 0)
-    bore_h = bar_thickness + 2.0  # overshoot; passes through both ears + gap
+    else:
+        # BUG-037: previously any unrecognized value silently fell
+        # through to the "z" branch, so an LLM typo (e.g. "x" or "Z")
+        # produced a vertical bore without any signal. Reject upfront.
+        raise ValueError(
+            f"fork_end: bore_axis must be 'y' or 'z', got {bore_axis!r}"
+        )
+    # Overshoot length must span the part's extent ALONG the bore axis:
+    # "z" crosses the ear thickness (Z), "y" crosses the full fork width
+    # (Y = bar_width, both ears + gap). Using bar_thickness for a "y" bore
+    # leaves material in the ear tips whenever bar_width > bar_thickness+2.
+    bore_h = (bar_width if bore_axis == "y" else bar_thickness) + 2.0
     bore = Pos(ear_x, 0, bar_thickness/2.0) * (rot * Cylinder(
         radius=bore_radius, height=bore_h,
         align=(Align.CENTER, Align.CENTER, Align.CENTER),
@@ -319,9 +324,7 @@ def mounting_plate(
     hole_radius: float = 0.0,
     hole_dx: float = 0.0,
     hole_dy: float = 0.0,
-    central_hole_radius: float = 0.0,
-    **_: Any,
-) -> "Compound":
+    central_hole_radius: float = 0.0,) -> "Compound":
     """A flat plate with optional mounting holes. Default pattern: 4
     corner holes at (±hole_dx, ±hole_dy) (skipped when hole_radius=0) plus
     an optional central hole.
@@ -370,9 +373,7 @@ def hollow_box(
     outer_d: float,
     outer_h: float,
     wall_t: float,
-    floor_t: float = 0.0,
-    **_: Any,
-) -> "Compound":
+    floor_t: float = 0.0,) -> "Compound":
     """A hollow open-top box (enclosure base). Walls on 4 sides + floor
     (no top). Use with `lid` to close the top.
 
@@ -387,6 +388,35 @@ def hollow_box(
         hollow from Z=floor_t to Z=outer_h (open top).
     """
     from build123d import Align, Box, Pos
+
+    # BUG-026: explicit parameter validation. Previously degenerate
+    # parameter combinations (negative dims, walls thicker than the box,
+    # floor thicker than the height) produced inverted/negative-extent
+    # Boxes that build123d may silently accept or only fail deep in the
+    # boolean -- confusing errors far from the actual cause.
+    if outer_w <= 0 or outer_d <= 0 or outer_h <= 0:
+        raise ValueError(
+            f"hollow_box: outer dimensions must be > 0, got "
+            f"outer_w={outer_w}, outer_d={outer_d}, outer_h={outer_h}"
+        )
+    if wall_t <= 0:
+        raise ValueError(
+            f"hollow_box: wall_t must be > 0, got {wall_t}"
+        )
+    # Resolved floor_t (default = wall_t when caller passes 0/missing).
+    resolved_floor_t = wall_t if floor_t is None or floor_t <= 0 else floor_t
+    if 2.0 * wall_t >= outer_w or 2.0 * wall_t >= outer_d:
+        raise ValueError(
+            f"hollow_box: 2*wall_t must be < outer_w and < outer_d "
+            f"(otherwise no inner cavity); got wall_t={wall_t}, "
+            f"outer_w={outer_w}, outer_d={outer_d}"
+        )
+    if resolved_floor_t <= 0 or resolved_floor_t >= outer_h:
+        raise ValueError(
+            f"hollow_box: floor_t must be > 0 and < outer_h (otherwise "
+            f"no interior height); got floor_t={resolved_floor_t}, "
+            f"outer_h={outer_h}"
+        )
 
     if floor_t <= 0:
         floor_t = wall_t
@@ -410,35 +440,26 @@ def lid(
     thickness: float,
     hole_radius: float = 0.0,
     hole_dx: float = 0.0,
-    hole_dy: float = 0.0,
-    **_: Any,
-) -> "Compound":
+    hole_dy: float = 0.0,) -> "Compound":
     """A flat rectangular lid (for closing a hollow_box). Optional 4
     corner mounting holes.
 
     Use this for enclosure lids, cover plates, access panels.
 
-    Local coordinate convention:
+    Semantic alias for the LLM: geometrically a lid IS a mounting_plate
+    without a central hole, so this delegates (R5) and the two can never
+    drift.
+
+    Local coordinate convention (inherited from mounting_plate):
       - Lid occupies X=-width/2..width/2, Y=-depth/2..depth/2,
         Z=0..thickness (bottom face at Z=0, seats on the box top rim).
       - Optional 4 corner through-holes at (±hole_dx, ±hole_dy).
     """
-    from build123d import Align, Box, Cylinder, Pos
-
-    lid_shape = Box(
-        width, depth, thickness,
-        align=(Align.CENTER, Align.CENTER, Align.MIN),
+    return mounting_plate(
+        width=width, depth=depth, thickness=thickness,
+        hole_radius=hole_radius, hole_dx=hole_dx, hole_dy=hole_dy,
+        central_hole_radius=0.0,
     )
-    if hole_radius > 0:
-        bore_h = thickness + 2.0
-        for sx in (-1, 1):
-            for sy in (-1, 1):
-                hole = Pos(sx*hole_dx, sy*hole_dy, thickness/2.0) * Cylinder(
-                    radius=hole_radius, height=bore_h,
-                    align=(Align.CENTER, Align.CENTER, Align.CENTER),
-                )
-                lid_shape = lid_shape - hole
-    return lid_shape
 
 
 def bracket_L(
@@ -447,9 +468,7 @@ def bracket_L(
     plate_t: float,
     hole_radius: float = 0.0,
     wall_holes: tuple = (),
-    foot_holes: tuple = (),
-    **_: Any,
-) -> "Compound":
+    foot_holes: tuple = (),) -> "Compound":
     """An L-shaped bracket: two perpendicular rectangular plates joined
     at a 90° corner along one edge.
 
@@ -511,9 +530,7 @@ def bracket_L(
 def standoff(
     radius: float,
     height: float,
-    bore_radius: float = 0.0,
-    **_: Any,
-) -> "Compound":
+    bore_radius: float = 0.0,) -> "Compound":
     """A cylindrical standoff (spacer). Optional coaxial through-bore.
 
     Use this for spacers between plates, threaded standoffs, hex-standoff
@@ -545,9 +562,7 @@ def standoff(
 def bushing(
     outer_radius: float,
     inner_radius: float,
-    length: float,
-    **_: Any,
-) -> "Compound":
+    length: float,) -> "Compound":
     """A sleeve bushing: a short cylinder with a coaxial through-bore.
     The bore axis is along LOCAL Z (so revolute mates can align it).
 
@@ -579,9 +594,7 @@ def bushing(
 def gusset(
     side_a: float,
     side_b: float,
-    thickness: float,
-    **_: Any,
-) -> "Compound":
+    thickness: float,) -> "Compound":
     """A triangular gusset (right triangle) for reinforcing a corner.
     The right angle is at the origin; the two legs extend along +X and +Z.
 
@@ -593,27 +606,26 @@ def gusset(
         (0,0,side_b). Extruded along Y by thickness:
         Y=-thickness/2..thickness/2.
     """
-    from build123d import Polygon, extrude, Plane
+    from build123d import Polygon, Pos, extrude, Plane
 
     # Build a right-triangle Face in the XZ plane using algebraic API:
-    # `Plane.XZ * Polygon([...])` returns a Face in the XZ plane.
-    # `extrude(profile, amount=thickness)` extrudes along the plane's
-    # normal (+Y), giving a triangular prism of thickness along Y.
+    # `Plane.XZ * Polygon([...])` returns a Face in the XZ plane. Plane.XZ's
+    # normal is -Y (x_dir=X cross y_dir=Z = -Y), so
+    # `extrude(profile, amount=thickness)` spans Y=-thickness..0; shift by
+    # +thickness/2 to honour the documented Y-centred convention
+    # (-thickness/2..+thickness/2).
     profile = Plane.XZ * Polygon([(0, 0), (side_a, 0), (0, side_b)])
-    return extrude(profile, amount=thickness)
+    return Pos(0, thickness / 2.0, 0) * extrude(profile, amount=thickness)
 
 
 # Stem direction -> (Rotation rpy deg, surface offset from sphere center).
 # Cylinder default axis is +Z with align=(CENTER, CENTER, MIN) so its base
 # sits at the origin; the rotation reorients the +Z axis to the target
 # direction, then Pos translates the base to the sphere surface point.
+# Derived from geometry_utils' Z_AXIS_ROTATIONS + DIR_VECTORS (single
+# source of truth, R1) -- do not re-enter the numbers here.
 _STEM_DIRECTIONS: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
-    "+z": ((0.0, 0.0, 0.0),         (0.0, 0.0, 1.0)),
-    "-z": ((180.0, 0.0, 0.0),       (0.0, 0.0, -1.0)),
-    "+x": ((0.0, 90.0, 0.0),        (1.0, 0.0, 0.0)),
-    "-x": ((0.0, -90.0, 0.0),       (-1.0, 0.0, 0.0)),
-    "+y": ((-90.0, 0.0, 0.0),       (0.0, 1.0, 0.0)),
-    "-y": ((90.0, 0.0, 0.0),        (0.0, -1.0, 0.0)),
+    d: (_Z_AXIS_ROTATIONS[d], _DIR_VECTORS[d]) for d in _DIR_VECTORS
 }
 
 
@@ -629,9 +641,7 @@ def ball_joint_socket(
     socket_opening_height_mm: float = 0.0,
     ball_stem_radius: float = 0.0,
     ball_stem_length: float = 0.0,
-    ball_stem_direction: str = "+z",
-    **_: Any,
-) -> "Compound":
+    ball_stem_direction: str = "+z",) -> "Compound":
     """Generate one piece of a 2-DOF ball-and-socket joint.
 
     ``role="socket"``: box housing with a concave spherical cavity.
@@ -780,6 +790,30 @@ def _clevis_validate(
         )
 
 
+def _require_body_longer_than_tip(
+    kind: str,
+    body_len: float,
+    R_tip: float,
+    ear_length: float,
+    ear_width: float,
+) -> None:
+    """Hinge design rule shared by BOTH clevis local-frame conventions:
+    the v2 ``_fork_local``/``_tongue_local`` (bore at the origin, body
+    extends -X) and the v3 ``_v3_fork_local``/``_v3_tongue_local``
+    (bore at the ear tip, body extends +X; see feature_operators). The
+    rectangular body must be longer than the tip circle radius -- i.e.
+    ear_length > ear_width -- or the hinge degenerates. (Previously four
+    near-identical inline copies with a stale "single copy, R6" comment;
+    this is the actual single copy.)"""
+    if body_len <= R_tip:
+        raise ValueError(
+            f"clevis {kind}: rectangle body length {body_len}mm <= tip "
+            f"circle radius {R_tip}mm; the hinge rectangle must be longer "
+            f"than the circle radius (ear_length {ear_length} > "
+            f"ear_width {ear_width})"
+        )
+
+
 def _fork_local(
     ear_length: float,
     ear_width: float,
@@ -801,7 +835,12 @@ def _fork_local(
     face topology during boolean union with the base body (see
     feature_operators §2h "Boolean operation order"). Self-contained
     Compound -- the v3 clevis_fork operator positions + orients this
-    local geometry at attach_point_mm + direction.
+    local geometry at attach_point_mm + direction. NOTE the two clevis
+    local-frame conventions: this v2 geometry keeps the bore at the
+    local origin with the body extending -X; the v3 geometry
+    (feature_operators._v3_fork_local) puts the bore at the ear TIP with
+    the body extending +X. The ear_length > ear_width rule is shared via
+    _require_body_longer_than_tip.
 
     ``overshoot_mm`` extends the body in -X by that amount (default 0).
     Used by v3 operators to push the body's back face 0.2mm INTO the
@@ -815,35 +854,42 @@ def _fork_local(
       - Ear body: X from -(ear_length - R_tip + overshoot_mm) to 0
       - Upper ear Z: (bar_thickness + fork_gap_z)/2 to bar_thickness
       - Lower ear Z: 0 to (bar_thickness - fork_gap_z)/2
+
+    Design rule (hinge = circle + rectangle): the tip circle diameter
+    equals the rectangle width (ear_width = 2*R_tip by construction), and
+    the rectangle length (ear_length - R_tip + overshoot_mm) must exceed
+    the circle radius R_tip -- i.e. ear_length > ear_width. Enforced here
+    so every call path honours it.
     """
     from build123d import Align, Box, Cylinder, Pos
 
     R_tip = ear_width / 2.0
     fork_gap_z = tongue_thickness + 2.0 * clearance_side
-    upper_ear_z_extent = (bar_thickness - fork_gap_z) / 2.0
-    lower_ear_z_extent = (bar_thickness - fork_gap_z) / 2.0
+    # Symmetric gap: both ears have the same Z extent (R6).
+    ear_z_extent = (bar_thickness - fork_gap_z) / 2.0
     upper_ear_z_min = (bar_thickness + fork_gap_z) / 2.0
-    lower_ear_z_max = (bar_thickness - fork_gap_z) / 2.0
+    lower_ear_z_max = ear_z_extent
 
     body_len = ear_length - R_tip + overshoot_mm
+    _require_body_longer_than_tip("fork", body_len, R_tip, ear_length, ear_width)
     body_center_x = -body_len / 2.0
     upper_ear_z_center = (upper_ear_z_min + bar_thickness) / 2.0
     lower_ear_z_center = lower_ear_z_max / 2.0
 
     upper_body = Pos(body_center_x, 0, upper_ear_z_center) * Box(
-        body_len, ear_width, upper_ear_z_extent,
+        body_len, ear_width, ear_z_extent,
         align=(Align.CENTER, Align.CENTER, Align.CENTER),
     )
     upper_tip = Pos(0, 0, upper_ear_z_center) * Cylinder(
-        radius=R_tip, height=upper_ear_z_extent,
+        radius=R_tip, height=ear_z_extent,
         align=(Align.CENTER, Align.CENTER, Align.CENTER),
     )
     lower_body = Pos(body_center_x, 0, lower_ear_z_center) * Box(
-        body_len, ear_width, lower_ear_z_extent,
+        body_len, ear_width, ear_z_extent,
         align=(Align.CENTER, Align.CENTER, Align.CENTER),
     )
     lower_tip = Pos(0, 0, lower_ear_z_center) * Cylinder(
-        radius=R_tip, height=lower_ear_z_extent,
+        radius=R_tip, height=ear_z_extent,
         align=(Align.CENTER, Align.CENTER, Align.CENTER),
     )
     bore = Pos(0, 0, bar_thickness / 2.0) * Cylinder(
@@ -869,11 +915,16 @@ def _tongue_local(
     Compound -- the v3 clevis_tongue operator positions + orients this
     local geometry. ``overshoot_mm`` extends body in -X (Bug 5 fix --
     keeps bore at attach_point, body pushes into base body).
+
+    Design rule (ear_length > ear_width): enforced below via
+    ``_require_body_longer_than_tip`` (shared with the v3 clevis local
+    geometry in feature_operators).
     """
     from build123d import Align, Box, Cylinder, Pos
 
     R_tip = ear_width / 2.0
     body_len = ear_length - R_tip + overshoot_mm
+    _require_body_longer_than_tip("tongue", body_len, R_tip, ear_length, ear_width)
     body_center_x = -body_len / 2.0
     tongue_z_center = bar_thickness / 2.0
 
@@ -965,9 +1016,7 @@ def clevis_link(
     tongue_thickness: float,
     clearance_side: float = 0.1,
     minus_x_end: str = "plain",
-    plus_x_end: str = "plain",
-    **_: Any,
-) -> "Compound":
+    plus_x_end: str = "plain",) -> "Compound":
     """A link bar with clevis tongue/fork interfaces at each end.
 
     Standard end-to-end clevis (tongue & groove) joint for planar revolute
@@ -1041,9 +1090,7 @@ def clevis_base_with_fork(
     tongue_thickness: float,
     bore_radius: float,
     clearance_side: float = 0.1,
-    fork_direction: str = "+x",
-    **_: Any,
-) -> "Compound":
+    fork_direction: str = "+x",) -> "Compound":
     """A flat plate with a clevis fork at a specified location (the fixed
     base of a planar revolute chain).
 
@@ -1074,6 +1121,11 @@ def clevis_base_with_fork(
     _clevis_validate(
         plate_t, bore_radius, ear_length, ear_width,
         tongue_thickness, clearance_side, bar_width=None,
+    )
+    _validate_fork_on_plate(
+        [{"fork_x": fork_x, "fork_y": fork_y,
+          "fork_direction": fork_direction}],
+        plate_w, plate_d, ear_length, ear_width, "clevis_base_with_fork",
     )
 
     from build123d import Align, Box, Location, Pos, Rotation
@@ -1127,12 +1179,130 @@ def clevis_base_with_fork(
     return plate + fork_placed
 
 
+# fork_direction -> (yaw deg about Z, in-plane unit vector). Derived from
+# geometry_utils' X_AXIS_ROTATIONS (the ±x/±y entries are pure Z rotations;
+# -90 deg == 270) + DIR_VECTORS (single source of truth, R1).
 _FORK_DIR_VEC = {
-    "+x": (0.0, (1.0, 0.0)),
-    "-x": (180.0, (-1.0, 0.0)),
-    "+y": (90.0, (0.0, 1.0)),
-    "-y": (270.0, (0.0, -1.0)),
+    d: (_X_AXIS_ROTATIONS[d][2] % 360.0, (v[0], v[1]))
+    for d, v in _DIR_VECTORS.items()
+    if d[1] in "xy"
 }
+
+# Minimum structural overlap between a fork's ear body and the plate
+# along the protrusion direction. Matches the boolean-overshoot convention
+# used by the v3 feature operators (_ADDITIVE_OVERSHOOT_MM): a
+# face-tangent (zero-depth) union is not a valid solid connection.
+_MIN_FORK_ROOT_OVERLAP_MM = 0.2
+
+
+def _validate_fork_on_plate(
+    forks: list,
+    plate_w: float,
+    plate_d: float,
+    ear_length: float,
+    ear_width: float,
+    builder_name: str,
+) -> None:
+    """Shared plate-edge validator for clevis_palm / clevis_base_with_fork.
+
+    For each fork (dict with ``fork_x`` / ``fork_y`` -- the BORE centre in
+    plate-local coords -- and ``fork_direction``), using the builders' own
+    attach formula (attach = bore - u * (ear_length - R_tip), R_tip =
+    ear_width / 2; the ear body spans attach..bore):
+
+    1. the bore must lie OUTSIDE the plate edge in fork_direction -- a
+       bore inside the plate leaves the fork's Z slot filled with plate
+       material, silently destroying the clevis kinematics;
+    2. the fork ROOT (attach) must overlap the plate by at least
+       ``_MIN_FORK_ROOT_OVERLAP_MM`` along the protrusion direction -- a
+       root outside the plate makes the whole fork a floating disjoint
+       solid (bore too far out for this ear_length);
+    3. the fork's lateral extent (fork centre +/- R_tip perpendicular to
+       fork_direction) must overlap the plate's lateral range -- a fork
+       shifted sideways off the plate edge connects to nothing.
+
+    Raises ValueError with the fork index, direction, bore coordinates,
+    plate bounds and the legal bore range.
+    """
+    R_tip = ear_width / 2.0
+    body_len = ear_length - R_tip
+    half_w = plate_w / 2.0
+    half_d = plate_d / 2.0
+    for i, f in enumerate(forks):
+        fork_x = float(f["fork_x"])
+        fork_y = float(f["fork_y"])
+        direction = f.get("fork_direction", "+x")
+        if direction not in _FORK_DIR_VEC:
+            raise ValueError(
+                f"{builder_name} fork {i}: fork_direction {direction!r} "
+                f"not in {sorted(_FORK_DIR_VEC)}"
+            )
+        _angle, (ux, uy) = _FORK_DIR_VEC[direction]
+        attach_x = fork_x - ux * body_len
+        attach_y = fork_y - uy * body_len
+        if ux != 0:
+            edge, bore_c, attach_c = half_w, fork_x, attach_x
+            lat_lo, lat_hi, lat_c = -half_d, half_d, fork_y
+            axis, half_name, lat_name = "x", "plate_w", "plate_d"
+        else:
+            edge, bore_c, attach_c = half_d, fork_y, attach_y
+            lat_lo, lat_hi, lat_c = -half_w, half_w, fork_x
+            axis, half_name, lat_name = "y", "plate_d", "plate_w"
+        sign = 1.0 if (ux + uy) > 0 else -1.0
+        # 1. bore strictly outside the plate edge in fork_direction
+        bore_outside = bore_c > edge if sign > 0 else bore_c < -edge
+        if not bore_outside:
+            plate_edge_at = edge if sign > 0 else -edge
+            raise ValueError(
+                f"{builder_name} fork {i} (direction={direction!r}): bore "
+                f"({fork_x:.1f}, {fork_y:.1f}) is INSIDE the plate "
+                f"(plate {plate_w}x{plate_d}; the {direction!r} edge is at "
+                f"{axis}={plate_edge_at:.1f}) -- the fork's Z slot would be "
+                f"filled with plate material and the mating tongue could "
+                f"not rotate. Legal bore range along {axis}: "
+                f"{plate_edge_at:.1f} < fork_{axis} <= "
+                f"{plate_edge_at + sign * (body_len - _MIN_FORK_ROOT_OVERLAP_MM):.1f} "
+                f"(ear_length={ear_length}, ear_width={ear_width})"
+            )
+        # 2. fork root must overlap the plate (bore not too far out)
+        root_edge = (
+            edge - _MIN_FORK_ROOT_OVERLAP_MM if sign > 0
+            else -edge + _MIN_FORK_ROOT_OVERLAP_MM
+        )
+        root_inside = attach_c <= root_edge if sign > 0 else attach_c >= root_edge
+        if not root_inside:
+            plate_edge_at = edge if sign > 0 else -edge
+            raise ValueError(
+                f"{builder_name} fork {i} (direction={direction!r}): bore "
+                f"({fork_x:.1f}, {fork_y:.1f}) is too far outside the "
+                f"plate -- the fork root at ({attach_x:.1f}, "
+                f"{attach_y:.1f}) does not reach into the plate (the "
+                f"{direction!r} edge is at {axis}={plate_edge_at:.1f}, "
+                f"need >= {_MIN_FORK_ROOT_OVERLAP_MM}mm overlap), so the "
+                f"fork would float as a disjoint solid. Legal bore range "
+                f"along {axis}: "
+                f"{plate_edge_at + sign * (body_len - _MIN_FORK_ROOT_OVERLAP_MM):.1f} "
+                f"<= fork_{axis} < {plate_edge_at:.1f} "
+                f"(ear_length={ear_length}, ear_width={ear_width}, "
+                f"R_tip={R_tip:.1f}); either move the bore closer or "
+                f"increase ear_length"
+            )
+        # 3. lateral extent must overlap the plate's lateral range
+        lat_overlap_lo = (lat_c + R_tip) - lat_lo
+        lat_overlap_hi = lat_hi - (lat_c - R_tip)
+        if lat_overlap_lo < _MIN_FORK_ROOT_OVERLAP_MM or lat_overlap_hi < _MIN_FORK_ROOT_OVERLAP_MM:
+            raise ValueError(
+                f"{builder_name} fork {i} (direction={direction!r}): the "
+                f"fork's lateral extent {lat_c - R_tip:.1f}..{lat_c + R_tip:.1f} "
+                f"does not overlap the plate's "
+                f"{'Y' if axis == 'x' else 'X'} range "
+                f"{lat_lo:.1f}..{lat_hi:.1f} by at least "
+                f"{_MIN_FORK_ROOT_OVERLAP_MM}mm -- the fork is shifted "
+                f"sideways off the plate and would be a disjoint solid. "
+                f"Move fork_{'y' if axis == 'x' else 'x'} into "
+                f"{lat_lo + R_tip + _MIN_FORK_ROOT_OVERLAP_MM:.1f}.."
+                f"{lat_hi - R_tip - _MIN_FORK_ROOT_OVERLAP_MM:.1f}"
+            )
 
 
 def _fork_ear_bbox(fork_x, fork_y, ear_length, R_tip, direction):
@@ -1191,9 +1361,7 @@ def clevis_palm(
     tongue_thickness: float,
     bore_radius: float,
     forks: list,
-    clearance_side: float = 0.1,
-    **_: Any,
-) -> "Compound":
+    clearance_side: float = 0.1,) -> "Compound":
     """A flat plate (palm) with multiple clevis forks (finger roots).
 
     Each fork is structurally identical to `clevis_base_with_fork`'s fork
@@ -1218,6 +1386,10 @@ def clevis_palm(
 
     Validation (in addition to `_clevis_validate`):
       - At least one fork in `forks`.
+      - Each bore is OUTSIDE the plate edge in its `fork_direction`, the
+        fork root still overlaps the plate (>=0.2mm embed, so the fork is
+        not a disjoint solid), and the fork's lateral extent intersects
+        the plate (`_validate_fork_on_plate`).
       - No two forks' ear bodies overlap (AABB intersection). Merging ear
         bodies would also merge their Z slots, breaking the clevis
         kinematic function. Lateral min spacing = ear_width
@@ -1238,6 +1410,9 @@ def clevis_palm(
     from build123d import Align, Box, Pos, Rotation
 
     R_tip = ear_width / 2.0
+    _validate_fork_on_plate(
+        forks, plate_w, plate_d, ear_length, ear_width, "clevis_palm",
+    )
     overlap = _forks_overlap(forks, ear_length, R_tip)
     if overlap is not None:
         i, j = overlap
@@ -1284,6 +1459,538 @@ def clevis_palm(
     return plate
 
 
+def y_axis_truss_clevis_link(
+    length: float = 180.0,
+    joint_radius: float = 18.0,
+    fork_ear_thickness: float = 8.0,
+    fork_ear_center_y: float = 16.0,
+    tongue_thickness: float = 22.0,
+    fork_bore_radius: float = 6.0,
+    pin_radius: float = 5.5,
+    pin_length: float = 44.0,
+    pin_cap_radius: float = 0.0,
+    pin_cap_thickness: float = 0.0,
+    rail_width_y: float = 22.0,
+    rail_height: float = 8.0,
+    rail_center_z: float = 14.0,) -> "Compound":
+    """Reusable +X truss link with Y-axis tongue/pin and distal clevis.
+
+    Unlike :func:`clevis_link` (whose joint axis is Z), this builder targets
+    articulated robot arms operating in the XZ plane.  The -X/root end is a
+    central tongue carrying a real Y-axis pin.  The +X/distal end has two
+    separated fork ears with coaxial bores.  This avoids the common failure
+    where default-Z cylinders appear as decorative rings above a Y hinge.
+    """
+    import math
+    from build123d import Align, Box, Cylinder, Pos, Rotation
+
+    def cyl_y(radius: float, span: float):
+        return Rotation(90, 0, 0) * Cylinder(
+            radius=radius, height=span,
+            align=(Align.CENTER, Align.CENTER, Align.CENTER),
+        )
+
+    def web(x1: float, z1: float, x2: float, z2: float):
+        dx, dz = x2 - x1, z2 - z1
+        span = math.hypot(dx, dz) + 3.0
+        angle_y = -math.degrees(math.atan2(dz, dx))
+        return Pos((x1+x2)/2, 0, (z1+z2)/2) * Rotation(0, angle_y, 0) * Box(
+            span, rail_width_y, 6,
+            align=(Align.CENTER, Align.CENTER, Align.CENTER),
+        )
+
+    root = cyl_y(joint_radius, tongue_thickness)
+    fork_a = Pos(length, -fork_ear_center_y, 0) * cyl_y(
+        joint_radius, fork_ear_thickness
+    )
+    fork_b = Pos(length, fork_ear_center_y, 0) * cyl_y(
+        joint_radius, fork_ear_thickness
+    )
+    rail_len = length - 30.0
+    upper = Pos(length/2, 0, rail_center_z) * Box(
+        rail_len, rail_width_y, rail_height, align=(Align.CENTER,)*3
+    )
+    lower = Pos(length/2, 0, -rail_center_z) * Box(
+        rail_len, rail_width_y, rail_height, align=(Align.CENTER,)*3
+    )
+    root_neck = Pos(16, 0, 0) * Box(18, rail_width_y, 30, align=(Align.CENTER,)*3)
+    # Deliberate overlap in both Y and Z joins each distal ear to the upper
+    # and lower rails. Exact nominal thickness/height left 2--4 mm gaps for
+    # wide, high-rail variants and silently returned three separate solids.
+    distal_neck_y = max(
+        fork_ear_thickness + 4.0,
+        2.0 * (fork_ear_center_y - rail_width_y / 2.0 + 1.0),
+    )
+    distal_neck_z = 2.0 * (rail_center_z + rail_height / 2.0)
+    neck_a = Pos(length-18, -fork_ear_center_y, 0) * Box(
+        24, distal_neck_y, distal_neck_z, align=(Align.CENTER,)*3
+    )
+    neck_b = Pos(length-18, fork_ear_center_y, 0) * Box(
+        24, distal_neck_y, distal_neck_z, align=(Align.CENTER,)*3
+    )
+    body = root + fork_a + fork_b + upper + lower + root_neck + neck_a + neck_b
+    stations = [20.0 + i * (length - 40.0) / 4.0 for i in range(5)]
+    for i in range(4):
+        z1, z2 = (-10.0, 10.0) if i % 2 == 0 else (10.0, -10.0)
+        body = body + web(stations[i], z1, stations[i+1], z2)
+    for y in (-rail_width_y/2-1.5, rail_width_y/2+1.5):
+        body = body + Pos(length/2, y, rail_center_z) * Box(
+            length-60, 3, 4, align=(Align.CENTER,)*3
+        )
+        body = body + Pos(length/2, y, -rail_center_z) * Box(
+            length-60, 3, 4, align=(Align.CENTER,)*3
+        )
+    distal_bore = Pos(length, 0, 0) * cyl_y(
+        fork_bore_radius, 2*fork_ear_center_y + fork_ear_thickness + 6
+    )
+    root_pin = cyl_y(pin_radius, pin_length)
+    body = body + root_pin
+    # Optional retained axle heads make an absorbed-pin revolute joint read as
+    # a complete clevis hinge instead of two decorative empty fork bores.  The
+    # heads overlap the pin by 0.5 mm, so the exported part remains one solid.
+    if pin_cap_radius > 0.0 and pin_cap_thickness > 0.0:
+        overlap = min(0.5, pin_cap_thickness / 4.0)
+        cap_span = pin_cap_thickness + overlap
+        cap_y = pin_length / 2.0 + pin_cap_thickness / 2.0 - overlap
+        body = body + Pos(0, -cap_y, 0) * cyl_y(pin_cap_radius, cap_span)
+        body = body + Pos(0, cap_y, 0) * cyl_y(pin_cap_radius, cap_span)
+    return body - distal_bore
+
+
+def y_axis_wrist_carrier(
+    joint_radius: float = 18.0,
+    tongue_thickness: float = 22.0,
+    pin_radius: float = 5.5,
+    pin_length: float = 44.0,
+    payload_x: float = 78.0,) -> "Compound":
+    """Short stepped wrist with a central Y-axis tongue and hinge pin."""
+    from build123d import Align, Box, Cylinder, Pos, Rotation
+
+    def cyl_y(radius: float, span: float):
+        return Rotation(90, 0, 0) * Cylinder(
+            radius=radius, height=span, align=(Align.CENTER,)*3
+        )
+    wrist = cyl_y(joint_radius, tongue_thickness) + cyl_y(pin_radius, pin_length)
+    # 1 mm overlap with the R18 root boss prevents a tangent-only compound.
+    wrist = wrist + Pos(37.5, 0, 0) * Box(41, 36, 28, align=(Align.CENTER,)*3)
+    wrist = wrist + Pos(47, 0, 11) * Box(34, 44, 10, align=(Align.CENTER,)*3)
+    wrist = wrist + Pos(47, 0, -11) * Box(34, 44, 10, align=(Align.CENTER,)*3)
+    wrist = wrist + Pos(payload_x-8, 0, 0) * Box(16, 54, 46, align=(Align.CENTER,)*3)
+    for y in (-18, 18):
+        for z in (-14, 14):
+            hole = Pos(payload_x-8, y, z) * Rotation(0, 90, 0) * Cylinder(
+                radius=2.5, height=20, align=(Align.CENTER,)*3
+            )
+            wrist = wrist - hole
+    return wrist
+
+
+def y_axis_tilt_yoke(
+    width: float = 100.0,
+    depth: float = 124.0,
+    height: float = 70.0,
+    top_thickness: float = 10.0,
+    cheek_thickness: float = 18.0,
+    bore_radius: float = 8.0,
+    bore_z: float = -58.0,
+    root_overlap: float = 2.0,
+    bridge_at_bottom: bool = False,
+) -> "Compound":
+    """Connected inverted-U camera yoke with coaxial Y-axis cheek bores.
+
+    Local bounds are X=+-width/2, Y=+-depth/2 and Z=-height..0.
+    The cheeks are separated along Y (the hinge axis), so both bores share
+    X/Z and form one genuine axis; X-separated cheeks would only have
+    parallel, non-coaxial Y axes.
+    Each cheek overlaps the top plate by ``root_overlap`` so the result is
+    a robust single solid rather than a tangent/disconnected compound.
+    """
+    from build123d import Align, Box, Compound, Cylinder, Pos, Rotation
+
+    if min(width, depth, height, top_thickness, cheek_thickness) <= 0:
+        raise ValueError("y_axis_tilt_yoke dimensions must be positive")
+    if not 0 < root_overlap < top_thickness:
+        raise ValueError("root_overlap must be > 0 and < top_thickness")
+    if 2 * cheek_thickness >= depth:
+        raise ValueError("two cheeks must leave a positive central opening")
+    if bore_radius <= 0 or 2 * bore_radius >= min(
+        cheek_thickness, height - top_thickness
+    ):
+        raise ValueError("bore_radius does not fit inside the yoke cheeks")
+    bore_lo = -height + (top_thickness if bridge_at_bottom else 0.0) + bore_radius
+    bore_hi = -(0.0 if bridge_at_bottom else top_thickness) - bore_radius
+    if not (bore_lo < bore_z < bore_hi):
+        raise ValueError("bore_z must keep the bore inside the cheek height")
+
+    bridge_z = (
+        -height + top_thickness / 2
+        if bridge_at_bottom else -top_thickness / 2
+    )
+    bridge = Pos(0, 0, bridge_z) * Box(
+        width, depth, top_thickness, align=(Align.CENTER,) * 3
+    )
+    cheek_height = height - top_thickness + root_overlap
+    cheek_z = (
+        -cheek_height / 2
+        if bridge_at_bottom else -height + cheek_height / 2
+    )
+    cheek_y = (depth - cheek_thickness) / 2
+    left = Pos(0, -cheek_y, cheek_z) * Box(
+        width, cheek_thickness, cheek_height, align=(Align.CENTER,) * 3
+    )
+    right = Pos(0, cheek_y, cheek_z) * Box(
+        width, cheek_thickness, cheek_height, align=(Align.CENTER,) * 3
+    )
+    body = bridge + left + right
+    bore = Pos(0, 0, bore_z) * Rotation(90, 0, 0) * Cylinder(
+        radius=bore_radius,
+        height=depth + 4.0,
+        align=(Align.CENTER,) * 3,
+    )
+    body = body - bore
+    return Compound(children=list(body.solids()))
+
+
+def symmetric_sensor_pod(
+    body_length: float = 68.0,
+    body_width: float = 68.0,
+    body_height: float = 60.0,
+    lens_radius: float = 15.0,
+    boss_radius: float = 22.0,
+    boss_depth: float = 6.0,
+    pivot_radius: float = 0.0,
+    pivot_length: float = 0.0,
+    pivot_x: float | None = None,) -> "Compound":
+    """Connected camera pod symmetric about local Y=0 and Z=0.
+
+    ``pivot_radius`` and ``pivot_length`` optionally add mirrored, coaxial
+    Y-axis shaft stubs for a real pan/tilt interface.  They default to zero
+    to preserve existing fixed sensor-pod geometry.
+    """
+    from build123d import Align, Box, Compound, Cylinder, Pos, Rotation
+
+    c = body_length / 2.0
+    pod = Pos(c, 0, 0) * Box(body_length, body_width, body_height, align=(Align.CENTER,)*3)
+    for z in (-(body_height/2+1), body_height/2+1):
+        pod = pod + Pos(c, 0, z) * Box(body_length-12, body_width-12, 4, align=(Align.CENTER,)*3)
+    for y in (-(body_width/2+1), body_width/2+1):
+        pod = pod + Pos(c, y, 0) * Box(body_length-14, 4, body_height-14, align=(Align.CENTER,)*3)
+    boss = Pos(body_length + boss_depth/2, 0, 0) * Rotation(0, 90, 0) * Cylinder(
+        radius=boss_radius, height=boss_depth, align=(Align.CENTER,)*3
+    )
+    pod = pod + boss
+    aperture = Pos(body_length/2, 0, 0) * Rotation(0, 90, 0) * Cylinder(
+        radius=lens_radius, height=body_length+8, align=(Align.CENTER,)*3
+    )
+    pod = pod - aperture
+    for y in (-24, 24):
+        for z in (-20, 20):
+            pod = pod - Pos(body_length-3, y, z) * Rotation(0, 90, 0) * Cylinder(
+                radius=2.5, height=10, align=(Align.CENTER,)*3
+            )
+    if pivot_radius > 0 or pivot_length > 0:
+        if pivot_radius <= 0 or pivot_length <= 0:
+            raise ValueError(
+                "symmetric_sensor_pod pivot_radius and pivot_length must "
+                "both be positive when pivot shafts are requested"
+            )
+        px = body_length / 2.0 if pivot_x is None else float(pivot_x)
+        shaft = Pos(px, 0, 0) * Rotation(90, 0, 0) * Cylinder(
+            radius=pivot_radius,
+            height=body_width + 2.0 * pivot_length,
+            align=(Align.CENTER,) * 3,
+        )
+        pod = pod + shaft
+    return Compound(children=list(pod.solids()))
+
+
+def y_axis_motor_pod(
+    radius: float = 18.0,
+    thickness: float = 12.0,
+    boss_radius: float = 11.0,
+    boss_thickness: float = 3.0,) -> "Compound":
+    """Solid servo cover modelled directly on local Y, with axle recess."""
+    from build123d import Align, Cylinder, Pos, Rotation
+    def cyl_y(r: float, h: float):
+        return Rotation(90, 0, 0) * Cylinder(r, h, align=(Align.CENTER,)*3)
+    body = cyl_y(radius, thickness)
+    body = body + Pos(0, thickness/2 + boss_thickness/2, 0) * cyl_y(boss_radius, boss_thickness)
+    return body - Pos(0, thickness/2 + boss_thickness - 0.6, 0) * cyl_y(4, 1.2)
+
+
+def y_axis_bearing_cap(
+    radius: float = 14.0,
+    thickness: float = 4.0,
+    axle_radius: float = 6.0,
+    axle_height: float = 2.0,) -> "Compound":
+    """Thin solid opposite-side Y-axis bearing cap with visible axle head."""
+    from build123d import Align, Cylinder, Pos, Rotation
+    def cyl_y(r: float, h: float):
+        return Rotation(90, 0, 0) * Cylinder(r, h, align=(Align.CENTER,)*3)
+    return cyl_y(radius, thickness) + Pos(0, -(thickness+axle_height)/2, 0) * cyl_y(
+        axle_radius, axle_height
+    )
+
+
+def telescope_carrier(
+    length: float = 260.0,
+    width: float = 40.0,
+    body_height: float = 20.0,
+    wall: float = 3.0,
+    rail_width: float = 6.0,
+    rail_height: float = 5.0,
+    flange_radius: float = 20.0,
+    flange_center_x: float = 250.0,
+    flange_thickness: float = 4.0,
+    flange_bore_radius: float = 5.0,
+) -> "Compound":
+    """Horizontal hollow telescope carrier with a Z-axis gimbal flange.
+
+    The explicit builder prevents the common LLM failure where a 260 mm
+    extrusion intended along X is accidentally created along build123d's
+    default Z axis. Local X is the slide direction; the body occupies
+    X=0..length and Z=0..body_height.
+    """
+    from build123d import Align, Box, Compound, Cylinder, Pos
+
+    if min(length, width, body_height, wall, rail_width, rail_height) <= 0:
+        raise ValueError("telescope_carrier dimensions must be positive")
+    if 2 * wall >= min(width, body_height):
+        raise ValueError("wall thickness leaves no hollow interior")
+
+    body = Pos(length / 2, 0, body_height / 2) * Box(
+        length, width, body_height, align=(Align.CENTER,) * 3
+    )
+    cavity = Pos(length / 2, 0, body_height / 2) * Box(
+        length - 2 * wall, width - 2 * wall, body_height - 2 * wall,
+        align=(Align.CENTER,) * 3,
+    )
+    body = body - cavity
+
+    rail_y = width / 2 - rail_width / 2
+    for y in (-rail_y, rail_y):
+        body = body + Pos(length / 2, y, body_height + rail_height / 2) * Box(
+            length, rail_width, rail_height, align=(Align.CENTER,) * 3
+        )
+
+    # Three side inspection windows preserve the top/bottom walls and rails.
+    for x in (40.0, 100.0, 160.0):
+        window = Pos(x, 0, body_height / 2) * Box(
+            30.0, width + 2.0, 12.0, align=(Align.CENTER,) * 3
+        )
+        body = body - window
+
+    flange_z = body_height + rail_height - flange_thickness / 2
+    flange = Pos(flange_center_x, 0, flange_z) * Cylinder(
+        flange_radius, flange_thickness, align=(Align.CENTER,) * 3
+    )
+    body = body + flange
+    bore = Pos(flange_center_x, 0, flange_z) * Cylinder(
+        flange_bore_radius, flange_thickness + 4.0,
+        align=(Align.CENTER,) * 3,
+    )
+    body = body - bore
+    return Compound(children=list(body.solids()))
+
+
+def gimbal_roll_cage(
+    length_x: float = 100.0,
+    width_y: float = 80.0,
+    height_z: float = 70.0,
+    bar: float = 6.0,
+    pivot_radius: float = 4.0,
+    pivot_length: float = 8.0,
+) -> "Compound":
+    """Open rectangular roll cage whose rotation axis is local X."""
+    from build123d import Align, Box, Compound, Cylinder, Pos, Rotation
+
+    if min(length_x, width_y, height_z, bar) <= 0:
+        raise ValueError("gimbal_roll_cage dimensions must be positive")
+    if 2 * bar >= min(width_y, height_z):
+        raise ValueError("bar is too thick for an open cage")
+    cage = None
+    for x in (-length_x / 2, length_x / 2):
+        members = [
+            Pos(x, 0, -height_z / 2 + bar / 2) * Box(bar, width_y, bar, align=(Align.CENTER,) * 3),
+            Pos(x, 0, height_z / 2 - bar / 2) * Box(bar, width_y, bar, align=(Align.CENTER,) * 3),
+            Pos(x, -width_y / 2 + bar / 2, 0) * Box(bar, bar, height_z, align=(Align.CENTER,) * 3),
+            Pos(x, width_y / 2 - bar / 2, 0) * Box(bar, bar, height_z, align=(Align.CENTER,) * 3),
+        ]
+        for member in members:
+            cage = member if cage is None else cage + member
+    for y in (-width_y / 2 + bar / 2, width_y / 2 - bar / 2):
+        for z in (-height_z / 2 + bar / 2, height_z / 2 - bar / 2):
+            cage = cage + Pos(0, y, z) * Box(length_x, bar, bar, align=(Align.CENTER,) * 3)
+        cage = cage + Pos(0, y, 0) * Box(
+            length_x, bar, bar, align=(Align.CENTER,) * 3
+        )
+    # Two inward side brackets meet the tilt-yoke cheeks at the roll axis,
+    # leaving the optical centre and lower pan-yoke clearance open.
+    bracket_span = width_y / 2 - 20.0
+    for sign in (-1.0, 1.0):
+        cage = cage + Pos(0, sign * (20.0 + bracket_span / 2), 0) * Box(
+            bar, bracket_span + 1.0, bar, align=(Align.CENTER,) * 3
+        )
+    # Two exterior pivot stubs preserve the open optical path through the
+    # cage centre. A single full-length shaft would cut through the camera.
+    for sign in (-1.0, 1.0):
+        stub_x = sign * (length_x / 2 + pivot_length / 2 - 0.5)
+        stub = Pos(stub_x, 0, 0) * Rotation(0, 90, 0) * Cylinder(
+            pivot_radius, pivot_length + 1.0, align=(Align.CENTER,) * 3
+        )
+        spoke = Pos(sign * length_x / 2, 0, height_z / 4) * Box(
+            bar, bar, height_z / 2 + bar, align=(Align.CENTER,) * 3
+        )
+        cage = cage + spoke + stub
+    return Compound(children=list(cage.solids()))
+
+
+def gimbal_pan_yoke(
+    disk_radius: float = 22.0,
+    disk_height: float = 16.0,
+    center_bore_radius: float = 5.0,
+    spigot_radius: float = 4.8,
+    spigot_height: float = 3.0,
+    roll_axis_z: float = 60.0,
+    roll_half_span_x: float = 58.0,
+    tower_size: float = 14.0,
+    roll_bore_radius: float = 4.5,
+) -> "Compound":
+    """Z-pan rotor carrying a real two-post X-roll bearing yoke."""
+    from build123d import Align, Box, Compound, Cylinder, Pos, Rotation
+
+    disk = Pos(0, 0, disk_height / 2) * Cylinder(
+        disk_radius, disk_height, align=(Align.CENTER,) * 3
+    )
+    # Keep a solid centre hub: the downward spigot must be materially joined
+    # to the pan disk. The carrier provides the receiving bore.
+    spigot = Pos(0, 0, -spigot_height / 2) * Cylinder(
+        spigot_radius, spigot_height, align=(Align.CENTER,) * 3
+    )
+    bridge = Pos(0, 0, disk_height - 3.0) * Box(
+        2 * roll_half_span_x + tower_size, tower_size, 6.0,
+        align=(Align.CENTER,) * 3,
+    )
+    body = disk + spigot + bridge
+    tower_height = roll_axis_z - (disk_height - 6.0) + tower_size / 2
+    tower_center_z = disk_height - 6.0 + tower_height / 2
+    for x in (-roll_half_span_x, roll_half_span_x):
+        body = body + Pos(x, 0, tower_center_z) * Box(
+            tower_size, tower_size, tower_height, align=(Align.CENTER,) * 3
+        )
+    bore = Pos(0, 0, roll_axis_z) * Rotation(0, 90, 0) * Cylinder(
+        roll_bore_radius, 2 * roll_half_span_x + 2 * tower_size,
+        align=(Align.CENTER,) * 3,
+    )
+    body = body - bore
+    return Compound(children=list(body.solids()))
+
+
+def crane_counterweight_frame(
+    rear_length: float = 170.0,
+    frame_width: float = 70.0,
+    frame_height: float = 20.0,
+    connector_length: float = 50.0,
+    connector_width: float = 30.0,
+) -> "Compound":
+    """Rear counterweight beam with an integral tongue into the main boom."""
+    from build123d import Align, Box, Compound, Pos
+    rear = Pos(-rear_length / 2, 0, 0) * Box(
+        rear_length, frame_width, frame_height, align=(Align.CENTER,) * 3
+    )
+    tongue = Pos(connector_length / 2 - 1.0, 0, 0) * Box(
+        connector_length + 2.0, connector_width, frame_height,
+        align=(Align.CENTER,) * 3,
+    )
+    return Compound(children=list((rear + tongue).solids()))
+
+
+def bent_jaw_xz(
+    side: str,
+    root_length: float = 40.0,
+    root_width: float = 18.0,
+    depth_y: float = 12.0,
+    tip_length: float = 50.0,
+    tip_height: float = 18.0,
+    tip_down_angle_deg: float = 30.0,
+    elbow_overlap: float = 6.0,
+    pad_thickness_x: float = 6.0,
+    pad_depth_y: float = 24.0,
+    pad_height_z: float = 18.0,
+) -> "Compound":
+    """Two-segment gripper jaw in the XZ plane with an obtuse elbow.
+
+    The root is centred at local ``(0, 0, 0)`` and the first bar runs
+    vertically down to ``(0, 0, -root_length)``.  Its top face is normal
+    to +Z so a clevis tongue can continue upward in the same direction as
+    the bar instead of protruding sideways. The second bar bends inward: +X for
+    ``side='left'`` and -X for ``side='right'``.  With the default 30-degree
+    downward tip direction, the angle between the ray back to the root and
+    the ray toward the tip is 120 degrees.
+
+    This builder intentionally uses centred Box primitives.  It avoids the
+    sketch-workplane ambiguity that previously turned a requested 12 mm
+    Y-depth into an 18 mm extrusion in generated jaw code.  A rectangular
+    gripping pad is fused across the distal end.  Its broad flat inner face
+    is normal to X, so the mirrored pair presents two parallel contact
+    surfaces toward the object instead of narrow slanted bar ends.
+    """
+    if side not in ("left", "right"):
+        raise ValueError("bent_jaw_xz side must be 'left' or 'right'")
+    for name, value in (
+        ("root_length", root_length), ("root_width", root_width),
+        ("depth_y", depth_y), ("tip_length", tip_length),
+        ("tip_height", tip_height), ("pad_thickness_x", pad_thickness_x),
+        ("pad_depth_y", pad_depth_y), ("pad_height_z", pad_height_z),
+    ):
+        if float(value) <= 0:
+            raise ValueError(f"bent_jaw_xz {name} must be > 0")
+    angle = float(tip_down_angle_deg)
+    if not 0.0 < angle < 90.0:
+        raise ValueError("bent_jaw_xz tip_down_angle_deg must be in (0, 90)")
+    if not 0.0 < float(elbow_overlap) < tip_length / 2.0:
+        raise ValueError("bent_jaw_xz elbow_overlap must be in (0, tip_length/2)")
+
+    from math import cos, radians, sin
+    from build123d import Align, Box, Compound, Pos, Rotation
+
+    inward = 1.0 if side == "left" else -1.0
+    root = Pos(0, 0, -root_length / 2.0) * Box(
+        root_width, depth_y, root_length,
+        align=(Align.CENTER, Align.CENTER, Align.CENTER),
+    )
+
+    theta = radians(angle)
+    centre_distance = tip_length / 2.0 - float(elbow_overlap)
+    tip_center_x = inward * centre_distance * cos(theta)
+    tip_center_z = -root_length - centre_distance * sin(theta)
+    tip = (
+        Pos(tip_center_x, 0, tip_center_z)
+        * Rotation(0, inward * angle, 0)
+        * Box(
+            tip_length, depth_y, tip_height,
+            align=(Align.CENTER, Align.CENTER, Align.CENTER),
+        )
+    )
+    # Put the pad on the distal centreline and overlap it with the slanted
+    # segment.  The extra Y/Z area gives the jaw a useful, planar contact
+    # face while remaining one printable/manufacturable solid.
+    distal_distance = tip_length - float(elbow_overlap)
+    pad_center_x = inward * distal_distance * cos(theta)
+    pad_center_z = -root_length - distal_distance * sin(theta)
+    pad = Pos(pad_center_x, 0, pad_center_z) * Box(
+        pad_thickness_x, pad_depth_y, pad_height_z,
+        align=(Align.CENTER, Align.CENTER, Align.CENTER),
+    )
+    result = root + tip + pad
+    solids = list(result.solids())
+    if len(solids) != 1:
+        raise ValueError(
+            "bent_jaw_xz bars did not fuse into one solid; adjust dimensions"
+        )
+    return Compound(children=solids)
+
+
 # Registry: builder name -> function. The PartBuilder looks up builders
 # by name from PartSpec.builder["name"].
 BUILDERS = {
@@ -1303,6 +2010,17 @@ BUILDERS = {
     "clevis_base_with_fork": clevis_base_with_fork,
     "clevis_palm": clevis_palm,
     "ball_joint_socket": ball_joint_socket,
+    "y_axis_truss_clevis_link": y_axis_truss_clevis_link,
+    "y_axis_wrist_carrier": y_axis_wrist_carrier,
+    "y_axis_tilt_yoke": y_axis_tilt_yoke,
+    "symmetric_sensor_pod": symmetric_sensor_pod,
+    "y_axis_motor_pod": y_axis_motor_pod,
+    "y_axis_bearing_cap": y_axis_bearing_cap,
+    "telescope_carrier": telescope_carrier,
+    "gimbal_roll_cage": gimbal_roll_cage,
+    "gimbal_pan_yoke": gimbal_pan_yoke,
+    "crane_counterweight_frame": crane_counterweight_frame,
+    "bent_jaw_xz": bent_jaw_xz,
 }
 
 
