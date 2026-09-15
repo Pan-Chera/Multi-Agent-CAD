@@ -130,7 +130,7 @@ _PROVIDER_PRESETS: dict[str, dict[str, str]] = {
     },
     "gemini": {
         "ds_base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "model_hint": "gemini-2.0-flash",
+        "model_hint": "gemini-2.5-flash",
     },
     "ollama": {
         "ds_base_url": "http://localhost:11434/v1",
@@ -588,7 +588,10 @@ if _STATIC_DIR.is_dir():
 def main() -> None:
     host = os.environ.get("MAC_WEB_HOST", _DEFAULT_HOST)
     port = int(os.environ.get("MAC_WEB_PORT", "8000"))
-    print(f"\n  MAC Web UI — http://{host}:{port}")
+    # If a user explicitly opts into all-interface binding, show a usable
+    # local browser URL instead of 0.0.0.0 (invalid as a destination on Windows).
+    display_host = "127.0.0.1" if host == "0.0.0.0" else host
+    print(f"\n  MAC Web UI — http://{display_host}:{port}")
     print("  Local single-user mode. Generated .py runs with this user's privileges.")
     print(f"  Auto-cleanup: job tempdirs removed {_CLEANUP_AFTER_SECONDS // 3600}h after completion.\n")
     uvicorn.run(app, host=host, port=port, log_level="info")

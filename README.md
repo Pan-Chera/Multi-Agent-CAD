@@ -151,16 +151,36 @@ pip install --no-deps "aider-chat==0.82.3"
 export DASHSCOPE_API_KEY="your-key"
 ```
 
-The repository's [`requirements.txt`](requirements.txt) documents the Python
-dependencies but is **not directly installable with `pip install -r`**:
-`aider-chat` pins an older NumPy release while build123d uses NumPy 2.x.
-Conda is the recommended path. Dependency and platform details are recorded in
-[`environment.yml`](environment.yml), [`requirements.txt`](requirements.txt),
-and [`pyproject.toml`](pyproject.toml).
+The final `pip install` is needed because `aider-chat` pins NumPy 1.x, which
+conflicts with build123d's NumPy 2.x requirement. It is therefore omitted from
+`environment.yml`; `--no-deps` avoids replacing the working NumPy version.
 
 The default configuration targets an OpenAI-compatible DashScope endpoint.
 Other providers are covered in the
 [single-part configuration guide](multi_agent_cad/README.md#configuration-and-model-providers).
+
+> **pip users (no conda)**: `aider-chat` pins `numpy==1.26.4`, but `build123d>=0.8` requires `numpy>=2,<3` — these conflict in pure pip. Use this workaround (verified on macOS arm64 + Python 3.11):
+>
+> ```bash
+> python3.11 -m venv .venv
+> source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\activate
+> pip install --upgrade pip
+> # Install aider first (pulls numpy 1.26.4 + transitive deps), then force-upgrade numpy.
+> # Verified: aider 0.82.3 imports cleanly on numpy 2.x — the pin is over-cautious upstream.
+> pip install "aider-chat==0.82.3"
+> pip install --no-deps --force-reinstall "numpy>=2,<2.3"
+> pip install "build123d>=0.8" "langgraph>=0.2,<0.3" "langgraph-checkpoint>=2.0,<3.0" \
+>             "pydantic>=2.5" "openai>=1.20.0" "anthropic>=0.30" \
+>             "trimesh>=4.0" "rtree>=1.1" "scipy>=1.10" "scikit-learn>=1.3" \
+>             "fastapi>=0.110" "uvicorn[standard]>=0.27" "ipython>=8.15" "pytest>=7.4"
+> # --no-deps skips re-checking the numpy pin in pyproject.toml; fastapi+uvicorn
+> # are already installed by the previous step, so the [web] extras resolve.
+> pip install --no-deps -e .
+> ```
+>
+> The last step registers the `mac-config-reset` console script and lets you run `python -m multi_agent_cad.graph` from any directory. See [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml) for the canonical dependency list.
+
+> **Windows**: the same `conda env create` + `pip install --no-deps aider-chat==0.82.3` flow works — `trimesh` and `rtree` come from conda-forge prebuilt; `OCP` is pulled in transitively by `build123d` (via its PyPI dep `cadquery-ocp-novtk`). Don't use the pure-pip workaround below on Windows — native wheels for `trimesh`/`rtree` can be unreliable. Set the API key in PowerShell as `$env:DASHSCOPE_API_KEY = "sk-..."` (or `set DASHSCOPE_API_KEY=sk-...` in cmd.exe). For the Web UI under conda, `pip install -e ".[web]"` inside the activated env works — `uvloop` auto-skips on Windows. Windows isn't in CI, but the code avoids Unix-only APIs and uses UTF-8 throughout; issues welcome.
 
 ### Generate one part
 
