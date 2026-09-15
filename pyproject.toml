@@ -33,8 +33,6 @@ dependencies = [
     "pydantic>=2.5",
     # LLM clients (OpenAI-compatible — DashScope / Qwen / OpenAI / DeepSeek)
     "openai>=1.20.0",
-    # Autonomous code repair engine
-    "aider-chat>=0.50",
     # Optional fallback provider (Claude)
     "anthropic>=0.30",
 ]
@@ -74,8 +72,8 @@ all = [
 mac-config-reset = "multi_agent_cad._config_defaults:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["multi_agent_cad*"]
+where = [".", "packages/cadpy/src"]
+include = ["multi_agent_cad*", "mac_assembly*", "cadpy*"]
 exclude = ["tmp*", "legacy_refs*", "packages*", "pipeline_cache*", "tests*"]
 
 [tool.setuptools.package-data]
@@ -85,6 +83,12 @@ multi_agent_cad = [
     "WORKFLOW.md",
     "web/static/*",
 ]
+mac_assembly = [
+    "prompts/*.md",
+    "assembly_prompts/*.md",
+    "assembly_prompts/**/*.md",
+]
+cadpy = ["py.typed"]
 
 # ── Ruff config (optional — only used if ruff is installed) ─────────────────
 [tool.ruff]

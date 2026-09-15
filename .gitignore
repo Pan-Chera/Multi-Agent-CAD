@@ -72,9 +72,11 @@ assembly_jobs/
 .claude/
 
 # ── Local-only test suite ───────────────────────────────────────────────────
-# tests/ holds regression / unit tests for the mac_assembly pipeline. Kept
-# local-only — not part of the published project. Run `pytest tests/` locally.
-tests/
+# The exhaustive regression suite is maintained locally.  A small, stable
+# release-contract suite is committed and run in GitHub Actions.
+tests/*
+!tests/release/
+!tests/release/**
 
 # ── Local dev scripts & scratch space ──────────────────────────────────────
 tmp/

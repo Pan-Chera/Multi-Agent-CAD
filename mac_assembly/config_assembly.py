@@ -62,7 +62,7 @@ MATING_KWARGS: dict = {"extra_body": {"enable_thinking": False}}
 ASSEMBLY_REPAIR_MODEL = os.environ.get("MAC_ASM_REPAIR_MODEL", _DEFAULT_MODEL)
 ASSEMBLY_REPAIR_TEMPERATURE = 0.0
 ASSEMBLY_REPAIR_MAX_TOKENS = 16384
-ASSEMBLY_REPAIR_KWARGS: dict = {"extra_body": {"enable_thinking": True}}
+ASSEMBLY_REPAIR_KWARGS: dict = {"extra_body": {"enable_thinking": False}}
 
 # ============================================================================
 # Stage: Assembly Judge (mirrors MAC's QA Judge: temp 0, anti-hallucination)
@@ -73,7 +73,7 @@ ASSEMBLY_JUDGE_MIN_RETRY = 1        # judge only from retry >= this
 ASSEMBLY_JUDGE_MODEL = os.environ.get("MAC_ASM_JUDGE_MODEL", _DEFAULT_MODEL)
 ASSEMBLY_JUDGE_TEMPERATURE = 0.0
 ASSEMBLY_JUDGE_MAX_TOKENS = 8192
-ASSEMBLY_JUDGE_KWARGS: dict = {"extra_body": {"enable_thinking": True}}
+ASSEMBLY_JUDGE_KWARGS: dict = {"extra_body": {"enable_thinking": False}}
 ASSEMBLY_JUDGE_MULTIMODAL = "auto"  # "auto" | "always" | "never"
 ASSEMBLY_JUDGE_VIEWS_COUNT = 4
 ASSEMBLY_JUDGE_VIEW_SIZE = 512

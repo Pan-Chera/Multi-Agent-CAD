@@ -1623,8 +1623,8 @@ def _check_kinematics(
 
     * REVOLUTE     -- rotate the subtree about the joint axis over
       +/- ``KINEMATIC_SWEEP_DEG``.
-    * LINEAR / CYLINDRICAL -- translate the subtree along the joint axis
-      over +/- ``LINEAR_SWEEP_MM``.
+    * LINEAR -- use explicit joint limits when available; otherwise sweep
+      over +/- ``LINEAR_SWEEP_MM``. CYLINDRICAL uses the fallback sweep.
 
     A part may export as several connected shells (B5): every shell of
     the moving subtree moves together and every shell of the static
@@ -1658,10 +1658,18 @@ def _check_kinematics(
             )
             unit = "deg"
         else:
-            samples = np.linspace(
-                -cfg.LINEAR_SWEEP_MM, cfg.LINEAR_SWEEP_MM,
-                cfg.LINEAR_SWEEP_SAMPLES,
-            )
+            lower = mate.limit_lower if mate.mate_type == MateType.LINEAR else None
+            upper = mate.limit_upper if mate.mate_type == MateType.LINEAR else None
+            if lower is not None and upper is not None:
+                samples = np.unique(np.concatenate((
+                    np.linspace(lower, upper, cfg.LINEAR_SWEEP_SAMPLES),
+                    np.array([0.0]),
+                )))
+            else:
+                samples = np.linspace(
+                    -cfg.LINEAR_SWEEP_MM, cfg.LINEAR_SWEEP_MM,
+                    cfg.LINEAR_SWEEP_SAMPLES,
+                )
             unit = "mm"
 
         chk = KinematicCheck(
@@ -2072,6 +2080,34 @@ def _check_envelope(brief: AssemblyBrief, placed):
     return measured, errors
 
 
+def _check_assembled_axis_ranges(brief: AssemblyBrief, placed) -> list[str]:
+    """Check optional part world-space bbox targets emitted by Decomposer."""
+    errors: list[str] = []
+    placed_by_label = {label: (bmin, bmax) for label, bmin, bmax in placed}
+    for part in brief.parts:
+        dims = part.key_dimensions if isinstance(part.key_dimensions, dict) else {}
+        target = dims.get("assembled_axis_ranges")
+        if not isinstance(target, dict) or part.part_id not in placed_by_label:
+            continue
+        bmin, bmax = placed_by_label[part.part_id]
+        for i, axis in enumerate(("x", "y", "z")):
+            pair = target.get(axis)
+            if not (
+                isinstance(pair, (list, tuple)) and len(pair) == 2
+                and all(isinstance(v, (int, float)) for v in pair)
+            ):
+                continue
+            delta = (float(bmin[i]) - float(pair[0]), float(bmax[i]) - float(pair[1]))
+            if max(abs(delta[0]), abs(delta[1])) > 0.5:
+                errors.append(
+                    f"assembled pose {part.part_id} {axis.upper()} mismatch: "
+                    f"measured [{bmin[i]:.2f},{bmax[i]:.2f}] vs target "
+                    f"[{float(pair[0]):.2f},{float(pair[1]):.2f}] mm; "
+                    f"endpoint deltas [{delta[0]:+.2f},{delta[1]:+.2f}] mm"
+                )
+    return errors
+
+
 # ---------------------------------------------------------------------------
 # Dimension reconciliation (zero-token pre-assembly gate)
 # ---------------------------------------------------------------------------
@@ -2421,6 +2457,7 @@ def run_assembly_qa(
     mates: list,
     part_results: dict,
     assembly_dir: Path,
+    authoritative_step_paths: dict[str, str] | None = None,
 ) -> AssemblyQAReport:
     placed, locations, load_err = _load_placed_solids(assembly_dir)
 
@@ -2495,6 +2532,15 @@ def run_assembly_qa(
         for pid, r in (part_results or {}).items()
         if getattr(r, "ok", False) and getattr(r, "step_path", "")
     }
+    # Inspect exactly the STEP files consumed by the assembly script.  A
+    # graph cache may retain an older usable PartResult even after the
+    # assembler pins a newer deterministic-builder artifact.
+    if authoritative_step_paths:
+        step_paths.update({
+            str(pid): str(path)
+            for pid, path in authoritative_step_paths.items()
+            if path
+        })
     # Part-generation warnings (e.g. v3 degraded base bodies) travel into the
     # QA report so the Judge sees them next to the deterministic failures
     # instead of them being silently swallowed by an ok=True PartResult.
@@ -2571,6 +2617,14 @@ def run_assembly_qa(
     report.envelope_measured_mm, env_errors = _check_envelope(brief, placed)
     report.envelope_passed = not env_errors
 
+    # Optional target world ranges are emitted internally by the Decomposer
+    # when a natural-language request distinguishes a part's own local frame
+    # from its assembled pose. Validate them before asking an LLM to infer
+    # placement from collisions.
+    assembled_range_errors = _check_assembled_axis_ranges(brief, placed)
+    if assembled_range_errors:
+        report.mates_passed = False
+
     _t0 = time.perf_counter()
     report.interference_checks = _check_interference(comp_labels, mates)
     report.interference_passed = all(c.passed for c in report.interference_checks)
@@ -2597,6 +2651,7 @@ def run_assembly_qa(
             f"measured {report.part_count_measured}; missing={report.missing_parts}"
         )
     details += [f"mate {c.mate_id} FAIL: {c.detail}" for c in report.mate_checks if not c.passed]
+    details += assembled_range_errors
     details += env_errors
     details += [
         f"interference {c.part_a}/{c.part_b} FAIL: {c.detail}"
@@ -2606,6 +2661,23 @@ def run_assembly_qa(
         f"kinematic {c.mate_id} FAIL: {c.detail}"
         for c in report.kinematic_checks if not c.passed
     ]
+    if details and (
+        not report.interference_passed or not report.kinematics_passed
+        or not report.mates_passed
+    ):
+        # The Mating Architect sees the brief but not the generated meshes.
+        # A bare "collision" gives it no way to tell whether a sleeve is
+        # 8 mm or 28 mm too high. Feed the actual placed world bounds back
+        # without changing PASS/FAIL or asking it to guess from an image.
+        for label, bmin, bmax in placed:
+            if label.startswith("unmatched_"):
+                continue
+            details.append(
+                f"placement diagnostic {label}: world bbox "
+                f"X=[{bmin[0]:.2f},{bmax[0]:.2f}] "
+                f"Y=[{bmin[1]:.2f},{bmax[1]:.2f}] "
+                f"Z=[{bmin[2]:.2f},{bmax[2]:.2f}] mm"
+            )
     report.error_details = details
     report.all_passed = not details
 

@@ -58,14 +58,14 @@ MAX_EXEC_RETRIES = 3
 # ============================================================================
 
 # LLM API call for JSON planning stages (Spec Planner / Geometric Architect /
-# assembly Decomposer / Mating Architect / Judges). 300s: enough for large
-# structured-JSON briefs, short enough to surface a hung endpoint quickly.
-LLM_API_TIMEOUT = int(os.environ.get("MAC_LLM_API_TIMEOUT") or "300")
+# assembly Decomposer / Mating Architect / Judges). Thinking-enabled Qwen
+# responses can take substantially longer, so the local default is 1800s.
+LLM_API_TIMEOUT = int(os.environ.get("MAC_LLM_API_TIMEOUT") or "1800")
 
 # LLM API call for large code generation / repair paths (Python Coder,
-# Aider-backed generation + repair). Full CAD scripts run 30k-65k output
-# tokens; 120s truncated these mid-file. env MAC_LLM_CODEGEN_API_TIMEOUT.
-LLM_CODEGEN_API_TIMEOUT = int(os.environ.get("MAC_LLM_CODEGEN_API_TIMEOUT") or "900")
+# Aider-backed generation + repair). Thinking-enabled full CAD scripts can
+# run for many minutes. Override with MAC_LLM_CODEGEN_API_TIMEOUT when needed.
+LLM_CODEGEN_API_TIMEOUT = int(os.environ.get("MAC_LLM_CODEGEN_API_TIMEOUT") or "1800")
 
 # check_mesh.py subprocess timeout (Engine B -- STL mesh analysis).
 CHECK_MESH_TIMEOUT = 180
@@ -146,7 +146,7 @@ USER_IMAGE_JPEG_QUALITY = 85                    # JPEG re-encode quality (1-95)
 SPEC_PLANNER_MULTIMODAL = "auto"   # "auto" | "always" | "never"
 
 # --- Stage 2: Geometric Architect ---------------------------------------
-# Thinking disabled for JSON determinism (saves output tokens).
+# Spatial planning is one of the two stages where deliberate reasoning pays off.
 ARCHITECT_MODEL = "qwen3.8-max"
 ARCHITECT_TEMPERATURE = 0.0
 ARCHITECT_MAX_TOKENS = 32768
@@ -193,7 +193,7 @@ JUDGE_MIN_RETRY = 1                 # only invoke Judge after this many outer re
 JUDGE_MODEL = "qwen3.8-max"
 JUDGE_TEMPERATURE = 0.0             # deterministic — judgment should be reproducible
 JUDGE_MAX_TOKENS = 4096             # decision is short; ample headroom
-JUDGE_KWARGS = {"extra_body": {"enable_thinking": False}}  # thinking off
+JUDGE_KWARGS = {"extra_body": {"enable_thinking": False}}
 
 # --- Stage 5b: QA Judge visual rendering (multimodal input) ---------------
 # When multimodal is enabled, Judge renders N isometric PNG views from the

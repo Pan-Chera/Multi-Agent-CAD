@@ -184,7 +184,9 @@ def node_existing_file_loader(state: GraphState) -> dict:
         "current_step_path": actual_step_path,
         "current_stl_path": actual_stl_path,
         "iteration_count": iteration,
-        "workflow_id": "aider",  # Aider-style file naming for downstream outputs
+        # ``resume`` uses this loader too, but unlike true modify-existing
+        # mode it may accept a baseline that already passes QA.
+        "workflow_id": state.get("workflow_id", "aider"),
         "execution_log": [
             f"node_existing_file_loader [iter {iteration}]: "
             f"loaded {code_path.name}, executed, STEP={'yes' if actual_step_path else 'no'} "

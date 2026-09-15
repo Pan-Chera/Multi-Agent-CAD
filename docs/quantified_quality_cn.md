@@ -9,9 +9,9 @@
 
 对比基线 `cad skill` 即 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)（CAD Skills，[文档](https://www.cadskills.xyz)）项目的 [`cad` skill](https://github.com/earthtojake/text-to-cad/tree/main/skills/cad) —— 一个基于 Claude Code skill 的单体 agent 文本到 CAD 生成器。
 
-> **公平性说明**：MAC 与基线 `cad skill` 使用**相同 prompt 集**（P1–P10，取自 [该项目 benchmarks/](https://github.com/earthtojake/text-to-cad/tree/main/benchmarks)）、**相同测试集**、**相同几何评估标准**（141 特征二元通过/失败），唯一变量是 agent 架构。
+> **对比范围说明**：MAC 与我们复现的 `cad skill` 基线使用相同 prompt 集（P1–P10）、测试集、模型系列和几何评估标准（141 项二元特征）。两者在编排、工具上下文、修复行为与缓存计费口径上仍有差异，因此这是对两套文档化配置的受控基准，不足以证明架构是唯一因果变量。
 
-> **关于基线 97.9%**：原 `cad skill` 通过率只有 97.9%。原因：原作者测试时用 Claude 与 ChatGPT，本测试用的是更弱的 Qwen 3.7-max。基线与 MAC 同一 LLM、唯一变量是 agent 架构 —— MAC 跑出 99.3%，优势完全来自架构。
+> **关于基线 97.9%**：我们使用 Qwen 3.7-max 按本文协议复现时测得 97.9%。上游项目也曾使用其他模型展示。若没有专门消融，不能把这里的差异完全归因于模型能力或 Agent 架构。
 
 ## 1. 执行摘要
 
@@ -28,7 +28,7 @@
 | 失败特征数 | 3 | 1 | — |
 | 防御性修正数 | 0 | 1 | — |
 
-**核心结论**：MAC 以**对比对象 1/13 的成本、1/26 的 API 调用次数**在耗时更少的情况下实现了 **99.3% 的特征通过率**（140/141，1 个实际失败 + 1 个独立防御性修正），同时**少消耗 116× 的 token**。`cad skill` 的 cache_read 占主导（96.2M / 103.9M 总 token），表明其进行了大量上下文复用，但绝对成本仍更高。**MAC 从架构源头上阻断了单体 Agent 的上下文幻觉累积**（详见 §5）。
+**本基准结果**：MAC 实现了 **99.3% 的特征通过率**（140/141，1 个实际失败 + 1 个独立防御性修正），估算成本为复现基线的 **1/13**、API 调用次数为 **1/26**，记录口径下 token 数量少 **116 倍**，且耗时更短。基线的 cache_read 占其 token 统计的大部分（96.2M / 103.9M）。结果与“分阶段、受限上下文可减少重复上下文处理”的假设一致，但本实验没有隔离所有实现和计费口径差异（详见 §5）。
 
 ---
 

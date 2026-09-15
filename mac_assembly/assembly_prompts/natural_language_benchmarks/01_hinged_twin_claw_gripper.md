@@ -19,12 +19,20 @@ The complete supports must remain within the plate width when viewed from the
 front. Each support has two ears separated along Y, a five-millimetre-radius
 coaxial bore, and enough material around the bore for a robust hinge.
 
-The two jaws are exact mirror images about X zero. Each jaw hangs below its
+The two jaws are exact mirror images about X zero. Generate the geometry of
+one jaw only once and derive the other installed jaw by reflecting that source
+geometry across its local YZ plane; export the reflected result as its own
+independent part STEP. Each jaw hangs below its
 plate hinge and consists of a 40-millimetre upper rectangular segment joined
 to a 50-millimetre lower segment. The visible interior angle at this bend is
 120 degrees. The two segments must overlap sufficiently at the bend to form a
 broad continuous solid bridge; a point contact, seam, or visible gap is not
 acceptable. The lower segment points inward toward the centre of the gripper.
+The left and right jaw bodies therefore have opposite-handed bends and
+opposed gripping faces. Placing two copies of the same-handed jaw at opposite
+ends of the plate does not create a mirror pair. In the assembled neutral pose,
+both upper segments must extend downward from hinges at the same height; do
+not turn one jaw upside down to make its lower segment point inward.
 
 At the top of each jaw, include a central hinge tongue that fits between the
 two ears of the corresponding plate support. Its five-millimetre-radius bore
@@ -47,4 +55,3 @@ hinge tongues and fork ears.
 
 Deliver separate-part STEP geometry, an assembled STL and GLB, and a URDF in
 which the plate is the root and the two jaw hinges are the only active joints.
-

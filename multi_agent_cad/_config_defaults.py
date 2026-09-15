@@ -48,9 +48,8 @@ time. Changes take effect on the next run.
 #      for shared / version-controlled environments).
 #   2. ``DS_API_KEY`` below  (fallback for local development).
 #
-# SECURITY NOTE: This file contains a real API key. Do NOT commit it to
-# version control, share it, or paste it in chat. If leaked, regenerate
-# the key in the Bailian console immediately.
+# Keep this value empty in version control. Prefer DASHSCOPE_API_KEY in the
+# process environment; if a key is ever exposed, rotate it immediately.
 
 DS_API_KEY = ""
 
@@ -84,11 +83,11 @@ MAX_EXEC_RETRIES = 3
 
 # LLM API call for JSON planning stages (Spec Planner / Geometric Architect /
 # assembly Decomposer / Mating Architect / Judges).
-LLM_API_TIMEOUT = 300
+LLM_API_TIMEOUT = 1800
 
 # LLM API call for large code generation / repair paths (Python Coder,
 # Aider-backed generation + repair).
-LLM_CODEGEN_API_TIMEOUT = 900
+LLM_CODEGEN_API_TIMEOUT = 1800
 
 # check_mesh.py subprocess timeout (Engine B -- STL mesh analysis).
 CHECK_MESH_TIMEOUT = 180

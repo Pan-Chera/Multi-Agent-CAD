@@ -1843,10 +1843,10 @@ def _plan_to_code(plan, iteration: int) -> str:
                 # (e.g., if a pattern was applied to the tool operand)
                 lines.append(f"_measure_feature({tv}, '{target_id}-union-target', 'union_operand_a')")
                 lines.append(f"_measure_feature({ov}, '{tool_id}-union-tool', 'union_operand_b')")
-                lines.append(f"# Adaptive overlap: 0.3-0.5mm based on feature size")
+                lines.append(f"# Minimal fusion overlap: preserve requested feature datums")
                 lines.append(f"_bb0 = {tv}.bounding_box()")
                 lines.append(f"_bb1 = {ov}.bounding_box()")
-                lines.append(f"# Calculate adaptive overlap (5% of smaller dimension, clamped to 0.3-0.5mm)")
+                lines.append(f"# A 0.3-0.5mm push can extend an end flange into its mating plate.")
                 lines.append(f"_min_dim = min(")
                 lines.append(f"    _bb0.max.to_tuple()[0] - _bb0.min.to_tuple()[0],")
                 lines.append(f"    _bb0.max.to_tuple()[1] - _bb0.min.to_tuple()[1],")
@@ -1855,7 +1855,7 @@ def _plan_to_code(plan, iteration: int) -> str:
                 lines.append(f"    _bb1.max.to_tuple()[1] - _bb1.min.to_tuple()[1],")
                 lines.append(f"    _bb1.max.to_tuple()[2] - _bb1.min.to_tuple()[2],")
                 lines.append(f")")
-                lines.append(f"_overlap = max(0.3, min(0.5, _min_dim * 0.05))")
+                lines.append(f"_overlap = 0.02  # enough for OCCT union, below assembly clearance")
                 lines.append(f"_push = [0.0, 0.0, 0.0]")
                 lines.append(f"for _i in range(3):")
                 lines.append(f"    _gap = _bb0.min.to_tuple()[_i] - _bb1.max.to_tuple()[_i]")
@@ -1883,14 +1883,14 @@ def _plan_to_code(plan, iteration: int) -> str:
                     a = step_body[sids_list[-2]]
                     b = step_body[sids_list[-1]]
                     var = f"solid_{solid_count}"
-                    lines.append(f"# Union: {a} + {b}  (adaptive overlap: 0.3-0.5mm)")
+                    lines.append(f"# Union: {a} + {b}  (minimal fusion overlap)")
                     # Measure both operands BEFORE union (white-box instrumentation)
                     # Use modified keys to avoid overwriting original feature measurements
                     lines.append(f"_measure_feature({a}, '{sids_list[-2]}-union-target', 'union_operand_a')")
                     lines.append(f"_measure_feature({b}, '{sids_list[-1]}-union-tool', 'union_operand_b')")
                     lines.append(f"_bb0 = {a}.bounding_box()")
                     lines.append(f"_bb1 = {b}.bounding_box()")
-                    lines.append(f"# Calculate adaptive overlap (5% of smaller dimension, clamped to 0.3-0.5mm)")
+                    lines.append(f"# Keep nominal feature datums; only a tiny overlap is needed.")
                     lines.append(f"_min_dim = min(")
                     lines.append(f"    _bb0.max.to_tuple()[0] - _bb0.min.to_tuple()[0],")
                     lines.append(f"    _bb0.max.to_tuple()[1] - _bb0.min.to_tuple()[1],")
@@ -1899,7 +1899,7 @@ def _plan_to_code(plan, iteration: int) -> str:
                     lines.append(f"    _bb1.max.to_tuple()[1] - _bb1.min.to_tuple()[1],")
                     lines.append(f"    _bb1.max.to_tuple()[2] - _bb1.min.to_tuple()[2],")
                     lines.append(f")")
-                    lines.append(f"_overlap = max(0.3, min(0.5, _min_dim * 0.05))")
+                    lines.append(f"_overlap = 0.02  # below assembly clearance")
                     lines.append(f"_push = [0.0, 0.0, 0.0]")
                     lines.append(f"for _i in range(3):")
                     lines.append(f"    _gap = _bb0.min.to_tuple()[_i] - _bb1.max.to_tuple()[_i]")
@@ -2858,7 +2858,7 @@ Fillets/chamfers MUST come after ALL boolean operations (union, cut).
             "max_tokens": _AIDER_MAX_TOKENS,  # avoid truncation
             # litellm-level request timeout (s): see LLM_CODEGEN_API_TIMEOUT.
             "timeout": _CFG_LLM_CODEGEN_API_TIMEOUT,
-            "extra_body": {"enable_thinking": False},  # thinking off
+            "extra_body": {"enable_thinking": False},
         }
         io = InputOutput(
             yes=True,
@@ -6273,6 +6273,7 @@ def node_judge_qa(
     retry: int,
     workflow_id: str,
     current_stl_path: str | None = None,
+    semantic_check: bool = False,
 ) -> JudgeDecision | None:
     """Evaluate whether a QA report's failures warrant code repair.
 
@@ -6348,7 +6349,7 @@ def node_judge_qa(
     # -- Config gates -------------------------------------------------------
     if not _CFG_JUDGE_ENABLED:
         return None
-    if retry < _CFG_JUDGE_MIN_RETRY:
+    if retry < _CFG_JUDGE_MIN_RETRY and not semantic_check:
         return None
 
     # -- Build user prompt -------------------------------------------------
@@ -6397,6 +6398,22 @@ def node_judge_qa(
             "(not available — no temp_measurements_{iter}.json found on disk)"
         )
 
+    task_text = (
+        "The deterministic QA checks passed. Use the rendered current-model "
+        "views, if present, to verify visible agreement with the original "
+        "natural-language request. Check overall shape, orientation, "
+        "handedness/symmetry, interface and hinge placement, feature shape, "
+        "and missing or floating geometry. If a visible mismatch exists, "
+        "choose repair and provide concrete modification_suggestions. If "
+        "rendered views are unavailable, semantic_verification must be "
+        "unverified and lack of vision must not trigger repair or halt."
+        if semantic_check else
+        "Evaluate whether the QA report's failures warrant code repair, or "
+        "whether the current model should be accepted as-is (false positive, "
+        "design intent satisfied, persistent kernel limitation) or the "
+        "request declared unimplementable (halt)."
+    )
+
     user_prompt = textwrap.dedent(f"""\
     ## Original User Request (ground truth — never deviate from this)
 
@@ -6415,10 +6432,7 @@ def node_judge_qa(
 
     ## Task
 
-    Evaluate whether the QA report's failures warrant code repair, or
-    whether the current model should be accepted as-is (false positive,
-    design intent satisfied, persistent kernel limitation) or the request
-    declared unimplementable (halt).
+    {task_text}
 
     Follow the Anti-Hallucination Iron Rule from the system prompt: every
     `accept` or `halt` decision MUST cite concrete data points in the
@@ -6466,6 +6480,13 @@ def node_judge_qa(
             return None
     elif multimodal_mode == "always" and (not current_stl_path or not Path(current_stl_path).is_file()):
         print(f"[JUDGE] JUDGE_MULTIMODAL=always but STL not available — returning None (safe default REPAIR)")
+        return None
+
+    # A semantic-only check needs rendered views of the generated model.
+    # With text-only providers (or a rendering failure in auto/never mode),
+    # skip it rather than inventing visual facts or blocking a valid result.
+    if semantic_check and not view_pngs:
+        print("[JUDGE] semantic visual check skipped: no rendered views")
         return None
 
     # -- Load user-provided reference images (independent scan) ------------
@@ -6556,6 +6577,15 @@ def node_judge_qa(
         # "model does not support streaming".
         multimodal_unsupported = _is_multimodal_unsupported_error(err_str)
         has_images = bool(view_pngs) or bool(user_images)
+        if (
+            semantic_check and has_images and multimodal_mode == "auto"
+            and multimodal_unsupported
+        ):
+            print(
+                f"[JUDGE] semantic visual check skipped: model does not "
+                f"support images ({exc})"
+            )
+            return None
         if has_images and multimodal_mode == "auto" and multimodal_unsupported:
             # Fallback: retry without images (drop both user_image and view blocks)
             print(f"[JUDGE] multimodal unsupported ({exc}) — retrying text-only")
@@ -6593,6 +6623,31 @@ def node_judge_qa(
     except Exception as exc:
         print(f"[JUDGE] parse failed: {exc} — proceeding to repair")
         return None
+
+    if semantic_check:
+        has_view_evidence = any(
+            "view[" in item.lower() for item in decision.evidence
+        )
+        if decision.semantic_verification == "failed" and has_view_evidence:
+            suggestions = list(decision.modification_suggestions)
+            if not suggestions and decision.reason.strip():
+                suggestions = [decision.reason.strip()]
+            decision = decision.model_copy(update={
+                "action": JudgeAction.REPAIR,
+                "modification_suggestions": suggestions,
+            })
+        else:
+            semantic = decision.semantic_verification
+            if semantic in ("verified", "failed") and not has_view_evidence:
+                semantic = "unverified"
+            # A clean deterministic report must not be repaired on
+            # unsupported visual claims. A repair requires an explicit
+            # failed assessment grounded in a rendered current-model view.
+            decision = decision.model_copy(update={
+                "action": JudgeAction.ACCEPT,
+                "semantic_verification": semantic,
+                "modification_suggestions": [],
+            })
 
     return decision
 
@@ -6693,7 +6748,7 @@ Please replace the 'pass' statement in gen_step() with the full implementation.
             # litellm-level request timeout (s): full-script generation
             # runs 30k-65k output tokens; 120s truncated these mid-file.
             "timeout": _CFG_LLM_CODEGEN_API_TIMEOUT,
-            "extra_body": {"enable_thinking": False},  # thinking off
+            "extra_body": {"enable_thinking": False},
         }
                 io = InputOutput(
                     yes=True,
@@ -6884,7 +6939,7 @@ def _run_repair_on_script(
             # litellm-level request timeout (s): full-script generation
             # runs 30k-65k output tokens; 120s truncated these mid-file.
             "timeout": _CFG_LLM_CODEGEN_API_TIMEOUT,
-            "extra_body": {"enable_thinking": False},  # thinking off
+            "extra_body": {"enable_thinking": False},
         }
                 io = InputOutput(
                     yes=True,       # auto-confirm all prompts
@@ -7653,7 +7708,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
     # ------------------------------------------------------------------
     _skip_initial_qa = False
     if not step_path_str or not stl_path_str:
-        if workflow_id == "aider":
+        if workflow_id in ("aider", "resume"):
             # Aider-First workflow: initial generation failed, skip QA and go straight to repair
             _skip_initial_qa = True
             print("[AUTONOMOUS LOOP] Aider-First: No initial STEP/STL, skipping QA, entering repair loop")
@@ -7671,7 +7726,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
     # Use explicit path from state if provided, otherwise infer from workflow_id
     if script_path_str:
         script_path = Path(script_path_str)
-    elif workflow_id == "aider":
+    elif workflow_id in ("aider", "resume"):
         script_path = cwd / f"temp_design_aider_{iteration}.py"
     else:
         script_path = cwd / f"temp_design_{iteration}.py"
@@ -7718,6 +7773,11 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
     # (choice 2) only affect the current round. Next iteration starts
     # fresh from the original, even if the user picked 2 last round.
     original_user_request = user_request
+    # The geometry currently held in ``current_step`` was measured when its
+    # script last executed.  Repairing at retry N writes measurements_N, but
+    # the next outer loop is N+1; using retry_iter there can silently load an
+    # unrelated file left by an older run. Track the artifact, not the loop.
+    current_measurement_iteration = iteration
     for retry in range(MAX_RETRIES):
         retry_iter = iteration + retry
         # Reset to original at the start of each iteration so interventions
@@ -7787,7 +7847,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                 step_path=str(current_step),
                 cad_brief=cad_brief,
                 engine_b_mesh_resolution={},
-                iteration=retry_iter,
+                iteration=current_measurement_iteration,
                 selector_map=selector_map,
             )
 
@@ -7795,7 +7855,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
             engine_b = _run_engine_b_check_mesh(
                 stl_path=str(current_stl),
                 cad_brief=cad_brief,
-                iteration=retry_iter,
+                iteration=current_measurement_iteration,
             )
 
             # Merge reports
@@ -7814,7 +7874,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
         # coder that generates proper geometry from ArchitectPlan.
         # Skipped when QA was skipped (model unchanged) or when no initial
         # STEP/STL exists (Aider-First first iteration).
-        if not _skip_qa and not (_skip_initial_qa and retry == 0) and workflow_id == "aider":
+        if not _skip_qa and not (_skip_initial_qa and retry == 0) and workflow_id in ("aider", "resume"):
             geometry_errors = _validate_geometry_against_request(
                 step_path=str(current_step),
                 user_request=user_request,
@@ -7839,7 +7899,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
         # Without this check, a silently-failed chamfer/fillet would be missed
         # and the loop would report SUCCESS prematurely.
         if not _skip_qa or retry > 0:
-            missed_path = _runtime_diagnostics_path(cwd, retry_iter)
+            missed_path = _runtime_diagnostics_path(cwd, current_measurement_iteration)
             if missed_path is not None:
                 try:
                     missed = json.loads(missed_path.read_text(encoding="utf-8"))
@@ -7935,9 +7995,71 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
         # skip PASS return: the baseline QA passing only means the existing
         # model is geometrically valid, NOT that the user's modification
         # requirements have been applied. Let Aider run first.
-        if (retry > 0 or workflow_id != "aider") and last_qa_report.all_passed and last_qa_report.error_type == ErrorType.NONE:
+        clean_geometric_pass = (
+            (retry > 0 or workflow_id != "aider")
+            and last_qa_report.all_passed
+            and last_qa_report.error_type == ErrorType.NONE
+        )
+        if clean_geometric_pass:
+            # Deterministic QA cannot establish visible semantic agreement
+            # (orientation, handedness, feature placement). Run one optional
+            # visual Judge pass. Text-only providers/render failures return
+            # None and leave the artifact deliverable as semantic-unverified.
+            semantic_measurements = None
+            semantic_measurements_file = (
+                cwd / f"temp_measurements_{current_measurement_iteration}.json"
+            )
+            if semantic_measurements_file.is_file():
+                try:
+                    with open(semantic_measurements_file, "r", encoding="utf-8") as f:
+                        semantic_measurements = json.load(f)
+                except Exception as exc:  # noqa: BLE001
+                    all_log_lines.append(
+                        f"semantic measurements unavailable: {exc}"
+                    )
+
+            semantic_decision = node_judge_qa(
+                user_request=user_request,
+                qa_report=last_qa_report,
+                special_features=_attr(cad_brief, "special_features", []) or [],
+                feature_measurements=semantic_measurements,
+                retry=retry,
+                workflow_id=workflow_id,
+                current_stl_path=str(current_stl) if current_stl else None,
+                semantic_check=True,
+            )
+            judge_decision = semantic_decision
+            if semantic_decision is not None:
+                last_qa_report.semantic_verification = (
+                    semantic_decision.semantic_verification
+                )
+                if semantic_decision.semantic_verification == "failed":
+                    suggestions = list(
+                        semantic_decision.modification_suggestions
+                    ) or [semantic_decision.reason]
+                    last_qa_report.semantic_issues = [semantic_decision.reason]
+                    last_qa_report.semantic_modification_suggestions = suggestions
+                    last_qa_report.all_passed = False
+                    last_qa_report.error_type = ErrorType.TOPOLOGY
+                    last_qa_report.failed_count = max(
+                        1, last_qa_report.failed_count
+                    )
+                    last_qa_report.error_details = [
+                        "VISUAL_SEMANTIC_MISMATCH: " + semantic_decision.reason,
+                        *(f"SUGGESTED_FIX: {item}" for item in suggestions),
+                    ]
+                    all_log_lines.append(
+                        "semantic Judge found a visible mismatch; continuing "
+                        "to the existing repair loop"
+                    )
+
+        if clean_geometric_pass and last_qa_report.all_passed:
             all_log_lines.append(
                 f"node_autonomous_skill_loop [retry {retry}]: ✅ ALL CHECKS PASSED"
+            )
+            all_log_lines.append(
+                "  Semantic verification: "
+                f"{last_qa_report.semantic_verification}"
             )
             all_log_lines.append(f"  Engine A: {engine_a.summary}")
             all_log_lines.append(f"  Engine B: {engine_b.summary}")
@@ -7970,9 +8092,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
         # Load feature_measurements ONCE per outer retry and share between
         # Judge (here) and Aider (Phase 4). Avoids double-reading from disk.
         feature_measurements = None
-        measurements_file = cwd / f"temp_measurements_{retry_iter}.json"
-        if not measurements_file.is_file():
-            measurements_file = cwd / "temp_measurements_0.json"
+        measurements_file = cwd / f"temp_measurements_{current_measurement_iteration}.json"
         if measurements_file.is_file():
             try:
                 with open(measurements_file, 'r', encoding='utf-8') as f:
@@ -7981,15 +8101,16 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
             except Exception as exc:
                 print(f"[AUTONOMOUS JUDGE] WARNING: Failed to load feature measurements: {exc}")
 
-        judge_decision = node_judge_qa(
-            user_request=user_request,
-            qa_report=last_qa_report,
-            special_features=_attr(cad_brief, "special_features", []) or [],
-            feature_measurements=feature_measurements,
-            retry=retry,
-            workflow_id=workflow_id,
-            current_stl_path=str(current_stl) if current_stl else None,
-        )
+        if judge_decision is None:
+            judge_decision = node_judge_qa(
+                user_request=user_request,
+                qa_report=last_qa_report,
+                special_features=_attr(cad_brief, "special_features", []) or [],
+                feature_measurements=feature_measurements,
+                retry=retry,
+                workflow_id=workflow_id,
+                current_stl_path=str(current_stl) if current_stl else None,
+            )
         if judge_decision is not None:
             all_log_lines.append(
                 f"node_autonomous_skill_loop [retry {retry}]: "
@@ -8147,9 +8268,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
             # inner exec-retry > 0 since Aider may have rewritten the script
             # and produced fresh measurements on a successful exec.
             if exec_attempt > 0 or feature_measurements is None:
-                measurements_file = cwd / f"temp_measurements_{retry_iter}.json"
-                if not measurements_file.is_file():
-                    measurements_file = cwd / "temp_measurements_0.json"
+                measurements_file = cwd / f"temp_measurements_{current_measurement_iteration}.json"
                 if measurements_file.is_file():
                     try:
                         with open(measurements_file, 'r', encoding='utf-8') as f:
@@ -8193,7 +8312,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                 pass
 
             # -- Phase 5: Re-execute the fixed code --
-            if workflow_id == "aider":
+            if workflow_id in ("aider", "resume"):
                 new_step = cwd / f"temp_output_aider_autonomous_{retry_iter}.step"
                 new_stl = cwd / f"temp_output_aider_autonomous_{retry_iter}.stl"
             else:
@@ -8205,6 +8324,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
             if exec_ok:
                 current_step = new_step
                 current_stl = new_stl
+                current_measurement_iteration = retry_iter
                 _skip_qa = False  # Model updated — next round needs fresh QA
                 all_log_lines.append(
                     f"node_autonomous_skill_loop [retry {retry}]: "
@@ -8884,7 +9004,7 @@ def node_geometric_architect(state: GraphState) -> dict:
             architect_feedback += (
                 "\nCommon mistakes: using wrong ModelingStepType enum values, "
                 "putting arrays in key_dimensions (use separate scalar keys), "
-                "missing required fields (step_id, step_type, depends_on), "
+                "missing required fields (step_id, step_type, label, depends_on), "
                 "or having depends_on reference non-existent step_ids.\n"
             )
             revision_note = f"v{_attr(cad_brief, 'spec_version', 1)} — self-correction retry"
@@ -8930,7 +9050,7 @@ def node_geometric_architect(state: GraphState) -> dict:
         1. Define all 2D sketches first with unique sketch_id values.
         2. Order operations: additive → subtractive → finishing.
         3. Fillets and chamfers MUST be the last steps.
-        4. Every step needs correct depends_on references.
+        4. Every step needs a short label and correct depends_on references.
         5. Collect all numeric dimensions into key_dimensions.
         """)
 

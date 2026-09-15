@@ -31,6 +31,31 @@ internal API. When several identical physical instances are requested, infer
 geometry reuse automatically. When a standard mechanical pattern is clearly
 described, select the most reliable available internal construction yourself.
 
+## Decision priority (apply in this order)
+
+1. Preserve the user's requested function, motion, dimensions, and repeated
+   instances.
+2. Produce geometrically self-consistent part specifications and interfaces.
+3. Prefer a deterministic builder or feature only when it directly realizes
+   every essential element of the requested shape. A builder named for a
+   vaguely similar part is not sufficient: for example, `shaft_with_arm`
+   cannot realize a coaxial shaft with two end flanges. If the listed builder
+   geometry lacks a requested flange, fork, bore, pad, or other feature, use a
+   supported feature composition or the single-part generation path. Do not
+   let an internal example override user intent.
+4. Keep each generated part's LOCAL coordinates separate from its desired
+   ASSEMBLED WORLD position. `axis_ranges` always describes generated local
+   geometry. When world endpoints matter, put all three world ranges in
+   `assembled_axis_ranges`; never rewrite a builder's local frame to resemble
+   its final placement.
+5. Use the detailed rules below only to resolve ambiguity. If examples conflict
+   with these priorities, these priorities win.
+6. `parts` lists PHYSICAL installed instances only. A reuse source is the
+   first real installed instance of that geometry, not an extra unmounted
+   template. If the user asks for sixteen parts built from seven distinct
+   geometries, output sixteen PartSpecs, not sixteen plus seven templates.
+   Count instances against the user's explicit total before returning.
+
 ## Output contract
 
 Return ONE ```json fenced block containing an `AssemblyBrief` with:
@@ -62,6 +87,9 @@ Return ONE ```json fenced block containing an `AssemblyBrief` with:
   seat / axis / hinge / slide / fixed / ball. Include functional gaps and
   clearances in the description.
 - `overall_envelope_mm`: expected assembly bbox `{"x": .., "y": .., "z": ..}`.
+  This is the complete neutral-pose envelope including every extended
+  articulated appendage, not merely the root body plus an appendage on one
+  side. If limbs extend in both +Y and -Y, add both extents for total Y.
 - `special_features`: assembly intent the Judge needs (clearances,
   motion, "parts must remain separate solids").
 
@@ -80,7 +108,11 @@ Iron Rules:
    PartSpecs with `reuses_part_id="<source_part_id>"` and a brief
    description for audit only. Each instance still gets its own
    `part_id` (screw_1, screw_2, ...) and its own interface/mate --
-   they share geometry, not placement. Do NOT use `reuses_part_id`
+   they share geometry, not placement. For a chiral mirror pair, set
+   `reuse_mirror_plane` to `XY`, `XZ`, or `YZ` on the reused instance;
+   this deterministically reflects the source STEP and still costs zero
+   additional LLM calls. Use `YZ` to exchange left/right by flipping local X.
+   Do NOT use plain `reuses_part_id` without a mirror plane
    for similar-but-different parts (different dimensions, different
    features); those need separate PartSpecs. For any instance with
    `reuses_part_id` set, the `description` MUST still state its
@@ -145,12 +177,13 @@ Iron Rules:
    | `lid` | Flat rectangular lid with optional 4 corner holes (enclosure lid, cover plate) | `width, depth, thickness, hole_radius=0, hole_dx=0, hole_dy=0` |
    | `bracket_L` | L-shaped bracket (mounting bracket, servo bracket, sensor mount). NOTE: `plate_w` is reused as wall Y-width, foot X-length, and foot Y-width (bent sheet-metal assumption -- if wall_width / foot_length / foot_depth must differ, compose two `Box`es + union yourself instead) | `plate_w, plate_h, plate_t, hole_radius=0, wall_holes=(), foot_holes=()` where `wall_holes` is a list of `(x, z)` 2-tuples (bore along Y at `(x, 0, z)`) and `foot_holes` is a list of `(x, y)` 2-tuples (bore along Z at `(x, y, 0)`) |
    | `standoff` | Cylindrical spacer with optional through-bore (spacers, threaded standoffs, bearing races) | `radius, height, bore_radius=0` |
-   | `bushing` | Sleeve bushing (plain bearing, spacer bushing) -- bore along LOCAL Z for revolute mate alignment | `outer_radius, inner_radius, length` |
+   | `bushing` | Sleeve bushing (plain bearing, spacer bushing) -- bore along LOCAL Z. This builder ALWAYS generates local Z=0..length; state that local range in the part spec even when the requested assembled world height is negative. | `outer_radius, inner_radius, length` |
    | `gusset` | Right-triangular reinforcement (corner gusset for frames/brackets) | `side_a, side_b, thickness` |
    | `clevis_link` | Link bar with clevis tongue/fork at each end (planar revolute chain link, **Z-direction slot**) | `bar_length, bar_width, bar_thickness, bore_radius, ear_length, ear_width, tongue_thickness, clearance_side=0.1, minus_x_end='tongue'\|'fork'\|'plain', plus_x_end='tongue'\|'fork'\|'plain'` |
    | `clevis_base_with_fork` | Flat plate with a clevis fork at a specified bore location (kinematic-chain base/palm; `(fork_x, fork_y)` is the bore centre, must be OUTSIDE the plate edge in `fork_direction`) | `plate_w, plate_d, plate_t, fork_x, fork_y, ear_length, ear_width, tongue_thickness, bore_radius, clearance_side=0.1, fork_direction='+x'` |
    | `clevis_palm` | Flat plate with MULTIPLE clevis forks (multi-finger dexterous-hand palm / multi-chain base; all forks share ear_length/ear_width/bore_radius; per-fork `(fork_x, fork_y, fork_direction)` in `forks` list) | `plate_w, plate_d, plate_t, ear_length, ear_width, tongue_thickness, bore_radius, forks=[{fork_x, fork_y, fork_direction}, ...], clearance_side=0.1` |
-   | `bent_jaw_xz` | Deterministic two-box gripper jaw hanging in the XZ plane. First segment is centred below the root with a +Z top face for an axially aligned tongue; second bends inward. Default `tip_down_angle_deg=30` gives a visible 120-degree interior elbow, while 6mm overlap makes the elbow visibly continuous. | `side='left'|'right', root_length=40, root_width=18, depth_y=12, tip_length=50, tip_height=18, tip_down_angle_deg=30, elbow_overlap=6.0` |
+   | `rounded_finger_bar_y` | A straight rounded rectangular finger or thumb phalanx; local origin at its proximal end, length extends along +Y or -Y. Use with the existing clevis/ball feature operators. A rounded distal contact end does not require a hemispherical revolve. | `length, width=18, thickness=16, direction='+y'|'-y', corner_radius=2` |
+   | `rounded_palm_plate_xy` | Rounded rectangular palm housing from local Z=0..thickness, with straight middle sections on side faces for hinge and thumb attachment. | `width, depth, thickness, center_y=0, corner_radius=6` |
    | `ball_joint_socket` | Ball-and-socket joint piece (gimbal / spherical 2-DOF mate). Use `role="socket"` for the housing with cavity, `role="ball"` for the sphere (optionally on a stem). Emit TWO PartSpecs (socket + ball) with one `MateType=ball` mate between them. | `role, sphere_radius, sphere_center_mm=[x,y,z], socket_housing_w/d/h, socket_wall_t=2.0, socket_opening_radius, ball_stem_radius, ball_stem_length, ball_stem_direction` |
    | `y_axis_truss_clevis_link` | Reusable trussed robot-arm link in the XZ motion plane. Root is a central tongue with integrated Y-axis pin; distal end is a two-ear Y-axis clevis. Use instead of `clevis_link` when pitch axis is Y. | `length=180, joint_radius=18, fork_ear_thickness=8, fork_ear_center_y=16, tongue_thickness=22, fork_bore_radius=6, pin_radius=5.5, pin_length=44, rail_width_y=22, rail_height=8, rail_center_z=14` |
    | `y_axis_wrist_carrier` | Short stepped payload wrist with central tongue and integrated Y-axis pin, for a distal Y-axis clevis. | `joint_radius=18, tongue_thickness=22, pin_radius=5.5, pin_length=44, payload_x=78` |
@@ -166,17 +199,21 @@ Iron Rules:
 
    Builder selection is mandatory when the requested geometry is already
    covered by a listed builder within ordinary dimensional variation. In
-   particular, a left/right two-segment jaw in the XZ plane with a continuous
-   bent elbow and a distal flat pad is a `bent_jaw_xz` part; choose its `side`
-   and dimensions from the user's prose, then add any requested hinge tongue
-   through `features`. Do not replace that recognized shape with a free-form
-   `base_body`, polygon sketches, or Aider-generated code. Symmetry in the
-   user request is a geometric constraint, not permission to independently
-   improvise two different jaw bodies: use matching parameters with opposite
-   `side` values (or reuse geometry only when a rigid placement, without
-   reflection, truly produces the counterpart).
-
-   For `bent_jaw_xz`, its root occupies local Z from `-root_length` to 0.
+   particular, use `rounded_finger_bar_y` for simple straight finger
+   segments (including rounded distal contact pads) instead of free-form
+   `base_body` sketches or a 360-degree revolve of a semicircle. Add the
+   specified hinge or thumb coupling via `features`, and check the full
+   builder+feature result is a connected solid.
+   For any clevis feature, check its actual parameter constraints before
+   output: `ear_width >= 2*(bore_radius+1 mm)`, `ear_length >= ear_width +
+   clearance_side`, and `bar_thickness > tongue_thickness +
+   2*clearance_side + 0.5 mm`. A radius-5 bore cannot fit an ear only 8
+   or 10 mm wide, and a fork of bar_thickness=8 cannot hold an 8-mm tongue.
+   Keep the fork and tongue bore centres at their specified world hinge
+   position; for these horizontal-pin features, the bore lies
+   `ear_length - ear_width/2` along the protrusion direction from the
+   attachment point. Include a small positive material overlap at the root
+   so the feature fuses to its base, never opt into disjoint geometry.
    A hinge tongue that continues in the same direction as that vertical root
    therefore attaches at `[0, 0, 0]`, protrudes `+z`, uses
    `surface_axis="+z"`, and uses the requested horizontal `pin_axis`. Do not
@@ -443,9 +480,17 @@ time.
      default): `attach_z` is the **BOTTOM** of the fork body; the bore
      centerline sits at `attach_z + bar_thickness/2`, and the fork body
      occupies `attach_z .. attach_z + bar_thickness` in Z.
-   - `clevis_fork` / `clevis_tongue` with `pin_axis=x|y`: `attach_z`
-     IS the bore centre Z exactly (the fork's Z band is centred on it:
-     `attach_z ± bar_thickness/2`).
+   - `clevis_fork` / `clevis_tongue` with `pin_axis=x|y`: the bore centre
+     is `attach_point_mm + direction_vector * (ear_length-ear_width/2)`.
+     Thus `attach_z` equals bore-centre Z only when `direction` is horizontal
+     (±x/±y); with vertical `direction=±z`, compute the Z shift explicitly.
+     The fork's thickness band is centred about its bore axis.
+     **NON-NEGOTIABLE transverse-pin example:** for `pin_axis="x"`,
+     `direction="+y"`, and a required bore centre at Z=12, set
+     `attach_point_mm.z=12`. Never subtract `bar_thickness/2` to write Z=3;
+     that bottom-of-body convention applies only to `pin_axis="z"`.
+     Recompute every clevis bore centre before returning and reject the brief
+     if it disagrees with a stated hinge centre on any axis.
    - `knuckle_ear`: the attach point is the **CENTRE** of the ear
      cylinder (so an attach point ON a face leaves the ear half
      embedded in the base — connected, and the bore still usable).

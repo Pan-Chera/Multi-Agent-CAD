@@ -80,6 +80,16 @@ If the evidence list would be empty, you must NOT choose accept/halt.
   (renderers have imperfect z-buffering).
 - User reference images (if present) are `user_image[N]`: compare
   expected vs generated and cite mismatches.
+- When rendered `view[N]` images are present, also compare the current
+  assembly against the natural-language request for orientation, handedness,
+  hinge/interface location, feature shape, symmetry, gaps, overlaps and
+  floating parts. Set `semantic_verification` to `verified` or `failed`.
+- When rendered current-model views are absent, set
+  `semantic_verification` to `unverified`. Never infer a visual mismatch from
+  text alone, and never block an otherwise valid assembly merely because the
+  provider has no vision capability.
+- For every visual mismatch, provide a localized, actionable entry in
+  `modification_suggestions`; do not request an unrelated redesign.
 
 ## Defensive corrections
 
@@ -99,8 +109,13 @@ ONE ```json fenced block:
   "reason": "...",
   "evidence": ["..."],
   "remodel_part_ids": [],
+  "semantic_verification": "verified | failed | unverified",
+  "modification_suggestions": ["concrete minimal correction"],
   "defensive_correction": false
 }
 ```
 
 `remodel_part_ids` is required when action is `remodel_parts`.
+When `semantic_verification` is `failed`, `modification_suggestions` must be
+non-empty, `evidence` must cite at least one rendered `view[N]`, and the action
+must identify the stage capable of applying the suggestions.

@@ -47,6 +47,7 @@ from mac_assembly.llm_utils import (
 )
 from mac_assembly.part_generator import (
     _load_cumulative_tokens,
+    has_explicit_accepted_cache,
     is_non_retryable_error,
     load_explicit_accepted_cache,
     run_part,
@@ -64,12 +65,583 @@ from mac_assembly.schemas_assembly import (
     AssemblyJudgeAction,
     AssemblyJudgeDecision,
     AssemblyQAReport,
+    Feature,
     MateType,
     MatingPlan,
     PartResult,
     PartSpec,
     part_spec_fingerprint,
 )
+
+
+def _axis_ranges(value) -> dict[str, tuple[float, float]]:
+    """Normalize simple {x/y/z: [min,max]} ranges; ignore rich variants."""
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, tuple[float, float]] = {}
+    for axis in ("x", "y", "z"):
+        pair = value.get(axis)
+        if (
+            isinstance(pair, (list, tuple)) and len(pair) == 2
+            and all(isinstance(v, (int, float)) for v in pair)
+        ):
+            out[axis] = (float(pair[0]), float(pair[1]))
+    return out
+
+
+def _requested_physical_part_count(request: str) -> int | None:
+    """Read an explicit English physical-part count, not a geometry count."""
+    import re
+
+    words = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+        "fifteen": 15, "sixteen": 16, "seventeen": 17,
+        "eighteen": 18, "nineteen": 19, "twenty": 20,
+    }
+    match = re.search(
+        r"\b(?:exactly\s+)?(\d+|" + "|".join(words) + r")\s+physical\s+parts\b",
+        request.lower(),
+    )
+    if not match:
+        return None
+    token = match.group(1)
+    return int(token) if token.isdigit() else words[token]
+
+
+def _normalize_standard_finger_bars(brief: AssemblyBrief) -> None:
+    """Map plain rounded phalanx bodies to the equivalent exact builder."""
+    for part in brief.parts:
+        base = part.base_body
+        if base is None or part.builder is not None:
+            continue
+        description = base.description.lower().strip()
+        if description.startswith("rounded rectangular plate"):
+            dims = base.key_dimensions
+            ranges = _axis_ranges(dims.get("axis_ranges")) if isinstance(dims, dict) else {}
+            try:
+                width = float(dims["width"])
+                depth = float(dims["depth"])
+                thickness = float(dims["thickness"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (
+                min(width, depth, thickness) > 0
+                and set(ranges) == {"x", "y", "z"}
+                and abs(ranges["x"][0] + width / 2) < 0.2
+                and abs(ranges["x"][1] - width / 2) < 0.2
+                and abs(ranges["y"][1] - ranges["y"][0] - depth) < 0.2
+                and abs(ranges["z"][0]) < 0.2
+                and abs(ranges["z"][1] - thickness) < 0.2
+            ):
+                part.builder = {
+                    "name": "rounded_palm_plate_xy",
+                    "params": {
+                        "width": width, "depth": depth, "thickness": thickness,
+                        "center_y": sum(ranges["y"]) / 2,
+                        "corner_radius": 6.0,
+                    },
+                }
+                part.base_body = None
+            continue
+        is_bar = (
+            description.startswith("rounded rectangular bar")
+            or description.startswith("create a rounded rectangular bar")
+        )
+        is_plain_block = description.startswith(
+            "create a rounded rectangular block"
+        )
+        if not (is_bar or is_plain_block):
+            continue
+        dims = base.key_dimensions
+        if not isinstance(dims, dict):
+            continue
+        try:
+            width = float(dims["width"])
+            length = float(dims["length"])
+            thickness = float(dims["thickness"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if min(width, length, thickness) <= 0:
+            continue
+        # Only normalize a bar whose prose and dimensions agree on a simple
+        # proximal-origin Y extent. More elaborate phalanges remain in v3.
+        import re
+        ranges = _axis_ranges(dims.get("axis_ranges"))
+        if "y" in ranges:
+            lo, hi = ranges["y"]
+        else:
+            match = re.search(r"\by\s*=\s*(-?\d+(?:\.\d+)?)\s*\.\.\s*(-?\d+(?:\.\d+)?)", description)
+            if match is None:
+                continue
+            lo, hi = map(float, match.groups())
+        if abs(lo) < 0.2 and abs(hi - length) < 0.2:
+            direction = "+y"
+        elif abs(hi) < 0.2 and abs(lo + length) < 0.2:
+            direction = "-y"
+        else:
+            continue
+        part.builder = {
+            "name": "rounded_finger_bar_y",
+            "params": {
+                "length": length, "width": width, "thickness": thickness,
+                "direction": direction, "corner_radius": 2.0,
+            },
+        }
+        part.base_body = None
+
+
+def _normalize_transverse_clevis_centres(brief: AssemblyBrief) -> None:
+    """Correct only the unambiguous legacy half-thickness Z convention.
+
+    The operator centres a horizontal pin's bore on ``attach_z``.  When
+    the bar thickness exactly fills the base body's Z extent, a proposed
+    attachment at the body's bottom (rather than its centre) is the old
+    pin=z convention, not a feasible centred transverse hinge.  Intentionally
+    thinner or offset ears are left untouched and checked normally.
+    """
+    for part in brief.parts:
+        import re
+        # Cached briefs may carry a note from an earlier normalization
+        # pass.  Remove only our own machine-added note before recomputing
+        # from the current builder geometry, so stale Z=8 guidance cannot
+        # compete with the corrected Z=0 datum in the mating prompt.
+        part.description = re.sub(
+            r" Transverse-pin feature .*?superseded\.",
+            "", part.description,
+        )
+        dims = part.key_dimensions if isinstance(part.key_dimensions, dict) else {}
+        ranges = _axis_ranges(dims.get("axis_ranges"))
+        if part.builder:
+            try:
+                from mac_assembly.builders import build_part
+                bb = build_part(
+                    str(part.builder.get("name", "")),
+                    dict(part.builder.get("params") or {}),
+                ).bounding_box()
+                real = {
+                    "x": (float(bb.min.X), float(bb.max.X)),
+                    "y": (float(bb.min.Y), float(bb.max.Y)),
+                    "z": (float(bb.min.Z), float(bb.max.Z)),
+                }
+            except Exception:
+                real = {}
+            # A builder's local frame is authoritative.  A shifted but
+            # same-sized declared range is a coordinate-label mistake,
+            # not a different shape.  Correct the metadata before the
+            # mating planner sees it; dimension changes remain errors.
+            if ranges and real and all(
+                abs((ranges[a][1] - ranges[a][0]) -
+                    (real[a][1] - real[a][0])) < 0.2
+                for a in ranges
+            ):
+                changed = any(
+                    max(abs(ranges[a][i] - real[a][i]) for i in (0, 1)) > 0.2
+                    for a in ranges
+                )
+                if changed:
+                    dims["axis_ranges"] = {
+                        a: [real[a][0], real[a][1]] for a in ranges
+                    }
+                    ranges = {a: real[a] for a in ranges}
+                    part.description += (
+                        " Authoritative builder local axis ranges: "
+                        + ", ".join(
+                            f"{a}={real[a][0]:g}..{real[a][1]:g}"
+                            for a in ranges
+                        )
+                        + "; earlier conflicting local range prose is superseded."
+                    )
+        if not ranges and part.base_body is not None:
+            base_dims = part.base_body.key_dimensions
+            if isinstance(base_dims, dict):
+                ranges = _axis_ranges(base_dims.get("axis_ranges"))
+        if "z" not in ranges:
+            continue
+        lo, hi = ranges["z"]
+        thickness, centre = hi - lo, (lo + hi) / 2
+        for feature in part.features or []:
+            if feature.name not in ("clevis_fork", "clevis_tongue"):
+                continue
+            if str(feature.params.get("pin_axis", "z")).lower() not in ("x", "y"):
+                continue
+            if feature.attachment.direction not in ("+x", "-x", "+y", "-y"):
+                continue
+            bar = feature.params.get("bar_thickness")
+            if not isinstance(bar, (int, float)) or float(bar) > thickness + 0.2:
+                continue
+            point = feature.attachment.attach_point_mm
+            # Two observed legacy interpretations: body bottom, or the
+            # lower edge of a thinner clevis band. Both denote a feature
+            # meant to sit on the body mid-plane, not an offset hinge.
+            if min(
+                abs(float(point[2]) - lo),
+                abs(float(point[2]) - hi),
+                abs(float(point[2]) - (centre - float(bar) / 2)),
+                abs(float(point[2]) - (centre + float(bar) / 2)),
+            ) > 0.2:
+                continue
+            feature.attachment.attach_point_mm = [
+                float(point[0]), float(point[1]), float(centre)
+            ]
+            part.description += (
+                f" Transverse-pin feature {feature.name} at local "
+                f"({float(point[0]):g}, {float(point[1]):g}) uses "
+                f"authoritative bore-centre Z={centre:g}; any earlier "
+                "bottom-of-body attach-Z calculation is superseded."
+            )
+
+
+def _normalize_inward_clevis_directions(brief: AssemblyBrief) -> None:
+    """Make end-face clevis features protrude outside their builder body.
+
+    A tongue placed at the minimum Y face but pointing +Y is swallowed by
+    the base union, silently losing its bore.  The end face uniquely
+    determines the outward direction, so this is a safe correction; features
+    away from an end face are left for ordinary geometry validation.
+    """
+    for part in brief.parts:
+        if not part.builder:
+            continue
+        try:
+            from mac_assembly.builders import build_part
+            bb = build_part(
+                str(part.builder.get("name", "")),
+                dict(part.builder.get("params") or {}),
+            ).bounding_box()
+        except Exception:
+            continue
+        ends = {
+            "x": (float(bb.min.X), float(bb.max.X)),
+            "y": (float(bb.min.Y), float(bb.max.Y)),
+            "z": (float(bb.min.Z), float(bb.max.Z)),
+        }
+        for feature in part.features or []:
+            if feature.name not in ("clevis_fork", "clevis_tongue"):
+                continue
+            direction = feature.attachment.direction
+            axis = direction[-1]
+            coord = float(feature.attachment.attach_point_mm["xyz".index(axis)])
+            lo, hi = ends[axis]
+            wrong = (
+                direction.startswith("+") and abs(coord - lo) < 0.3
+                or direction.startswith("-") and abs(coord - hi) < 0.3
+            )
+            if not wrong:
+                continue
+            corrected = ("-" if direction[0] == "+" else "+") + axis
+            feature.attachment.direction = corrected
+            if feature.attachment.surface_axis == direction:
+                feature.attachment.surface_axis = corrected
+            part.description += (
+                f" Authoritative {feature.name} at local {axis}={coord:g} "
+                f"protrudes {corrected} OUTWARD from the end face; any "
+                "earlier inward direction is superseded."
+            )
+
+
+def _complete_standard_finger_hinges(brief: AssemblyBrief) -> None:
+    """Complete a missing distal fork on a standard straight finger bar.
+
+    Only apply when an explicit hinge interface connects two +Y standard
+    bars, the child has a proximal tongue, and the parent has no distal
+    fork.  The existing tongue specifies the entire clevis size and pin
+    axis; the parent's builder specifies its distal face.  Other part
+    families and ambiguous interfaces remain untouched.
+    """
+    by_id = {p.part_id: p for p in brief.parts}
+    for interface in brief.interfaces or []:
+        if interface.interface_type.value != "hinge":
+            continue
+        parent = by_id.get(interface.part_a)
+        child = by_id.get(interface.part_b)
+        if parent is None or child is None:
+            continue
+        parent_src = by_id.get(parent.reuses_part_id, parent) if parent.reuses_part_id else parent
+        child_src = by_id.get(child.reuses_part_id, child) if child.reuses_part_id else child
+        if (
+            (parent_src.builder or {}).get("name") != "rounded_finger_bar_y"
+            or (child_src.builder or {}).get("name") != "rounded_finger_bar_y"
+            or (parent_src.builder or {}).get("params", {}).get("direction") != "+y"
+            or (child_src.builder or {}).get("params", {}).get("direction") != "+y"
+        ):
+            continue
+        length = float(parent_src.builder["params"]["length"])
+        if any(
+            f.name == "clevis_fork" and f.attachment.direction == "+y"
+            and abs(float(f.attachment.attach_point_mm[1]) - length) < 0.3
+            for f in parent_src.features or []
+        ):
+            continue
+        tongues = [
+            f for f in child_src.features or []
+            if f.name == "clevis_tongue" and f.attachment.direction == "-y"
+            and abs(float(f.attachment.attach_point_mm[1])) < 0.3
+        ]
+        if len(tongues) != 1:
+            continue
+        datum = tongues[0]
+        z = float(datum.attachment.attach_point_mm[2])
+        fork = Feature.model_validate({
+            "name": "clevis_fork",
+            "params": dict(datum.params),
+            "attachment": {
+                "attach_point_mm": [0.0, length, z],
+                "direction": "+y", "surface_axis": "+y",
+            },
+        })
+        parent_src.features.append(fork)
+        parent_src.description += (
+            f" Authoritative distal (+Y) clevis fork at local Y={length:g}, "
+            f"Z={z:g} receives {child.part_id}'s proximal tongue; "
+            "the hinge requires both physical halves."
+        )
+
+
+def _validate_decomposition_brief(brief: AssemblyBrief) -> list[str]:
+    """Cheap deterministic consistency checks before any part is generated."""
+    errors: list[str] = []
+    requested_count = _requested_physical_part_count(brief.user_request_raw)
+    if requested_count is not None and len(brief.parts) != requested_count:
+        errors.append(
+            f"request explicitly requires {requested_count} physical parts, "
+            f"but brief has {len(brief.parts)}. Reuse a real installed part "
+            "as each geometry source; do not add template-only physical parts"
+        )
+    by_id = {part.part_id: part for part in brief.parts}
+    for part in brief.parts:
+        # An upright, downward-hanging bent jaw is chiral. Rotating one
+        # identical solid to oppose it can turn its vertical direction over.
+        if part.reuses_part_id:
+            source = by_id.get(part.reuses_part_id)
+            source_builder = source.builder if source is not None else None
+            if isinstance(source_builder, dict) and source_builder.get("name") == "bent_jaw_xz":
+                errors.append(
+                    f"part {part.part_id}: cannot reuse chiral bent_jaw_xz "
+                    f"geometry from {part.reuses_part_id}; use an independent "
+                    "builder part with the opposite side"
+                )
+        dims = part.key_dimensions if isinstance(part.key_dimensions, dict) else {}
+        ranges = _axis_ranges(dims.get("axis_ranges"))
+        for axis, (lo, hi) in ranges.items():
+            if hi <= lo:
+                errors.append(f"part {part.part_id}: axis_ranges.{axis} must have max > min")
+        for axis in ("x", "y", "z"):
+            declared = dims.get(f"overall_{axis}")
+            if axis in ranges and isinstance(declared, (int, float)):
+                actual = ranges[axis][1] - ranges[axis][0]
+                if abs(actual - float(declared)) > max(0.2, abs(float(declared)) * 0.01):
+                    errors.append(
+                        f"part {part.part_id}: overall_{axis}={declared} conflicts "
+                        f"with local axis_ranges.{axis}={list(ranges[axis])} "
+                        f"(extent {actual})"
+                    )
+        assembled = _axis_ranges(dims.get("assembled_axis_ranges"))
+        if assembled and set(assembled) != {"x", "y", "z"}:
+            errors.append(
+                f"part {part.part_id}: assembled_axis_ranges must provide x, y, z"
+            )
+
+        # A transverse-pin clevis with the same thickness as its body is
+        # centred on that body's mid-Z plane.  For pin=x/y the feature
+        # operator interprets attach_z as the BORE-CENTRE Z, unlike the
+        # legacy pin=z bottom-of-body convention.  Catch the common
+        # "attach_z = centre - half_thickness" hallucination before any
+        # part tokens are spent.  Do not constrain deliberately offset or
+        # thinner clevis features.
+        body_ranges = ranges
+        if not body_ranges and part.base_body is not None:
+            base_dims = part.base_body.key_dimensions
+            if isinstance(base_dims, dict):
+                body_ranges = _axis_ranges(base_dims.get("axis_ranges"))
+        if "z" in body_ranges:
+            z_lo, z_hi = body_ranges["z"]
+            body_thickness = z_hi - z_lo
+            body_mid_z = (z_lo + z_hi) / 2
+            for feature in part.features or []:
+                if feature.name not in ("clevis_fork", "clevis_tongue"):
+                    continue
+                pin = str(feature.params.get("pin_axis", "z")).lower()
+                direction = feature.attachment.direction
+                bar_thickness = feature.params.get("bar_thickness")
+                if (
+                    pin not in ("x", "y")
+                    or direction not in ("+x", "-x", "+y", "-y")
+                    or not isinstance(bar_thickness, (int, float))
+                    or abs(float(bar_thickness) - body_thickness) > 0.2
+                ):
+                    continue
+                attach_z = float(feature.attachment.attach_point_mm[2])
+                if abs(attach_z - body_mid_z) > 0.3:
+                    errors.append(
+                        f"part {part.part_id}: {feature.name} pin_axis={pin} "
+                        f"has attach_z={attach_z:g} but body mid-Z={body_mid_z:g}; "
+                        "for horizontal transverse pins attach_z is the bore "
+                        "centre, not the bottom of the bar. Correct the "
+                        "feature attachment or explicitly use a thinner/"
+                        "offset clevis if that is intentional"
+                    )
+
+        # A clevis added at an end face must point OUT of that face.
+        # Pointing +Y from the Y-min face puts the tip bore inside the
+        # existing bar; the boolean union fills the hole and the part can
+        # still export as "OK". Check the feature's real body end, not just
+        # whether the additive solid fused.
+        if part.builder:
+            try:
+                from mac_assembly.builders import build_part
+                _bb = build_part(
+                    str(part.builder.get("name", "")),
+                    dict(part.builder.get("params") or {}),
+                ).bounding_box()
+                end_ranges = {
+                    "x": (float(_bb.min.X), float(_bb.max.X)),
+                    "y": (float(_bb.min.Y), float(_bb.max.Y)),
+                    "z": (float(_bb.min.Z), float(_bb.max.Z)),
+                }
+            except Exception:
+                end_ranges = {}
+            for feature in part.features or []:
+                if feature.name not in ("clevis_fork", "clevis_tongue"):
+                    continue
+                direction = feature.attachment.direction
+                axis = direction[-1]
+                if axis not in end_ranges:
+                    continue
+                coord = float(feature.attachment.attach_point_mm["xyz".index(axis)])
+                lo_end, hi_end = end_ranges[axis]
+                if (
+                    direction.startswith("+") and abs(coord - lo_end) < 0.3
+                    or direction.startswith("-") and abs(coord - hi_end) < 0.3
+                ):
+                    errors.append(
+                        f"part {part.part_id}: {feature.name} at local "
+                        f"{axis}={coord:g} points {direction} INTO the base "
+                        "body; reverse direction so the bore protrudes "
+                        "outside the end face, otherwise the base union "
+                        "fills the hole"
+                    )
+
+        if isinstance(part.builder, dict) and part.builder.get("name") == "bent_jaw_xz":
+            side = (part.builder.get("params") or {}).get("side")
+            name = f"{part.part_id} {part.part_name}".lower()
+            if "left" in name and side != "left":
+                errors.append(f"part {part.part_id}: left bent jaw needs builder side='left'")
+            if "right" in name and side != "right":
+                errors.append(f"part {part.part_id}: right bent jaw needs builder side='right'")
+
+        # Builders have authoritative local coordinates. Validate plain
+        # builder outputs now so prose cannot redefine their frame.
+        if part.builder and not part.features and ranges:
+            try:
+                from mac_assembly.builders import BUILDERS
+                name = str(part.builder.get("name", ""))
+                params = dict(part.builder.get("params") or {})
+                shape = BUILDERS[name](**params)
+                bb = shape.bounding_box()
+                measured = {
+                    "x": (float(bb.min.X), float(bb.max.X)),
+                    "y": (float(bb.min.Y), float(bb.max.Y)),
+                    "z": (float(bb.min.Z), float(bb.max.Z)),
+                }
+                for axis in ranges:
+                    if max(abs(ranges[axis][i] - measured[axis][i]) for i in (0, 1)) > 0.2:
+                        errors.append(
+                            f"part {part.part_id}: builder {name!r} actually "
+                            f"produces local {axis}={list(measured[axis])}, not "
+                            f"axis_ranges.{axis}={list(ranges[axis])}; put the "
+                            "desired world range in assembled_axis_ranges"
+                        )
+            except Exception as exc:  # validation must expose bad builder input
+                errors.append(f"part {part.part_id}: builder preflight failed: {exc}")
+        elif part.builder and part.features:
+            # Builder+feature composition is deterministic. Validate the
+            # actual connection before spending a PartBuilder remodel round
+            # on an impossible fork/tongue (or a floating attachment).
+            try:
+                from mac_assembly.builders import build_part
+                from mac_assembly.feature_operators import apply_feature
+                builder_name = str(part.builder.get("name", ""))
+                shape = build_part(builder_name, dict(part.builder.get("params") or {}))
+                for feature in part.features:
+                    shape = apply_feature(shape, feature)
+            except Exception as exc:
+                errors.append(
+                    f"part {part.part_id}: builder+feature preflight failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+    # If one side of an articulated interface explicitly uses a fork,
+    # the opposing plain finger-bar body needs a tongue.  A revolute mate
+    # between the fork and a solid rectangular end has no mechanical
+    # bearing even if the kinematic graph can declare a joint.
+    for interface in brief.interfaces or []:
+        if str(interface.interface_type.value) != "hinge":
+            continue
+        a = by_id.get(interface.part_a)
+        b = by_id.get(interface.part_b)
+        if a is None or b is None:
+            continue
+        a_src = by_id.get(a.reuses_part_id, a) if a.reuses_part_id else a
+        b_src = by_id.get(b.reuses_part_id, b) if b.reuses_part_id else b
+        a_fork = any(f.name == "clevis_fork" for f in a_src.features or [])
+        b_fork = any(f.name == "clevis_fork" for f in b_src.features or [])
+        a_tongue = any(f.name == "clevis_tongue" for f in a_src.features or [])
+        b_tongue = any(f.name == "clevis_tongue" for f in b_src.features or [])
+        # For the standard +Y finger-bar chain, the parent must expose a
+        # fork at its DISTAL (+Y) end and the child a tongue at its
+        # PROXIMAL (-Y) end.  Merely finding a fork/tongue somewhere on
+        # both parts is insufficient: a middle link's distal fork belongs
+        # to the next hinge, not the preceding one.
+        a_builder = (a_src.builder or {}).get("name")
+        b_builder = (b_src.builder or {}).get("name")
+        if b_builder == "rounded_finger_bar_y":
+            child_root_tongue = any(
+                f.name == "clevis_tongue"
+                and f.attachment.direction == "-y"
+                and abs(float(f.attachment.attach_point_mm[1])) < 0.3
+                for f in b_src.features or []
+            )
+            if not child_root_tongue:
+                errors.append(
+                    f"hinge {interface.interface_id}: child {b.part_id} "
+                    "needs a proximal (-Y) clevis_tongue with a real bore"
+                )
+            if a_builder == "rounded_finger_bar_y":
+                a_length = float((a_src.builder or {}).get("params", {}).get("length", 0))
+                parent_tip_fork = any(
+                    f.name == "clevis_fork"
+                    and f.attachment.direction == "+y"
+                    and abs(float(f.attachment.attach_point_mm[1]) - a_length) < 0.3
+                    for f in a_src.features or []
+                )
+                if not parent_tip_fork:
+                    errors.append(
+                        f"hinge {interface.interface_id}: parent {a.part_id} "
+                        "needs a distal (+Y) clevis_fork with real bores; "
+                        "a fork on the child does not serve this joint"
+                    )
+            elif not a_fork:
+                errors.append(
+                    f"hinge {interface.interface_id}: parent {a.part_id} "
+                    "lacks a fork to receive the child's root tongue"
+                )
+            continue
+        # Other geometries are allowed either orientation; a middle link
+        # may have both feature types for distinct neighbouring joints.
+        if (a_fork and b_tongue) or (b_fork and a_tongue):
+            continue
+        if a_fork and (b_src.builder or {}).get("name") == "rounded_finger_bar_y":
+            errors.append(
+                f"hinge {interface.interface_id}: {a.part_id} has a "
+                f"clevis_fork but {b.part_id} lacks a mating clevis_tongue"
+            )
+        elif b_fork and (a_src.builder or {}).get("name") == "rounded_finger_bar_y":
+            errors.append(
+                f"hinge {interface.interface_id}: {b.part_id} has a "
+                f"clevis_fork but {a.part_id} lacks a mating clevis_tongue"
+            )
+    return errors
 from multi_agent_cad.config import LLM_API_TIMEOUT as _LLM_API_TIMEOUT
 from multi_agent_cad.image_preprocess import (
     _SUPPORTED_EXTENSIONS,
@@ -254,11 +826,18 @@ def node_decomposer(state: AssemblyGraphState) -> dict:
             if (cached_fp == image_fp and cached_request_fp == request_fp
                     and cached_prompt_fp == prompt_fp):
                 brief = AssemblyBrief.model_validate(raw_data)
-                return {
-                    "assembly_brief": brief,
-                    "execution_log": _log(state, "decomposer: cache hit"),
-                    "node_history": state.get("node_history", []) + ["decomposer"],
-                }
+                _normalize_standard_finger_bars(brief)
+                _normalize_transverse_clevis_centres(brief)
+                _normalize_inward_clevis_directions(brief)
+                _complete_standard_finger_hinges(brief)
+                cached_errors = _validate_decomposition_brief(brief)
+                if not cached_errors:
+                    return {
+                        "assembly_brief": brief,
+                        "execution_log": _log(state, "decomposer: cache hit"),
+                        "node_history": state.get("node_history", []) + ["decomposer"],
+                    }
+                print("[assembly] decomposer: cache miss (brief consistency failed)")
             if cached_fp != image_fp:
                 reason = "images changed"
             elif cached_request_fp != request_fp:
@@ -276,30 +855,68 @@ def node_decomposer(state: AssemblyGraphState) -> dict:
             f"problems):\n{recompose_feedback}"
         )
 
-    content: str | list
     images = _load_user_images(images_dir)
-    if images and cfg.DECOMPOSER_MULTIMODAL != "never":
-        content = build_multimodal_content(
-            user_prompt,
-            [_encode_jpeg_data_url(b) for b in images],
-        )
-    else:
-        content = user_prompt
 
     try:
-        raw = call_llm_json(
-            decomposer_prompt,
-            content,
-            model=cfg.DECOMPOSER_MODEL,
-            temperature=cfg.DECOMPOSER_TEMPERATURE,
-            max_tokens=cfg.DECOMPOSER_MAX_TOKENS,
-            extra_kwargs=cfg.DECOMPOSER_KWARGS,
-        )
-        # Determinism hygiene: sort parts/interfaces by id so downstream
-        # caching + routing are stable across runs.
-        raw.get("parts", []).sort(key=lambda p: p.get("part_id", ""))
-        raw.get("interfaces", []).sort(key=lambda i: i.get("interface_id", ""))
-        brief = AssemblyBrief.model_validate(raw)
+        brief = None
+        validation_errors: list[str] = []
+        for attempt in range(3):
+            attempt_text = user_prompt
+            if validation_errors:
+                attempt_text += (
+                    "\n\n## Deterministic consistency errors in your previous "
+                    "brief\nFix all of these without changing the user's intent:\n"
+                    + "\n".join(f"- {e}" for e in validation_errors)
+                    + "\nIf a named builder does not directly implement the "
+                    "described geometry, do not force its dimensions to fit; "
+                    "choose the appropriate generation path instead."
+                )
+            if images and cfg.DECOMPOSER_MULTIMODAL != "never":
+                attempt_content = build_multimodal_content(
+                    attempt_text, [_encode_jpeg_data_url(b) for b in images]
+                )
+            else:
+                attempt_content = attempt_text
+            raw = call_llm_json(
+                decomposer_prompt,
+                attempt_content,
+                model=cfg.DECOMPOSER_MODEL,
+                temperature=cfg.DECOMPOSER_TEMPERATURE,
+                max_tokens=cfg.DECOMPOSER_MAX_TOKENS,
+                extra_kwargs=cfg.DECOMPOSER_KWARGS,
+            )
+            raw.get("parts", []).sort(key=lambda p: p.get("part_id", ""))
+            raw.get("interfaces", []).sort(key=lambda i: i.get("interface_id", ""))
+            try:
+                candidate = AssemblyBrief.model_validate(raw)
+            except ValueError as exc:
+                # Schema-level cross-field checks (notably physical part
+                # count) must reach the same bounded feedback loop as the
+                # post-schema geometry checks.
+                validation_errors = [
+                    f"AssemblyBrief schema validation failed: {exc}"
+                ]
+                candidate = None
+            if candidate is not None:
+                _normalize_standard_finger_bars(candidate)
+                _normalize_transverse_clevis_centres(candidate)
+                _normalize_inward_clevis_directions(candidate)
+                _complete_standard_finger_hinges(candidate)
+                validation_errors = _validate_decomposition_brief(candidate)
+            if not validation_errors:
+                brief = candidate
+                break
+            print(
+                f"[assembly] decomposer attempt {attempt + 1}: "
+                f"{len(validation_errors)} consistency error(s)"
+            )
+            for error in validation_errors[:8]:
+                print(f"  - {error}")
+        if brief is None:
+            raise ValueError(
+                "decomposition failed deterministic consistency checks: "
+                + " | ".join(validation_errors[:8])
+            )
     except Exception as exc:  # noqa: BLE001
         import traceback
         print(f"[assembly] decomposer FAILED: {type(exc).__name__}: {exc}", flush=True)
@@ -380,6 +997,7 @@ def _validate_mating_plan(plan: MatingPlan, brief: AssemblyBrief) -> list[str]:
     """
     errors: list[str] = []
     part_ids = {p.part_id for p in brief.parts}
+    part_by_id = {p.part_id: p for p in brief.parts}
 
     if plan.assembly_name != brief.assembly_name:
         errors.append(
@@ -392,6 +1010,47 @@ def _validate_mating_plan(plan: MatingPlan, brief: AssemblyBrief) -> list[str]:
                 errors.append(f"mate {m.mate_id!r} references unknown part")
         if m.fixed_part_id == m.moving_part_id:
             errors.append(f"mate {m.mate_id!r} mates a part to itself")
+        # An axis_point is permitted, but it must locate the ACTUAL
+        # protruding clevis bore, not the part origin.  An origin anchor
+        # makes the parts overlap by the ear extension (8mm in the hand
+        # benchmark) even though both declared axes are technically X.
+        if m.mate_type == MateType.REVOLUTE and m.moving_anchor.kind == AnchorKind.AXIS_POINT:
+            spec = part_by_id.get(m.moving_part_id)
+            if spec is not None and spec.reuses_part_id:
+                spec = part_by_id.get(spec.reuses_part_id, spec)
+            if spec is not None:
+                datums = []
+                for feature in spec.features or []:
+                    if feature.name not in ("clevis_fork", "clevis_tongue"):
+                        continue
+                    params = feature.params
+                    if str(params.get("pin_axis", "z")) != str(m.moving_anchor.axis):
+                        continue
+                    try:
+                        distance = float(params["ear_length"]) - float(params["ear_width"]) / 2
+                        point = list(map(float, feature.attachment.attach_point_mm))
+                        direction = feature.attachment.direction
+                        k = "xyz".index(direction[-1])
+                        point[k] += distance * (1 if direction[0] == "+" else -1)
+                        if str(params.get("pin_axis", "z")) == "z":
+                            point[2] += float(params["bar_thickness"]) / 2
+                        datums.append(point)
+                    except (KeyError, TypeError, ValueError):
+                        pass
+                anchor_point = m.moving_anchor.point_mm
+                if datums and anchor_point is not None:
+                    error = min(
+                        sum((float(anchor_point[i]) - d[i]) ** 2 for i in range(3)) ** 0.5
+                        for d in datums
+                    )
+                    if error > 0.5:
+                        errors.append(
+                            f"mate {m.mate_id!r}: moving axis_point "
+                            f"{list(anchor_point)} is {error:.1f}mm from "
+                            f"every real clevis bore on {m.moving_part_id}; "
+                            f"use the feature bore datum {datums} or a "
+                            "SELECTOR cylinder anchor, not part origin"
+                        )
         # SPHERE anchors are only valid for ball mates. A SPHERE anchor on
         # a non-ball mate either crashes codegen (revolute/coaxial need an
         # axis direction; _emit_anchor returns None for SPHERE -> Axis(pt,
@@ -499,6 +1158,51 @@ def _validate_mating_plan(plan: MatingPlan, brief: AssemblyBrief) -> list[str]:
                     f"cannot fit inside the socket (use a smaller ball "
                     f"radius or a larger socket cavity)"
                 )
+            # Sphere anchors must be the actual deterministic feature
+            # centres, not a nearby side-face coordinate invented from the
+            # prose.  ball_cavity uses attach_point directly; ball_stem uses
+            # attach + (-direction)*(stem_length+sphere_radius).
+            for role, pid, anchor, feature_name in (
+                ("fixed", m.fixed_part_id, m.fixed_anchor, "ball_cavity"),
+                ("moving", m.moving_part_id, m.moving_anchor, "ball_stem"),
+            ):
+                spec = part_by_id.get(pid)
+                if spec is not None and spec.reuses_part_id:
+                    spec = part_by_id.get(spec.reuses_part_id, spec)
+                features = [f for f in (spec.features if spec else []) if f.name == feature_name]
+                if len(features) != 1 or anchor.sphere_center_mm is None:
+                    continue
+                feature = features[0]
+                expected = list(map(float, feature.attachment.attach_point_mm))
+                if feature_name == "ball_stem":
+                    direction = feature.attachment.direction
+                    k = "xyz".index(direction[-1])
+                    distance = float(feature.params["stem_length"]) + float(feature.params["sphere_radius"])
+                    expected[k] += distance * (-1 if direction[0] == "+" else 1)
+                delta = sum(
+                    (float(anchor.sphere_center_mm[i]) - expected[i]) ** 2
+                    for i in range(3)
+                ) ** 0.5
+                if delta > 0.3:
+                    errors.append(
+                        f"mate {m.mate_id!r}: {role} sphere center "
+                        f"{list(anchor.sphere_center_mm)} is {delta:.1f}mm "
+                        f"from actual {feature_name} center {expected} on {pid}"
+                    )
+            moving_spec = part_by_id.get(m.moving_part_id)
+            desc = (moving_spec.description if moving_spec else "").lower()
+            if (
+                "local +y" in desc and "world +x" in desc
+                and m.ball_axis_2 == "z"
+                and abs(float(m.ball_pitch_deg)) < 1e-6
+            ):
+                yaw = math.remainder(float(m.ball_yaw_deg), 360.0)
+                if abs(yaw + 90.0) > 1.0:
+                    errors.append(
+                        f"mate {m.mate_id!r}: brief requires local +Y to "
+                        f"map to world +X, which needs -90deg about +Z; "
+                        f"ball_yaw_deg={yaw:g} maps it toward world -X"
+                    )
 
     # v3 SELECTOR disambiguation: when a mate references a v3 part
     # (base_body set) with 2+ cylinder-producing features (clevis_fork /
@@ -640,13 +1344,16 @@ def node_mating_architect(state: AssemblyGraphState) -> dict:
     brief_fp = hashlib.sha256(
         brief.model_dump_json().encode("utf-8")
     ).hexdigest()[:16]
+    mating_prompt = _prompt("mating_architect.md")
+    prompt_fp = hashlib.sha256(mating_prompt.encode("utf-8")).hexdigest()[:16]
 
     cache = work_dir / "assembly_cache" / "mating_plan.json"
     if cache.is_file() and not remate_feedback:
         try:
             raw_data = json.loads(cache.read_text(encoding="utf-8"))
             cached_fp = raw_data.pop("__brief_fingerprint", "") if isinstance(raw_data, dict) else ""
-            if cached_fp == brief_fp:
+            cached_prompt_fp = raw_data.pop("__mating_prompt_fingerprint", "") if isinstance(raw_data, dict) else ""
+            if cached_fp == brief_fp and cached_prompt_fp == prompt_fp:
                 plan = MatingPlan.model_validate(raw_data)
                 errs = _validate_mating_plan(plan, brief)
                 if not errs:
@@ -681,7 +1388,7 @@ def node_mating_architect(state: AssemblyGraphState) -> dict:
     for attempt in range(2):  # one structured-retry on validation failure
         try:
             raw = call_llm_json(
-                _prompt("mating_architect.md"),
+                mating_prompt,
                 user_prompt + ("\n\n## Previous plan errors\n" + "\n".join(validation_errors) if validation_errors else ""),
                 model=cfg.MATING_MODEL,
                 temperature=cfg.MATING_TEMPERATURE,
@@ -742,6 +1449,7 @@ def node_mating_architect(state: AssemblyGraphState) -> dict:
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache_data = plan.model_dump(mode="json")
     cache_data["__brief_fingerprint"] = brief_fp
+    cache_data["__mating_prompt_fingerprint"] = prompt_fp
     cache.write_text(json.dumps(cache_data, indent=2), encoding="utf-8")
 
     return {
@@ -1323,6 +2031,13 @@ def node_assembler(state: AssemblyGraphState) -> dict:
             if ok and (work_dir / "assembly_output.stl").is_file()
             else ""
         ),
+        # Exact files embedded into the generated script.  Downstream QA
+        # must inspect these same artifacts rather than independently
+        # resolving a possibly stale PartResult path.
+        "assembly_part_step_paths": {
+            pid: str((work_dir / rel).resolve())
+            for pid, rel in part_step_overrides.items()
+        } if ok else {},
         # Exec tail of the last failed run ("" on success). Without this,
         # the QA node's FATAL synthesis reports a generic "STEP was not
         # produced" and the Judge/Router never see WHY the script died
@@ -1435,6 +2150,9 @@ def node_assembly_qa(state: AssemblyGraphState) -> dict:
             plan.mates if plan else [],
             state.get("part_results") or {},
             work_dir,
+            authoritative_step_paths=(
+                state.get("assembly_part_step_paths") or {}
+            ),
         )
 
     status = "PASS" if report.all_passed else f"FAIL ({report.error_type.value})"
@@ -1503,6 +2221,32 @@ def _judge_gate(decision: AssemblyJudgeDecision, qa: AssemblyQAReport) -> Assemb
 
 def node_assembly_judge(state: AssemblyGraphState) -> dict:
     qa: AssemblyQAReport | None = state.get("qa_report")
+    semantic_only = bool(
+        qa is not None and qa.all_passed
+        and not getattr(qa, "has_degraded_parts", False)
+    )
+    # Accepted geometry is immutable for this job. When its swept collision
+    # has no independent part-geometry attribution, the only actionable
+    # correction is a new mate pose. The multimodal Judge cannot remodel
+    # these parts and costs a long model call before routing to the same
+    # remate path; skip it without weakening the geometric QA failure.
+    if (
+        qa is not None
+        and not qa.all_passed
+        and qa.error_type == AssemblyErrorType.KINEMATIC
+        and getattr(qa, "error_attribution", "ambiguous") != "part_geometry"
+    ):
+        brief = state.get("assembly_brief")
+        work_dir = state.get("work_dir")
+        if brief is not None and work_dir and all(
+            has_explicit_accepted_cache(part, Path(work_dir) / "parts")
+            for part in brief.parts
+        ):
+            return {
+                "judge_decision": None,
+                "execution_log": _log(state, "judge: skipped (immutable parts; remate)"),
+                "node_history": state.get("node_history", []) + ["judge"],
+            }
     # Skip Judge only when (a) disabled, (b) no QA report, (c) QA passed
     # with NO degraded parts, or (d) iteration_count below MIN_RETRY AND
     # the failure is neither a borderline false-positive NOR an
@@ -1529,15 +2273,28 @@ def node_assembly_judge(state: AssemblyGraphState) -> dict:
     _needs_judge_early = (
         getattr(qa, "is_likely_false_positive", False)
         or _qa_passed_degraded
+        or semantic_only
         or (qa is not None and qa.error_type in (
             AssemblyErrorType.ENVELOPE,
             AssemblyErrorType.RECONCILE,
         ))
     )
+    if semantic_only and cfg.ASSEMBLY_JUDGE_MULTIMODAL == "never":
+        return {
+            "qa_report": qa.model_copy(update={
+                "semantic_verification": "unverified",
+            }),
+            "judge_decision": None,
+            "execution_log": _log(
+                state, "judge: semantic visual check skipped (multimodal=never)"
+            ),
+            "node_history": state.get("node_history", []) + ["judge"],
+        }
+
     if (
         not cfg.ASSEMBLY_JUDGE_ENABLED
         or qa is None
-        or (qa.all_passed and not _qa_passed_degraded)
+        or (qa.all_passed and not _qa_passed_degraded and not semantic_only)
         or (
             state.get("iteration_count", 0) < cfg.ASSEMBLY_JUDGE_MIN_RETRY
             and not _needs_judge_early
@@ -1559,7 +2316,17 @@ def node_assembly_judge(state: AssemblyGraphState) -> dict:
         + "\n\n## QA Report\n\n```json\n"
         + qa.model_dump_json(indent=2)
         + "\n```\n\n"
-        f"retry_count: {state.get('iteration_count', 0)}"
+        f"retry_count: {state.get('iteration_count', 0)}\n\n"
+        + (
+            "The deterministic assembly checks passed. Perform an optional "
+            "visual semantic check against the original natural-language "
+            "request. Inspect orientation, handedness/symmetry, hinge and "
+            "interface placement, feature shape, overlaps, gaps, and floating "
+            "parts. A visible mismatch must include concrete localized "
+            "modification_suggestions. If rendered current-model views are "
+            "not available, mark semantics unverified and do not block delivery."
+            if semantic_only else ""
+        )
     )
 
     content: str | list = user_prompt
@@ -1571,6 +2338,17 @@ def node_assembly_judge(state: AssemblyGraphState) -> dict:
     user_images = _load_user_images(_input_images_dir(work_dir))
     image_urls += [_encode_jpeg_data_url(b) for b in user_images]
     image_urls += [encode_png_data_url(v) for v in views]
+    if semantic_only and not views:
+        return {
+            "qa_report": qa.model_copy(update={
+                "semantic_verification": "unverified",
+            }),
+            "judge_decision": None,
+            "execution_log": _log(
+                state, "judge: semantic visual check skipped (no rendered views)"
+            ),
+            "node_history": state.get("node_history", []) + ["judge"],
+        }
     if image_urls and cfg.ASSEMBLY_JUDGE_MULTIMODAL != "never":
         content = build_multimodal_content(user_prompt, image_urls)
 
@@ -1596,6 +2374,23 @@ def node_assembly_judge(state: AssemblyGraphState) -> dict:
             and multimodal_mode == "auto"
             and _is_multimodal_unsupported_error(err)
         ):
+            if semantic_only:
+                print(
+                    "[assembly] semantic visual check skipped: configured "
+                    "model does not support image input"
+                )
+                return {
+                    "qa_report": qa.model_copy(update={
+                        "semantic_verification": "unverified",
+                    }),
+                    "judge_decision": None,
+                    "execution_log": _log(
+                        state,
+                        "judge: semantic visual check skipped "
+                        "(model has no vision support)",
+                    ),
+                    "node_history": state.get("node_history", []) + ["judge"],
+                }
             # Auto-fallback: retry once without images (MAC Judge pattern).
             try:
                 raw = call_llm_json(
@@ -1626,6 +2421,10 @@ def node_assembly_judge(state: AssemblyGraphState) -> dict:
                 f"{qa.error_type.value if qa else 'none'})"
             )
             return {
+                "qa_report": (
+                    qa.model_copy(update={"semantic_verification": "unverified"})
+                    if semantic_only else qa
+                ),
                 "judge_decision": None,
                 "execution_log": _log(
                     state,
@@ -1636,9 +2435,51 @@ def node_assembly_judge(state: AssemblyGraphState) -> dict:
                 "node_history": state.get("node_history", []) + ["judge"],
             }
 
+    if semantic_only:
+        has_view_evidence = any(
+            "view[" in item.lower() for item in decision.evidence
+        )
+        if decision.semantic_verification == "failed" and has_view_evidence:
+            suggestions = list(decision.modification_suggestions)
+            if not suggestions and decision.reason.strip():
+                suggestions = [decision.reason.strip()]
+            updates: dict = {"modification_suggestions": suggestions}
+            if decision.action in (
+                AssemblyJudgeAction.ACCEPT,
+                AssemblyJudgeAction.HALT,
+            ):
+                updates["action"] = (
+                    AssemblyJudgeAction.REMODEL_PARTS
+                    if decision.remodel_part_ids
+                    else AssemblyJudgeAction.REPAIR_ASSEMBLY
+                )
+            decision = decision.model_copy(update=updates)
+            qa = qa.model_copy(update={
+                "semantic_verification": "failed",
+                "semantic_issues": [decision.reason],
+                "semantic_modification_suggestions": suggestions,
+            })
+        else:
+            semantic = decision.semantic_verification
+            if semantic in ("verified", "failed") and not has_view_evidence:
+                semantic = "unverified"
+            decision = decision.model_copy(update={
+                "action": AssemblyJudgeAction.ACCEPT,
+                "semantic_verification": semantic,
+                "modification_suggestions": [],
+            })
+            # A response without current-view evidence remains non-blocking
+            # and explicitly unverified, even if the model claimed otherwise.
+            qa = qa.model_copy(update={
+                "semantic_verification": semantic,
+                "semantic_issues": [],
+                "semantic_modification_suggestions": [],
+            })
+
     print(f"[assembly] JUDGE -> {decision.action.value} "
           f"(conf={decision.confidence}, evidence={len(decision.evidence)})")
     return {
+        "qa_report": qa,
         "judge_decision": decision,
         "execution_log": _log(
             state,

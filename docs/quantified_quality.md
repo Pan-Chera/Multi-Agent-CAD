@@ -9,9 +9,9 @@
 
 The `cad skill` baseline is the [`cad` skill](https://github.com/earthtojake/text-to-cad/tree/main/skills/cad) from [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad) (CAD Skills, [docs](https://www.cadskills.xyz)) — a single-agent text-to-CAD generator built on Claude Code skills.
 
-> **Fairness note**: MAC and the `cad skill` baseline use **the same prompt set** (P1–P10, sourced from [that project's benchmarks/](https://github.com/earthtojake/text-to-cad/tree/main/benchmarks)), **the same test set**, and **the same geometric evaluation criteria** (141 features, binary pass/fail). The only variable is the agent architecture.
+> **Comparison scope**: MAC and our reproduction of the `cad skill` baseline use the same prompt set (P1–P10), test set, model family, and geometric evaluation criteria (141 binary features). The implementations still differ in orchestration, tool context, repair behavior, and cache accounting, so this is a controlled benchmark of the two documented setups—not proof that architecture is the only causal variable.
 
-> **About the baseline 97.9%**: the original `cad skill` only achieves 97.9%. Reason: the original author tested with Claude and ChatGPT, while this round uses the weaker Qwen 3.7-max. Baseline and MAC share the same LLM, with agent architecture as the only variable — MAC hits 99.3%, edge entirely from architecture.
+> **About the baseline 97.9%**: our Qwen 3.7-max reproduction measured 97.9% under this protocol. The upstream project has also been demonstrated with other models. The difference observed here should not be attributed solely to model quality or solely to agent architecture without a dedicated ablation.
 
 ## 1. Executive Summary
 
@@ -28,7 +28,7 @@ The `cad skill` baseline is the [`cad` skill](https://github.com/earthtojake/tex
 | Failed features | 3 | 1 | — |
 | Defensive corrections | 0 | 1 | — |
 
-**Core conclusion**: MAC achieves a **99.3% feature pass rate** (140/141, 1 actual failure + 1 independent defensive correction) at **1/13 the cost and 1/26 the API calls** of the comparison baseline, while consuming **116× fewer tokens**, in less wall-clock time. `cad skill`'s cache_read dominates (96.2M / 103.9M total tokens), indicating heavy context reuse, but absolute cost remains higher. **MAC architecturally blocks the context hallucination accumulation inherent in single-agent systems** (see §5 for details).
+**Result in this benchmark**: MAC achieves a **99.3% feature pass rate** (140/141, 1 actual failure + 1 independent defensive correction) at **1/13 the estimated cost and 1/26 the API calls** of the reproduced baseline, while the recorded accounting reports **116× fewer tokens**, in less wall-clock time. The baseline's cache-read tokens dominate its accounting (96.2M / 103.9M). These results are consistent with the hypothesis that staged, bounded context can reduce repeated context processing, but this benchmark does not isolate every implementation and accounting difference (see §5).
 
 ---
 

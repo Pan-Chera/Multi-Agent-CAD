@@ -364,6 +364,14 @@ class PartSpec(BaseModel):
                     "instance has its own mates + placement). Mutually "
                     "exclusive with `builder` and `base_body`.",
     )
+    reuse_mirror_plane: Literal["XY", "XZ", "YZ"] | None = Field(
+        default=None,
+        description="Optional geometric reflection applied to a reused "
+                    "part before its independent STEP/STL is exported. "
+                    "XY flips local Z, XZ flips local Y, and YZ flips "
+                    "local X. Use for genuinely mirrored/chiral instances "
+                    "such as left/right jaws. Requires reuses_part_id.",
+    )
     base_body: BaseBodySpec | None = Field(
         default=None,
         description="v3 path: LLM-generated base body spec. Mutually "
@@ -423,6 +431,11 @@ class PartSpec(BaseModel):
                 f"part {self.part_id!r}: `features` requires `base_body` "
                 f"or `builder` (no body exists to attach features to)"
             )
+        if self.reuse_mirror_plane is not None and self.reuses_part_id is None:
+            raise ValueError(
+                f"part {self.part_id!r}: `reuse_mirror_plane` requires "
+                "`reuses_part_id`"
+            )
         return self
 
 
@@ -448,6 +461,7 @@ def part_spec_fingerprint(spec: PartSpec) -> str:
         "base_body": spec.base_body.model_dump(mode="json") if spec.base_body else None,
         "features": [f.model_dump(mode="json") for f in spec.features],
         "reuses_part_id": spec.reuses_part_id,
+        "reuse_mirror_plane": spec.reuse_mirror_plane,
         "key_dimensions": spec.key_dimensions,
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -953,6 +967,14 @@ class AssemblyQAReport(BaseModel):
     all_passed: bool = False
     error_type: AssemblyErrorType = AssemblyErrorType.NONE
 
+    # Deterministic QA proves geometry/topology, not visual agreement with
+    # natural-language intent.  The optional multimodal Judge fills these
+    # fields.  ``unverified`` is deliberately non-fatal so text-only models
+    # and providers without image input remain supported.
+    semantic_verification: Literal["verified", "failed", "unverified"] = "unverified"
+    semantic_issues: list[str] = Field(default_factory=list)
+    semantic_modification_suggestions: list[str] = Field(default_factory=list)
+
     # Non-fatal part-generation warnings (e.g. v3 degraded base bodies),
     # copied from PartResult.warnings so the Judge sees them alongside the
     # deterministic failures.
@@ -1033,6 +1055,18 @@ class AssemblyJudgeDecision(BaseModel):
                     "auto-downgraded to repair by the code-level gate.",
     )
     remodel_part_ids: list[str] = Field(default_factory=list)
+    semantic_verification: Literal["verified", "failed", "unverified"] = Field(
+        default="unverified",
+        description=(
+            "Visual agreement with the natural-language request: verified or "
+            "failed only when rendered model views were actually inspected; "
+            "otherwise unverified."
+        ),
+    )
+    modification_suggestions: list[str] = Field(
+        default_factory=list,
+        description="Concrete, localized changes for the selected repair stage.",
+    )
     defensive_correction: bool = Field(
         default=False,
         description="True when reason is a physics/fit correction (add "
@@ -1058,6 +1092,8 @@ class AssemblyGraphState(TypedDict, total=False):
     assembly_py_path: str
     assembly_step_path: str
     assembly_stl_path: str
+    # Exact per-part STEP files consumed by the latest assembly script.
+    assembly_part_step_paths: dict[str, str]
     # Execution tail of the last failed assembly script run ("" on
     # success). The QA node folds this into its FATAL report so the Judge
     # and feedback_router see the REAL failure (e.g. a SELECTOR anchor

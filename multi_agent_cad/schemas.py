@@ -1031,6 +1031,13 @@ class QAReport(BaseModel):
         description="Specific error descriptions to guide the upstream agent's fix.",
     )
 
+    # Optional visual-semantic assessment. Deterministic QA remains the
+    # authority for measurable geometry; lack of a vision-capable model is
+    # represented as ``unverified`` and never blocks artifact delivery.
+    semantic_verification: Literal["verified", "failed", "unverified"] = "unverified"
+    semantic_issues: list[str] = Field(default_factory=list)
+    semantic_modification_suggestions: list[str] = Field(default_factory=list)
+
     # -- Improvement suggestions (from check_mesh's analysis) --
     improvement_suggestions: list[str] = Field(
         default_factory=list,
@@ -1127,6 +1134,17 @@ class JudgeDecision(BaseModel):
         "the judge disagrees with. **Audit-only field (F8)** — the pipeline "
         "does not currently act on these indices for routing or filtering. "
         "Retained for audit trail / future implementation.",
+    )
+    semantic_verification: Literal["verified", "failed", "unverified"] = Field(
+        default="unverified",
+        description=(
+            "Visual agreement with the request. Use verified/failed only when "
+            "rendered current-model views were actually available."
+        ),
+    )
+    modification_suggestions: list[str] = Field(
+        default_factory=list,
+        description="Concrete minimal code/model changes when repair is selected.",
     )
 
 

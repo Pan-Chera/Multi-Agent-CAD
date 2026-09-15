@@ -48,8 +48,10 @@ def _parse_mode(argv: list[str]) -> str:
         description="Single-part MAC subprocess (full regenerate or aider remodel).",
     )
     parser.add_argument(
-        "--mode", choices=("full", "aider"), default="full",
-        help="full: regenerate from scratch (default). aider: patch existing design.",
+        "--mode", choices=("full", "aider", "resume"), default="full",
+        help=("full: regenerate from scratch (default); aider: patch existing "
+              "design; resume: validate an interrupted script and patch only "
+              "when it still fails QA."),
     )
     args, _ = parser.parse_known_args(argv)
     return args.mode
@@ -65,8 +67,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     # Aider-first needs an existing design to patch.
-    if mode == "aider" and not list(part_dir.glob("temp_design*.py")):
-        print("[part_runner:aider] no existing temp_design*.py -- cannot patch")
+    if mode in ("aider", "resume") and not list(part_dir.glob("temp_design*.py")):
+        print(f"[part_runner:{mode}] no existing temp_design*.py -- cannot patch")
         return 3
 
     # Patch config BEFORE importing multi_agent_cad.graph / graph_aider (they
@@ -80,11 +82,11 @@ def main(argv: list[str] | None = None) -> int:
     part_dir.mkdir(parents=True, exist_ok=True)
     mac_nodes._CACHE_DIR = part_dir / "pipeline_cache"  # per-part cache isolation
 
-    if mode == "aider":
+    if mode in ("aider", "resume"):
         from multi_agent_cad.graph_aider import build_graph_aider
         app = build_graph_aider()
         force_refresh = True  # bypass the pre-remodel cache hash
-        workflow_id = "aider"
+        workflow_id = mode
     else:
         from multi_agent_cad.graph import build_graph
         app = build_graph()

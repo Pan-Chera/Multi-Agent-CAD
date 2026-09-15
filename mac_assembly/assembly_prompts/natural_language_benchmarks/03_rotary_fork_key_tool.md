@@ -17,14 +17,23 @@ radius 6.2 millimetres, and length 28 millimetres. Mount it coaxially below
 the plate, with its upper annular face touching the plate underside at Z zero
 and its body extending to Z minus 28. The sleeve and plate are rigidly joined
 without overlapping material.
+The stated negative height is the sleeve's final assembled position; its
+separate-part model may use a different local origin. Whatever local origin
+is chosen, the assembled sleeve must span Z minus 28 to zero, with no part
+of the sleeve above the mounting plate's underside.
 
 The spindle is a single connected rotating part. Its main vertical shaft has
-radius 5.5 millimetres and length 48 millimetres. Fuse a flange of radius 9
-millimetres and thickness 4 millimetres around each end. In the assembled
-neutral pose, the complete spindle spans Z minus 36 to plus 12. The lower
+radius 5.5 millimetres and length 40 millimetres. In the neutral assembled
+pose the bare shaft spans Z minus 32 to plus 8. Fuse a flange of radius 9
+millimetres and thickness 4 millimetres around each end: the lower flange
+spans Z minus 36 to minus 32 and the upper flange spans Z plus 8 to plus 12.
+The complete spindle therefore spans Z minus 36 to plus 12. The lower
 flange lies below the sleeve and the upper flange lies above the plate, so
 neither large flange can enter the guide bore. The shaft has 0.7 millimetres
 of radial clearance inside the plate and sleeve.
+The lower surface of the upper flange must stay entirely at or above Z plus
+8, including any small overlap introduced when fusing it to the shaft; a
+visually negligible extension into the plate is still a real collision.
 
 The replaceable key head is rigidly fixed beneath the spindle. It has a
 central circular hub of radius 9 millimetres and thickness 6 millimetres, with
@@ -45,4 +54,3 @@ rotate with it. The full rotation must remain collision-free, and the
 
 Deliver separate-part STEP geometry, an assembled STL and GLB, and a URDF
 that preserves the single full-range revolute joint.
-

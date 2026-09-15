@@ -101,6 +101,61 @@ def is_non_retryable_error(error: str | None) -> bool:
     return any(p in haystack for p in _NON_RETRYABLE_ERROR_PATTERNS)
 
 
+STALLED_NO_PROGRESS = "STALLED_NO_PROGRESS"
+
+
+def is_stalled_no_progress_error(error: str | None) -> bool:
+    """A same-spec pipeline timed out twice without new recoverable output."""
+    return bool(error and STALLED_NO_PROGRESS in error)
+
+
+def _generation_progress(part_dir: Path) -> dict[str, str]:
+    """Snapshot only artifacts that can advance/resume part generation.
+
+    Logs and token ledgers are excluded: they change on every retry even
+    when no usable CAD work has been produced.
+    """
+    paths = list((part_dir / "pipeline_cache").glob("*.json"))
+    paths += list(part_dir.glob("temp_design*.py"))
+    paths += list(part_dir.glob("temp_output*.step"))
+    paths += list(part_dir.glob("temp_output*.stl"))
+    progress: dict[str, str] = {}
+    for p in paths:
+        if not p.is_file() or p.stat().st_size == 0:
+            continue
+        key = str(p.relative_to(part_dir))
+        # A revised CADBrief with the same path is not downstream progress:
+        # the Architect still has no plan/script/STEP to resume. Feedback
+        # changes user_request_raw and would otherwise reset this guard on
+        # every outer assembly retry.
+        progress[key] = (
+            "present" if p.name == "cad_brief.json"
+            else hashlib.sha256(p.read_bytes()).hexdigest()
+        )
+    return progress
+
+
+def _timeout_stall_count(part_dir: Path, spec: PartSpec, *, timed_out: bool) -> int:
+    """Persist consecutive no-progress timeouts for the same part spec."""
+    marker = part_dir / "part_timeout_progress.json"
+    fingerprint = part_spec_fingerprint(spec)
+    try:
+        prior = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        prior = {}
+    if not timed_out:
+        if marker.is_file():
+            marker.write_text("{}", encoding="utf-8")
+        return 0
+    progress = _generation_progress(part_dir)
+    same = prior.get("spec_fingerprint") == fingerprint and prior.get("progress") == progress
+    count = int(prior.get("count", 0)) + 1 if same else 1
+    marker.write_text(json.dumps({
+        "spec_fingerprint": fingerprint, "progress": progress, "count": count,
+    }, indent=2), encoding="utf-8")
+    return count
+
+
 # ---------------------------------------------------------------------------
 # P1-3: cross-attempt token accounting
 # ---------------------------------------------------------------------------
@@ -509,6 +564,30 @@ def run_part(
     if cached is not None:
         return cached
 
+    marker = part_dir / "part_timeout_progress.json"
+    if os.environ.get("MAC_FORCE_RETRY_STALLED_PARTS") == "1":
+        # Explicit operator retry of the same spec; a changed spec also
+        # invalidates the marker automatically through its fingerprint.
+        marker.write_text("{}", encoding="utf-8")
+    else:
+        try:
+            stall = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            stall = {}
+        if (
+            stall.get("spec_fingerprint") == part_spec_fingerprint(spec)
+            and int(stall.get("count", 0)) >= 2
+            and stall.get("progress") == _generation_progress(part_dir)
+        ):
+            return PartResult(
+                part_id=spec.part_id, part_dir=str(part_dir), ok=False,
+                error=(f"{STALLED_NO_PROGRESS}: two same-spec pipeline "
+                       "timeouts without new CAD artifacts; inspect the "
+                       "part logs, change the spec, or explicitly set "
+                       "MAC_FORCE_RETRY_STALLED_PARTS=1 to retry"),
+                token_usage={},
+            )
+
     python_bin = cfg.PYTHON_BIN or sys.executable
     env = _make_subprocess_env()
     env.update(
@@ -539,6 +618,7 @@ def run_part(
             "TODO/placeholder, execute the model, and produce valid STEP and "
             "STL outputs while preserving the original design intent.",
             code_path=recovery_script,
+            resume_only=True,
         )
         if recovered is not None and recovered.ok:
             return recovered
@@ -566,11 +646,14 @@ def run_part(
         _promote_latest_log(log_path, part_dir / "part_log.txt")
         if timed_out:
             ok = False
-            error = (
-                f"single-part pipeline timed out after "
-                f"{cfg.PART_PIPELINE_TIMEOUT}s"
-            )
+            count = _timeout_stall_count(part_dir, spec, timed_out=True)
+            error = (f"single-part pipeline timed out after "
+                     f"{cfg.PART_PIPELINE_TIMEOUT}s")
+            if count >= 2:
+                error += (f"; {STALLED_NO_PROGRESS}: {count} same-spec "
+                          "timeouts without new CAD artifacts")
         else:
+            _timeout_stall_count(part_dir, spec, timed_out=False)
             ok = returncode == 0
             if not ok:
                 error = _tail_error(output, returncode or -1)
@@ -607,6 +690,7 @@ def run_part_remodel(
     feedback: str,
     *,
     code_path: Path | None = None,
+    resume_only: bool = False,
 ) -> PartResult | None:
     """Patch an already-generated part with Aider instead of regenerating.
 
@@ -640,12 +724,14 @@ def run_part_remodel(
     if code_path is not None:
         env["MAC_PART_CODE_PATH"] = str(code_path.resolve())
 
+    runner_mode = "resume" if resume_only else "aider"
+
     _seed_cumulative_tokens(part_dir)
     log_path = _next_attempt_log(part_dir, "part_remodel_log_")
     started = time.time()
     try:
         returncode, output, timed_out = _stream_subprocess(
-            [python_bin, "-u", "-m", "mac_assembly._part_runner", "--mode", "aider"],
+            [python_bin, "-u", "-m", "mac_assembly._part_runner", "--mode", runner_mode],
             cwd=part_dir,
             env=env,
             timeout=cfg.PART_PIPELINE_TIMEOUT,
@@ -824,7 +910,7 @@ def run_part_reuse(
     parts_root: Path,
     template_result: PartResult | None,
 ) -> PartResult:
-    """Copy a template part's STEP/STL/py into this instance's directory.
+    """Copy or mirror a template part into this instance's directory.
 
     Zero LLM tokens. The instance shares the template's geometry but
     gets its own part directory (so the codegen + QA + selector
@@ -869,12 +955,33 @@ def run_part_reuse(
             token_usage={},
         )
 
-    dst_step = part_dir / "temp_output_reuse.step"
-    dst_stl = part_dir / "temp_output_reuse.stl"
+    is_mirrored = spec.reuse_mirror_plane is not None
+    suffix = "mirror" if is_mirrored else "reuse"
+    dst_step = part_dir / f"temp_output_{suffix}.step"
+    dst_stl = part_dir / f"temp_output_{suffix}.stl"
     dst_py = part_dir / "temp_design_reuse.py"
-    shutil.copy2(src_step, dst_step)
-    if src_stl and src_stl.is_file():
-        shutil.copy2(src_stl, dst_stl)
+    if is_mirrored:
+        try:
+            from build123d import Plane, export_step, export_stl, import_step, mirror
+
+            planes = {"XY": Plane.XY, "XZ": Plane.XZ, "YZ": Plane.YZ}
+            reflected = mirror(import_step(str(src_step)), about=planes[spec.reuse_mirror_plane])
+            export_step(reflected, str(dst_step))
+            export_stl(reflected, str(dst_stl), tolerance=0.05, angular_tolerance=0.3)
+        except Exception as exc:  # noqa: BLE001
+            return PartResult(
+                part_id=spec.part_id,
+                part_dir=str(part_dir),
+                ok=False,
+                attempts=0,
+                error=(f"mirror of template {template_id!r} across "
+                       f"{spec.reuse_mirror_plane} failed: {exc}"),
+                token_usage={},
+            )
+    else:
+        shutil.copy2(src_step, dst_step)
+        if src_stl and src_stl.is_file():
+            shutil.copy2(src_stl, dst_stl)
     if src_py and src_py.is_file():
         # Prepend an audit header to the template's actual source code.
         # Do NOT overwrite with just the header -- downstream Aider
@@ -887,6 +994,7 @@ def run_part_reuse(
         header = (
             f'"""Reused geometry from template {template_id!r} '
             f'(copied at runtime by run_part_reuse).\n'
+            f'Mirror plane: {spec.reuse_mirror_plane or "none"}.\n'
             f'Template source: {src_py}\n'
             f'This file is a copy for audit trail -- the actual geometry '
             f'was generated by the template\'s pipeline (builder or MAC).\n'
@@ -1333,6 +1441,7 @@ def run_part_with_features(
             not base_result.ok
             and feedback
             and not is_non_retryable_error(base_result.error)
+            and not is_stalled_no_progress_error(base_result.error)
         ):
             # Aider retry on base body (single retry -- see plan §3a).
             # Skipped for non-retryable failures (auth/endpoint/dependency):

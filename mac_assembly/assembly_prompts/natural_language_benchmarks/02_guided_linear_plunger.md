@@ -22,17 +22,20 @@ rigid connection without volumetric overlap.
 
 The moving plunger is one connected solid made from a central shaft, a lower
 contact head, and an upper stop collar. The shaft radius is 4.5 millimetres
-and its length is 54 millimetres. In the retracted assembled pose it spans Z
-minus 49 to plus 5. Fuse an eight-millimetre-radius contact head, four
-millimetres thick, below the shaft so its flat working face is at Z minus 53.
+and its length is 80 millimetres. In the retracted assembled pose it spans Z
+minus 57 to plus 23. Fuse an eight-millimetre-radius contact head, four
+millimetres thick, below the shaft so its flat working face is at Z minus 61.
 Fuse an eight-millimetre-radius stop collar, three millimetres thick, around
-the upper end from Z plus 2 to plus 5. The head and collar must remain outside
-the 5.2-millimetre-radius guide bore at every valid position.
+the upper end from Z plus 20 to plus 23. The head must remain below the
+guide sleeve and the collar above the mounting plate at every valid position;
+neither oversized feature may enter the 5.2-millimetre-radius guide bore.
 
 The plunger has one prismatic degree of freedom along the common Z axis. Zero
-travel is the retracted pose just described. Increasing the commanded travel
-moves the plunger downward, in negative Z, through a total stroke of 12
-millimetres. At full extension the contact face is therefore at Z minus 65.
+travel is the retracted pose just described. Commanded travel decreases from
+zero to minus 12 millimetres to move the plunger downward through a total stroke of 12
+millimetres. At full extension the contact face is therefore at Z minus 73,
+and the bottom of the stop collar is at Z plus 8, touching but not penetrating
+the top of the mounting plate.
 The shaft retains 0.7 millimetres of radial clearance inside both guide bores
 throughout the stroke.
 
@@ -42,6 +45,5 @@ a disconnected collar or head, lateral plunger motion, an extra active joint,
 or collision between the large head or collar and the sleeve.
 
 Deliver separate-part STEP geometry, an assembled STL and GLB, and a URDF
-whose positive joint command produces the specified downward 12-millimetre
+whose negative joint command produces the specified downward 12-millimetre
 motion.
-

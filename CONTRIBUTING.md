@@ -119,13 +119,22 @@ No formal commit message convention enforced — just make it descriptive.
 
 ## 🧪 Tests
 
-There's no formal test suite yet. For now:
+Run the small, committed release-contract suite before opening a PR:
 
-- Smoke test: run the default workflow end-to-end.
-- For targeted changes, edit `USER_REQUEST` in [multi_agent_cad/config.py](multi_agent_cad/config.py) to a simple part (e.g. `Create a 50x50x6 mm base plate with a 20 mm central hole.`) and verify the output STEP matches.
-- For QA / repair changes, force a failing prompt (e.g. remove a fillet instruction) and confirm Aider's repair loop kicks in.
+```bash
+python -m pytest tests/release -q
+```
 
-If you're adding a new feature, please include a prompt that exercises it.
+It checks packaging, security defaults, public prompt contracts, schema
+compatibility, and critical routing/reporting behavior without calling an LLM.
+Maintainers also keep a larger local regression suite for deep workflow work;
+it is intentionally not required in CI. For behavior changes, add a focused
+release test only when it protects a stable public contract rather than an
+implementation detail.
+
+An end-to-end model run is optional because it costs tokens and depends on a
+provider key. If you run one, include the prompt, provider/model, and resulting
+artifacts in the PR description.
 
 ## 📝 Submitting changes
 
@@ -135,7 +144,8 @@ If you're adding a new feature, please include a prompt that exercises it.
 4. Open a PR against `main`. In the PR description, include:
    - What changed and why
    - Which prompt(s) you tested against
-   - Token / cost numbers before vs after (if relevant — see [qwen3.7_token.md](docs/qwen3.7_token.md) for the benchmark format)
+   - Token / cost numbers before vs after (if relevant — see the benchmark
+     documents under `docs/` for the reporting format)
 
 ## 🐛 Reporting bugs
 
@@ -145,7 +155,7 @@ Open an issue with:
 - The relevant `temp_*.py` (the generated code — safe to share, no secrets)
 - The `temp_missed_*.json` runtime diagnostics, if any
 - The QA report output (from the terminal)
-- The model + provider you used (e.g. `qwen3.7-max` via DashScope)
+- The model + provider you used (for example, a Qwen model via DashScope)
 
 ## 🤝 Code of conduct
 

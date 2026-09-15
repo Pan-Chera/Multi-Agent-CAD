@@ -24,26 +24,40 @@ segment is 18 by 16 by 22 millimetres. The distal segment is about 18 by 16
 by 24 millimetres and ends in a smoothly rounded pad suitable for contacting
 a box.
 
-The palm-to-proximal and proximal-to-middle connections are ordinary
+The palm-to-proximal, proximal-to-middle, and middle-to-distal connections are ordinary
 single-axis hinges with coaxial bores of radius about 3.5 millimetres and
 approximately 0.2 millimetres total side clearance. Every hinge axis runs
 along X. Each proximal finger joint curls from zero to approximately 100
-degrees, and each middle joint curls from zero to approximately 110 degrees.
-The middle and distal segments are rigidly joined, preserving three visible
-phalanges while limiting each finger to two active degrees of freedom. Fork
-ears and central tongues must alternate correctly at every hinge, remain
+degrees, and each of the two subsequent joints curls from zero to approximately
+110 degrees. At the final finger joint, the middle segment must have two
+connected fork ears with coaxial bores; the distal segment must have a real
+central tongue with a through-bore received between those ears. Do not use a
+flat butt joint or omit this distal hinge. Fork ears and central tongues
+must alternate correctly at every hinge, remain
 connected to their owning segment, and never occupy the same material volume.
+At each palm-to-finger root hinge, the proximal finger segment must also
+carry a connected central tongue with a through-bore; a bare rectangular
+finger end inside the palm fork is not a hinge.
 
-The thumb consists of three additional physical segments extending generally
-toward negative Y from the positive-X side of the palm. Its root is centred
-near X plus 32, Y minus 45, and Z 12. Give the thumb root two rotational
+The thumb consists of three additional physical segments mounted on the
+positive-X side of the palm. Its root is centred near the positive-X side
+face, Y minus 35 and Z 12. In the neutral pose the thumb points outward
+sideways toward positive X, approximately perpendicular to the four fingers.
+It must not point toward positive Y or appear as a fifth upright finger.
+Place the spherical socket centre a few millimetres inside the positive-X
+palm wall, with its opening on that wall; do not place the cavity wholly
+outside the palm. The mating ball and its short stem must be connected to
+the proximal thumb body, which starts outside the palm. All three thumb
+segments should continue outward in the same approximate sideways direction
+in the open neutral pose, while remaining able to curl inward when actuated.
+Give the thumb root two rotational
 degrees of freedom: one curls it toward the palm and one swings it across the
 palm toward the fingertips. A compact spherical coupling with a small radial
 clearance is acceptable, provided the ball remains captured and the opening
 allows the required motion. Connect the proximal and middle thumb segments
 with one additional hinge whose axis runs along X and whose useful curl range
-is about zero to 100 degrees. Join the middle and rounded distal thumb segment
-rigidly.
+is about zero to 100 degrees. Connect the middle and rounded distal thumb
+segments with a further ordinary hinge using a real fork and tongue.
 
 The thumb proximal body is approximately 18 by 28 by 16 millimetres, its
 middle body 18 by 15 by 16 millimetres, and its distal body about 18 by 24 by
@@ -57,15 +71,16 @@ forward-finger segments, and three thumb segments. Despite those sixteen
 instances, only seven distinct geometries should be generated: the palm,
 three shared forward-finger segment shapes, and three thumb segment shapes.
 The other nine finger segments must reuse the corresponding geometry exactly.
+The seven source geometries are embodied by seven of those sixteen installed
+parts; they are not seven extra physical template pieces. Nothing may be
+added to the assembly solely to serve as a reusable source model.
 
-The palm is the root. The mechanism has eleven active degrees of freedom:
-two for each of the four forward fingers, three for the thumb, and no active
-joint at the five distal rigid connections. Keep the neutral pose open and
+The palm is the root. The mechanism has sixteen active degrees of freedom:
+three for each of the four forward fingers and four for the thumb. Keep the neutral pose open and
 roughly mirror-symmetric across the four forward fingers. Reject crossed
 fingers, stacked duplicate instances, floating hinge ears, blocked joint
 bores, or a thumb that cannot reach the finger workspace.
 
 Deliver separate-part STEP geometry, an assembled STL and GLB, and a URDF
-that preserves the repeated geometry instances and all eleven active degrees
+that preserves the repeated geometry instances and all sixteen active degrees
 of freedom.
-

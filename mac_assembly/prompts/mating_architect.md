@@ -9,6 +9,23 @@ You see ONLY the brief. You never see meshes, STEPs, or rendered views --
 derive anchors from the dimensions stated in each part's
 `key_dimensions` / `description`.
 
+## Decision priority (apply in this order)
+
+1. Preserve the interface topology and requested joint type from the brief.
+2. Place every moving part from explicit LOCAL datums; do not treat desired
+   world coordinates as local coordinates.
+   For a revolute clevis, a moving `axis_point` MUST equal the actual bore
+   centre, computed from its feature attachment and ear length. A part origin
+   of `(0,0,0)` is not a valid hinge datum when the tongue bore protrudes
+   8 mm beyond that origin; using it creates 8 mm of part interpenetration.
+   Prefer a cylinder SELECTOR on the moving side when the part has multiple
+   circular features.
+3. If `assembled_axis_ranges` is present, it is the authoritative neutral-pose
+   world bounding box. Verify the mate transform reproduces all six endpoints.
+4. Require a continuous mechanical path and the requested clearance, then apply
+   the specialized rules below. Worked examples are illustrations only and
+   must never override explicit dimensions in the current brief.
+
 ## Output contract
 
 Return ONE ```json fenced block:
@@ -63,6 +80,10 @@ The Assembler translates your mates deterministically into
 - Static pose: `ball_pitch_deg` (rotation about `ball_axis_1`) and
   `ball_yaw_deg` (rotation about `ball_axis_2`, applied in the
   post-pitch frame). Use `pitch=0, yaw=0` for a static assembly pose.
+  Apply the right-hand rule to any explicit local-to-world direction in
+  the brief: viewed from world +Z, mapping local +Y to world +X requires
+  **-90 degrees** about +Z. A +90 degree yaw maps +Y to world -X and can
+  drive a side-mounted thumb through the palm.
 - Codegen emits `asm.ball_frame(socket, sphere_center)` +
   `asm.rigid_frame(ball, sphere_center)` + `asm.ball(_f, _m,
   angles=(eX, eY, eZ), label=...)`, where (eX, eY, eZ) is the
@@ -182,6 +203,61 @@ mechanical path: after placement the two real surfaces should touch or remain
 within 2 mm modelling clearance. Coincident virtual axes in empty space are
 not sufficient. If a larger gap is intentional, add a real connecting part;
 never bridge it only with an abstract mate.
+
+**Absolute local coordinates versus `offset_mm` (critical):** An
+`axis_point` with only `axis` and `offset_mm` is anchored at the part's
+*bounding-box centre plus that offset*, not at local coordinate
+`offset_mm`. If the brief says a shaft end is at local Z=-36, write
+`point_mm=[0,0,-36]` and `offset_mm=0` for that endpoint. Writing
+`offset_mm=-36` instead shifts the anchor another half part height and
+can make a correct part overlap its parent by centimetres. The same
+rule applies to rigid attachments, sleeves, and revolute pivots. If
+the brief supplies explicit local coordinate ranges, use `point_mm`
+for every known mounting datum and calculate each moving part's world
+bounding box after the mate is applied. Its end faces must match the
+requested assembled range to within the stated tolerance; coincident
+anchor points alone are NOT enough evidence that the part was placed
+correctly. For a sleeve modeled locally from Z=0 to 28 that must span
+world Z=-28 to 0 under a plate, its rigid mate must translate it by
+-28 mm, not by zero or by its bbox-centre difference. For a key head
+modeled locally from Z=-58 to -36 and mounted under a spindle whose
+bottom face is Z=-36, align those *explicit* local Z=-36 endpoints.
+The deterministic `bushing` builder always produces local Z=0..length;
+the requested assembled world Z range is NOT its local range. For a
+28 mm sleeve beneath a plate whose underside is world Z=0, use a fixed
+datum at local Z=0 on the plate and a moving datum at local Z=28 on
+the sleeve (`axis_point.point_mm` on both sides). Their coincidence
+places the sleeve at world Z=-28..0. Do not use its local bottom face
+Z=0 as the moving datum, which leaves the sleeve above the plate.
+
+**LINEAR/CYLINDRICAL neutral-pose placement check (mandatory):** The two
+anchor points locate the assembled neutral pose, not just the slide axis.
+Before returning a plan, calculate the moving part's neutral translation
+from the actual part-local anchor coordinates and `position_mm`: for
+unrotated coaxial Z parts it is
+`world_moving_origin_z = fixed_anchor_local_z + position_mm - moving_anchor_local_z`
+(with the fixed part already placed in world space). Compare the resulting
+world coordinates of the moving part's head, collar, shaft, and end faces to
+the user's requested neutral pose. If any differs, change the ANCHOR POINT
+or `position_mm` before submission. Do not copy an absolute desired height
+into `position_mm` when the anchors have already encoded it; that double
+placement can send a plunger tens of millimetres away from its guide. A
+coaxial cylinder selector gives the actual cylinder midpoint, which may be
+far from the desired neutral datum; use explicit `axis_point.point_mm` on
+both parts when a specific neutral height is required. A `linear` mate's
+positive position follows the positive `slide_axis`, so a negative-Z travel
+with `slide_axis="z"` must use a negative joint range/command.
+When the brief specifies a finite stroke, emit BOTH `limit_lower` and
+`limit_upper` on the `linear` mate in millimetres relative to the neutral
+pose. Never leave them null or merely mention the travel in notes: QA and
+URDF otherwise use a generic bidirectional placeholder that can test or
+permit motion the mechanism was never designed to make. For a 12 mm
+downward-only stroke with positive Z as the slide axis, use -12 and 0.
+For a neutral pose whose part-local coordinates already describe the
+assembled world coordinates, set matching fixed and moving anchor points
+so their alignment does not add a spurious translation; check the
+calculated origin after resolving a cylinder selector to its *actual*
+midpoint, not its nominal radius or the centre of the entire part.
 
 For a rigid accessory on a broad but subdivided top surface, do not use a
 `selector` face centroid unless that exact face is the intended mounting pad.
@@ -371,14 +447,14 @@ default frame alignment):
  "notes": "palm cavity sphere at local (-45,0,5) aligns with thumb ball sphere at local (0,0,5); static pose pitch=yaw=0 -> thumb body (local X=-L..0) lands at world X<-45, extending away from the palm; thumb extends along -X so the two DOF axes are y+z (both perpendicular to -X: bending, not twist)"}
 ```
 
-Brief interface: hinge between a base post (25 tall) and an arm (60 long
-along X, joint at its -X end), both stated centered on XY origin:
+Brief interface: vertical-axis hinge between a base post (25 tall) and an
+arm (60 long along X, joint at its -X end), both stated centered on XY origin:
 
 ```json
 {"mate_id": "arm_hinge", "mate_type": "revolute",
  "fixed_part_id": "base_post", "moving_part_id": "arm",
  "fixed_anchor": {"kind": "axis_point", "axis": "z", "offset_mm": 12.5},
- "moving_anchor": {"kind": "axis_point", "axis": "x", "offset_mm": -30.0},
+ "moving_anchor": {"kind": "axis_point", "axis": "z", "point_mm": [-30, 0, 0]},
  "angle_deg": 0.0, "tolerance_mm": 0.5,
  "notes": "pivot at post top (Z=25); arm joint end at X=-30"}
 ```
@@ -401,15 +477,15 @@ kinematic datum, not blindly its `attach_point_mm`. For `clevis_fork` and
 `attach_point_mm + direction_vector * body_len`; with legacy `pin_axis=z`,
 the XY centre follows that same protrusion formula and bore Z is
 `attach_z + bar_thickness/2`. Example: if a +Y fork attaches at
-`(30, 25, 12)`, has `ear_length=20`, `ear_width=16`, and `pin_axis=z`, its
-bore centre is `(30, 37, 12 + bar_thickness/2)`, so the palm-side anchor is:
+`(30, 25, 12)`, has `ear_length=20`, `ear_width=16`, `bar_thickness=12`,
+and `pin_axis=z`, its bore centre is `(30, 37, 18)`, so the palm-side anchor is:
 
 ```json
 {"kind": "selector",
  "selector_query": {"surface": "cylinder", "axis": "z",
   "select": "closest_to", "value_mm": 2.5,
   "target_x_mm": 30, "target_y_mm": 37,
-  "target_z_mm": 12 + bar_thickness/2}}
+  "target_z_mm": 18}}
 ```
 
 The deterministic link is the feature operator's derived bore centre, not the

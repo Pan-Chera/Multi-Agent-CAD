@@ -56,6 +56,7 @@ from mac_assembly.schemas_assembly import (
 from mac_assembly.part_generator import (
     has_explicit_accepted_cache,
     is_non_retryable_error,
+    is_stalled_no_progress_error,
     set_api_key_snapshot,
 )
 from mac_assembly.selector_resolver import probe_selector_anchor
@@ -367,7 +368,11 @@ def _attribute_selector_miss(state: AssemblyGraphState, detail: str):
 
     # (1) three-state geometry probe against the CURRENT part STEP
     pr = (state.get("part_results") or {}).get(part_id)
-    step_path = str(getattr(pr, "step_path", "") or "") if pr is not None else ""
+    step_path = str(
+        (state.get("assembly_part_step_paths") or {}).get(part_id)
+        or (getattr(pr, "step_path", "") if pr is not None else "")
+        or ""
+    )
     if not step_path:
         return "probe_error", part_id, (
             f"cannot probe {part_id}: current PartResult has no STEP path -- "
@@ -515,11 +520,27 @@ def node_feedback_router(state: AssemblyGraphState) -> dict:
         # a known-imperfect artifact would be delivered as final success
         # and the Judge's verdict would be dead weight. ACCEPT / HALT /
         # no-decision / non-corrective actions still terminate as before.
-        corrective = decision is not None and decision.action in (
+        degraded_corrective = decision is not None and decision.action in (
             AssemblyJudgeAction.REMODEL_PARTS,
             AssemblyJudgeAction.RECOMPOSE,
         )
-        if not (getattr(qa, "has_degraded_parts", False) and corrective):
+        semantic_corrective = decision is not None and decision.action in (
+            AssemblyJudgeAction.REMODEL_PARTS,
+            AssemblyJudgeAction.RECOMPOSE,
+            AssemblyJudgeAction.REMATE,
+            AssemblyJudgeAction.REPAIR_ASSEMBLY,
+        )
+        semantic_failed = bool(
+            qa is not None
+            and getattr(qa, "semantic_verification", "unverified") == "failed"
+        )
+        if not (
+            (
+                getattr(qa, "has_degraded_parts", False)
+                and degraded_corrective
+            )
+            or (semantic_failed and semantic_corrective)
+        ):
             return _route(state, "end", note="QA passed")
     if decision is not None and decision.action == AssemblyJudgeAction.ACCEPT:
         return _route(state, "end", note="judge ACCEPT: " + decision.reason[:160])
@@ -542,6 +563,20 @@ def node_feedback_router(state: AssemblyGraphState) -> dict:
     # rounds on it). Only checked on a failing QA (a passing delivery with a
     # kept-best previous result is unaffected).
     if qa is None or not qa.all_passed:
+        stalled = [
+            (pid, str(getattr(r, "error", "") or ""))
+            for pid, r in sorted((state.get("part_results") or {}).items())
+            if not getattr(r, "ok", True)
+            and is_stalled_no_progress_error(getattr(r, "error", None))
+        ]
+        if stalled:
+            return _route(
+                state, "end",
+                note=("part generation paused after repeated no-progress "
+                      "timeouts: " + "; ".join(
+                          f"{pid}: {err[:120]}" for pid, err in stalled[:3]
+                      )),
+            )
         non_retryable = [
             (pid, str(getattr(r, "error", "") or ""))
             for pid, r in sorted((state.get("part_results") or {}).items())
@@ -566,8 +601,32 @@ def node_feedback_router(state: AssemblyGraphState) -> dict:
         judge_ctx = f"\nJudge decision ({decision.action.value}): {decision.reason}"
         if decision.evidence:
             judge_ctx += "\nEvidence: " + "; ".join(decision.evidence[:5])
+        if decision.modification_suggestions:
+            judge_ctx += "\nSuggested fixes: " + "; ".join(
+                decision.modification_suggestions[:5]
+            )
 
     if decision is not None and decision.action == AssemblyJudgeAction.REMODEL_PARTS:
+        # A swept collision is not evidence that the solid itself is wrong:
+        # an incorrect neutral mate pose or omitted travel limits produces
+        # the same symptom. Do not destroy a successfully built part on a
+        # Judge guess unless QA independently attributes it to geometry.
+        if (
+            qa.error_type == AssemblyErrorType.KINEMATIC
+            and getattr(qa, "error_attribution", "ambiguous") != "part_geometry"
+            and not qa.needs_remodel_part_ids
+        ):
+            if state.get("mating_architect_runs", 1) < cfg.MATING_MAX_RUNS:
+                return _route(
+                    state, "mating_architect",
+                    repair_context=errors + judge_ctx + (
+                        "\nKinematic collision alone does not establish a part defect. "
+                        "Check the neutral placement and explicit joint travel "
+                        "limits before changing any correct solid geometry."
+                    ),
+                    note="kinematic collision without part attribution; remate",
+                )
+            return _route(state, "end", note="remate budget exhausted (kinematic)")
         # Cross-check the judge's part ids against the brief: a hallucinated
         # id would make part_builder skip every spec and burn a full loop
         # (QA then reproduces the same failure). Fall back to QA's own
@@ -1007,11 +1066,25 @@ def _final_report(state: dict) -> None:
     print("=" * 70)
     qa = state.get("qa_report")
     decision = state.get("judge_decision")
-    if qa is not None and (qa.all_passed or (decision is not None and decision.action == AssemblyJudgeAction.ACCEPT)):
+    semantic_failed = bool(
+        qa is not None
+        and getattr(qa, "semantic_verification", "unverified") == "failed"
+    )
+    # A deterministic geometry PASS does not override a visual-semantic
+    # failure.  In particular, do not print PASS when a corrective Judge
+    # decision exhausted its retry budget before the intent mismatch was
+    # repaired.
+    if semantic_failed:
+        print("  STATUS  : INCOMPLETE (visual semantic verification failed)")
+        for issue in getattr(qa, "semantic_issues", [])[:4]:
+            print(f"    - {issue[:200]}")
+    elif qa is not None and (qa.all_passed or (decision is not None and decision.action == AssemblyJudgeAction.ACCEPT)):
         if getattr(qa, "has_degraded_parts", False):
             print(f"  STATUS  : PASS (degraded parts: "
                   f"{', '.join(qa.degraded_part_ids)} -- see "
                   f"generation_warnings in the QA report)")
+        elif getattr(qa, "semantic_verification", "unverified") == "unverified":
+            print("  STATUS  : GEOMETRY PASS (visual semantics unverified)")
         else:
             print("  STATUS  : PASS")
     elif decision is not None and decision.action == AssemblyJudgeAction.HALT:
@@ -1025,7 +1098,17 @@ def _final_report(state: dict) -> None:
                 getattr(r, "error", None)
             )
         ]
-        if config_failures:
+        stalled = [
+            (pid, str(getattr(r, "error", "") or ""))
+            for pid, r in sorted(results_.items())
+            if not getattr(r, "ok", True)
+            and is_stalled_no_progress_error(getattr(r, "error", None))
+        ]
+        if stalled:
+            print("  STATUS  : INCOMPLETE (paused: repeated no-progress timeouts)")
+            for pid, err in stalled[:4]:
+                print(f"    - {pid}: {err[:200]}")
+        elif config_failures:
             print("  STATUS  : INCOMPLETE (configuration/infrastructure "
                   "failure -- not retryable)")
             for pid, err in config_failures[:4]:
@@ -1184,6 +1267,13 @@ def main() -> int:
         return exit_code
 
     _final_report(accumulated)
+
+    # A graph can terminate cleanly after an expected LLM/validation failure.
+    # In that case an existing work directory may still contain artifacts from
+    # an older run. Never package those stale files as this run's delivery.
+    if not accumulated.get("assembly_step_path"):
+        print("  No assembly was produced in this run. No handoff packet.")
+        return 0
 
     # Handoff packet: GLB + URDF + snapshot views + manifest (viewer-ready).
     # Best-effort: a handoff export bug should not crash the pipeline, but

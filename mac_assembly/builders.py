@@ -1991,6 +1991,65 @@ def bent_jaw_xz(
     return Compound(children=solids)
 
 
+def rounded_finger_bar_y(
+    length: float,
+    width: float = 18.0,
+    thickness: float = 16.0,
+    direction: str = "+y",
+    corner_radius: float = 2.0,
+) -> "Solid":
+    """One connected finger phalanx, extending from local Y=0.
+
+    Rounded contact edges are sufficient for a simple grasp pad; a
+    hemispherical revolve is not required. The origin stays on the flat
+    proximal end so the standard clevis/ball feature operators can attach.
+    """
+    if direction not in ("+y", "-y"):
+        raise ValueError("rounded_finger_bar_y direction must be '+y' or '-y'")
+    if min(length, width, thickness) <= 0:
+        raise ValueError("rounded_finger_bar_y dimensions must be positive")
+    if not 0 <= corner_radius < min(length, width, thickness) / 2:
+        raise ValueError("rounded_finger_bar_y corner_radius out of range")
+
+    from build123d import Align, Axis, Box, Pos, fillet
+
+    sign = 1.0 if direction == "+y" else -1.0
+    bar = Pos(0, sign * length / 2, 0) * Box(
+        width, length, thickness,
+        align=(Align.CENTER, Align.CENTER, Align.CENTER),
+    )
+    # Round only the four longitudinal edges; preserve the two planar end
+    # faces for coaxial feature attachments at local Y=0 and Y=±length.
+    return (
+        fillet(bar.edges().filter_by(Axis.Y), radius=corner_radius)
+        if corner_radius else bar
+    )
+
+
+def rounded_palm_plate_xy(
+    width: float,
+    depth: float,
+    thickness: float,
+    center_y: float = 0.0,
+    corner_radius: float = 6.0,
+) -> "Solid":
+    """Rounded rectangular palm plate with flat top, bottom and side middles."""
+    if min(width, depth, thickness) <= 0:
+        raise ValueError("rounded_palm_plate_xy dimensions must be positive")
+    if not 0 <= corner_radius < min(width, depth) / 2:
+        raise ValueError("rounded_palm_plate_xy corner_radius out of range")
+    from build123d import Align, Axis, Box, Pos, fillet
+
+    body = Pos(0, center_y, thickness / 2) * Box(
+        width, depth, thickness,
+        align=(Align.CENTER, Align.CENTER, Align.CENTER),
+    )
+    return (
+        fillet(body.edges().filter_by(Axis.Z), radius=corner_radius)
+        if corner_radius else body
+    )
+
+
 # Registry: builder name -> function. The PartBuilder looks up builders
 # by name from PartSpec.builder["name"].
 BUILDERS = {
@@ -2020,7 +2079,8 @@ BUILDERS = {
     "gimbal_roll_cage": gimbal_roll_cage,
     "gimbal_pan_yoke": gimbal_pan_yoke,
     "crane_counterweight_frame": crane_counterweight_frame,
-    "bent_jaw_xz": bent_jaw_xz,
+    "rounded_finger_bar_y": rounded_finger_bar_y,
+    "rounded_palm_plate_xy": rounded_palm_plate_xy,
 }
 
 
