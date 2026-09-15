@@ -42,6 +42,16 @@ manufacturing or simulation use.
 | A mobile base carrying a visually detailed articulated manipulator. | A multi-joint inspection arm with a framed vision payload. |
 | ![Heavy-duty mobile manipulator](assets/assemblies/complex/heavy-duty-mobile-manipulator.gif) | ![Advanced vision inspection robot arm](assets/assemblies/complex/advanced-vision-inspection-robot-arm.gif) |
 
+### Complex-gallery generation usage
+
+| Assembly | Planning & mating | Part generation & repair | Judge & other workflow | Total tokens | Estimated cost |
+|---|---:|---:|---:|---:|---:|
+| Three-Axis Gantry Metrology Cell | about 178,000 | 461,811 | 260,157 | **about 900,000** | **about ¥15** |
+| Telescopic Cinema Robot Crane | 535,407 | 663,427 | about 451,000 | **about 1,650,000** | **about ¥23** |
+| Heavy-Duty Mobile Manipulator | about 520,000 | 2,678,005 | 2,602,142 | **about 5,800,000** | **about ¥89** |
+| Advanced Vision Inspection Robot Arm | 85,016 | 160,367 | about 55,000 | **about 300,000** | **about ¥5** |
+| **Total** | **about 1,318,000** | **3,963,610** | **about 3,368,000** | **about 8,650,000** | **about ¥132** |
+
 ### Compact functional assemblies
 
 | Hinged Twin-Claw Gripper | Guided Linear Plunger | Rotary Fork-Key Tool | Reusable Five-Digit Hand |
@@ -53,6 +63,17 @@ interfaces, repeated-part reuse, and mirrored geometry. The complex gallery
 shows how the same workflow scales to larger visual assemblies. See the
 [assembly workflow documentation](mac_assembly/README.md) for implementation
 details and current limitations.
+
+## URDF Simulation
+
+The assembly workflow can export generated mechanisms as URDF files for
+downstream robotics and physics simulation. The demonstrations below use an
+AI-generated hand assembly to execute object rotation and pick-and-place tasks
+in simulation.
+
+| Object Rotation | Pick and Place |
+|---|---|
+| ![AI-generated hand rotating an object in simulation](assets/assemblies/simulation/ai_hand_twist.gif) | ![AI-generated hand performing pick and place in simulation](assets/assemblies/simulation/ai_hand_pick_place.gif) |
 
 ## Part Gallery
 

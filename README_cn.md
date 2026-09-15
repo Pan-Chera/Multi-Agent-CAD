@@ -32,6 +32,16 @@ Judge，以及实验性的多零件装配体生成功能。
 | 移动底盘搭载细节丰富的铰接机械臂。 | 带框架式视觉载荷的多关节检测臂。 |
 | ![重型移动机械臂](assets/assemblies/complex/heavy-duty-mobile-manipulator.gif) | ![高级视觉检测机械臂](assets/assemblies/complex/advanced-vision-inspection-robot-arm.gif) |
 
+### 复杂装配体生成消耗
+
+| 装配体 | 规划与装配关系 | 零件生成与修复 | Judge 与其他流程 | 总 Token | 估算成本 |
+|---|---:|---:|---:|---:|---:|
+| 三轴龙门测量单元 | 约 178,000 | 461,811 | 260,157 | **约 900,000** | **约 ¥15** |
+| 伸缩式电影机器人吊臂 | 535,407 | 663,427 | 约 451,000 | **约 1,650,000** | **约 ¥23** |
+| 重型移动机械臂 | 约 520,000 | 2,678,005 | 2,602,142 | **约 5,800,000** | **约 ¥89** |
+| 高级视觉检测机械臂 | 85,016 | 160,367 | 约 55,000 | **约 300,000** | **约 ¥5** |
+| **合计** | **约 1,318,000** | **3,963,610** | **约 3,368,000** | **约 8,650,000** | **约 ¥132** |
+
 ### 小型功能装配体
 
 | 铰链式双爪夹持器 | 导向直线推杆 | 旋转叉形钥匙工具 | 可复用五指手 |
@@ -39,6 +49,15 @@ Judge，以及实验性的多零件装配体生成功能。
 | ![铰链式双爪夹持器](assets/assemblies/simple/hinged-twin-claw-gripper.gif) | ![导向直线推杆](assets/assemblies/simple/guided-linear-plunger.gif) | ![旋转叉形钥匙工具](assets/assemblies/simple/rotary-fork-key-tool.gif) | ![可复用五指手](assets/assemblies/simple/reusable-five-digit-hand.gif) |
 
 这些经筛选的小型例子展示了自然语言拆件、关节接口、重复零件复用与镜像几何；复杂例子展示了同一流程处理大型视觉装配体的能力。实现细节和当前限制见[装配体工作流文档](mac_assembly/README_cn.md)。
+
+## URDF 仿真
+
+装配体工作流可以将生成的机构导出为 URDF 文件，用于后续机器人与物理仿真。以下演示
+使用 AI 生成的灵巧手装配体，在仿真环境中分别执行物体旋转和抓取放置任务。
+
+| 旋转物体 | 抓取放置 |
+|---|---|
+| ![AI 生成灵巧手在仿真中旋转物体](assets/assemblies/simulation/ai_hand_twist.gif) | ![AI 生成灵巧手在仿真中执行抓取放置](assets/assemblies/simulation/ai_hand_pick_place.gif) |
 
 ## 单零件展示
 

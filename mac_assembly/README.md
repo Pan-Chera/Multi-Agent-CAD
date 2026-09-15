@@ -41,6 +41,16 @@ The gallery demonstrates generated geometry and assembly structure. It is not
 a quantitative success-rate claim; benchmark assembly metrics should only be
 added after a reproducible evaluation is published.
 
+### Generation usage of the complex gallery
+
+| Assembly | Planning & mating | Part generation & repair | Judge & other workflow | Total tokens | Estimated cost |
+|---|---:|---:|---:|---:|---:|
+| Three-Axis Gantry Metrology Cell | about 178,000 | 461,811 | 260,157 | **about 900,000** | **about ¥15** |
+| Telescopic Cinema Robot Crane | 535,407 | 663,427 | about 451,000 | **about 1,650,000** | **about ¥23** |
+| Heavy-Duty Mobile Manipulator | about 520,000 | 2,678,005 | 2,602,142 | **about 5,800,000** | **about ¥89** |
+| Advanced Vision Inspection Robot Arm | 85,016 | 160,367 | about 55,000 | **about 300,000** | **about ¥5** |
+| **Total** | **about 1,318,000** | **3,963,610** | **about 3,368,000** | **about 8,650,000** | **about ¥132** |
+
 ## Pipeline
 
 ```text
