@@ -50,9 +50,6 @@ manufacturing or simulation use.
 | Telescopic Cinema Robot Crane | 535,407 | 663,427 | about 451,000 | **about 1,650,000** | **about $3** |
 | Heavy-Duty Mobile Manipulator | about 520,000 | 2,678,005 | 2,602,142 | **about 5,800,000** | **about $13** |
 | Advanced Vision Inspection Robot Arm | 85,016 | 160,367 | about 55,000 | **about 300,000** | **about $1** |
-| **Total** | **about 1,318,000** | **3,963,610** | **about 3,368,000** | **about 8,650,000** | **about $20** |
-
-Estimated costs are converted from CNY at ≈¥6.76/USD (September 2026 midpoint).
 
 ### Compact functional assemblies
 
@@ -119,8 +116,6 @@ assembly-cost claims.
 | CAD Skill reproduction | Qwen 3.8 | Visual | 87.46M | $29.45 | 132/141 (93.6%) |
 | MAC v1 | Qwen 3.7 | Geometric | 0.90M | $1.43 | 140/141 (99.3%) |
 | **MAC v2** | Qwen 3.8 | Visual + geometric | **1.40M** | **$4.85** | **140/141 (99.3%)** |
-
-Benchmark costs are converted from CNY at ≈¥6.76/USD (September 2026 midpoint).
 
 Under the Qwen 3.7 setup, MAC v1 used 116× fewer recorded tokens and
 had a 13× lower estimated cost than the reproduced Skill baseline. Under
