@@ -184,7 +184,9 @@ def node_existing_file_loader(state: GraphState) -> dict:
         "current_step_path": actual_step_path,
         "current_stl_path": actual_stl_path,
         "iteration_count": iteration,
-        "workflow_id": "aider",  # Aider-style file naming for downstream outputs
+        # ``resume`` uses this loader too, but unlike true modify-existing
+        # mode it may accept a baseline that already passes QA.
+        "workflow_id": state.get("workflow_id", "aider"),
         "execution_log": [
             f"node_existing_file_loader [iter {iteration}]: "
             f"loaded {code_path.name}, executed, STEP={'yes' if actual_step_path else 'no'} "
@@ -240,6 +242,7 @@ from multi_agent_cad.graph import (
     _print_node_start,
     _print_node_end,
     _print_final_report,
+    get_default_initial_state,
 )
 
 
@@ -269,7 +272,6 @@ if __name__ == "__main__":
     # same request). The user_request here is interpreted as MODIFICATION
     # REQUIREMENTS for an existing .py file in cwd.
     # ------------------------------------------------------------------
-    from multi_agent_cad.graph import get_default_initial_state
     initial_state: GraphState = get_default_initial_state(workflow_id="aider")
 
     print("  Modification Request:")

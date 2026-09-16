@@ -35,6 +35,8 @@ from multi_agent_cad.schemas import (
     ErrorType,
     EngineReport,
     GraphState,
+    JudgeAction,
+    JudgeDecision,
     QAReport,
     VerificationResult,
     VerificationTarget,
@@ -69,6 +71,7 @@ from multi_agent_cad.config import (
     MAX_RETRIES as _CFG_MAX_RETRIES,
     MAX_EXEC_RETRIES as _CFG_MAX_EXEC_RETRIES,
     LLM_API_TIMEOUT as _CFG_LLM_API_TIMEOUT,
+    LLM_CODEGEN_API_TIMEOUT as _CFG_LLM_CODEGEN_API_TIMEOUT,
     CHECK_MESH_TIMEOUT as _CFG_CHECK_MESH_TIMEOUT,
     CAD_SCRIPT_TIMEOUT as _CFG_CAD_SCRIPT_TIMEOUT,
     CHECKPOINT_INPUT_TIMEOUT as _CFG_CHECKPOINT_INPUT_TIMEOUT,
@@ -81,6 +84,12 @@ from multi_agent_cad.config import (
     SPEC_PLANNER_TEMPERATURE as _SP_TEMP,
     SPEC_PLANNER_MAX_TOKENS as _SP_MAX_TOKENS,
     SPEC_PLANNER_KWARGS as _SPEC_PLANNER_KWARGS,
+    # Stage 1b: Spec Planner multimodal mode (user-provided reference images)
+    SPEC_PLANNER_MULTIMODAL as _CFG_SP_MULTIMODAL,
+    # Stage 0: User input images (shared by Spec Planner + Judge)
+    USER_IMAGES_DIR as _CFG_USER_IMAGES_DIR,
+    USER_IMAGE_MAX_SIZE as _CFG_USER_IMAGE_MAX_SIZE,
+    USER_IMAGE_JPEG_QUALITY as _CFG_USER_IMAGE_JPEG_QUALITY,
     # Stage 2: Geometric Architect
     ARCHITECT_MODEL as _ARCH_MODEL,
     ARCHITECT_TEMPERATURE as _ARCH_TEMP,
@@ -98,6 +107,18 @@ from multi_agent_cad.config import (
     REPAIR_TEMPERATURE as _REPAIR_TEMP,
     REPAIR_MAX_TOKENS as _REPAIR_MAX_TOKENS,
     REPAIR_KWARGS as _REPAIR_KWARGS,
+    # Stage 5: QA Judge (Phase 2.5 in autonomous_skill_loop)
+    JUDGE_ENABLED as _CFG_JUDGE_ENABLED,
+    JUDGE_MIN_RETRY as _CFG_JUDGE_MIN_RETRY,
+    JUDGE_MODEL as _JUDGE_MODEL,
+    JUDGE_TEMPERATURE as _JUDGE_TEMP,
+    JUDGE_MAX_TOKENS as _JUDGE_MAX_TOKENS,
+    JUDGE_KWARGS as _JUDGE_KWARGS,
+    # Stage 5b: QA Judge visual rendering (multimodal input)
+    JUDGE_MULTIMODAL as _CFG_JUDGE_MULTIMODAL,
+    JUDGE_VIEWS_COUNT as _CFG_JUDGE_VIEWS_COUNT,
+    JUDGE_VIEW_SIZE as _CFG_JUDGE_VIEW_SIZE,
+    JUDGE_SAVE_VIEWS as _CFG_JUDGE_SAVE_VIEWS,
 )
 
 
@@ -250,6 +271,7 @@ def _call_llm_json_with_retry(
                 temperature=temperature,
                 messages=list(messages),
                 max_tokens=max_tokens,
+                timeout=_CFG_LLM_API_TIMEOUT,
                 **kwargs_to_use,
             )
             raw_response = response.choices[0].message.content or ""
@@ -301,18 +323,58 @@ def _call_llm_json_with_retry(
                 raise
 
         except Exception as e:
-            # Handle timeout and other API errors
+            # BUG-022: narrow retryability classification. Previously
+            # only "timeout" was retried, so 429 / 5xx / connection
+            # errors (transient) were treated as permanent. Conversely,
+            # 401/403/invalid-api-key/model-not-found (permanent) must
+            # NOT be retried -- they burn the retry budget on errors
+            # that no amount of retrying will fix.
             error_msg = str(e).lower()
-            if 'timeout' in error_msg or 'timed out' in error_msg:
+            # Permanent failures: auth / config / missing dependency.
+            # Match the same patterns used by is_non_retryable_error in
+            # part_generator -- single source of truth for retryability.
+            _non_retryable_patterns = (
+                "dashscope_api_key is not set",
+                "error code: 401",
+                "error code: 403",
+                "authenticationerror",
+                "permissiondeniederror",
+                "invalid api key",
+                "invalid api-key",
+                "incorrect api key",
+                "unauthorized",
+                "model not found",
+                "model not exist",
+                "invalid model",
+                "invalid url",
+                "modulenotfounderror",
+            )
+            if any(p in error_msg for p in _non_retryable_patterns):
+                raise
+            # Transient failures: retry on timeout, 429, 5xx, or
+            # connection errors. These often self-resolve on retry.
+            _retryable_patterns = (
+                "timeout", "timed out",
+                "error code: 429", "rate limit", "rate_limit",
+                "error code: 500", "error code: 502", "error code: 503",
+                "error code: 504", "server error", "service unavailable",
+                "connection error", "connection aborted", "connection reset",
+                "connection refused", "remote disconnected",
+                "apiconnectionerror", "apierror",
+            )
+            is_retryable = any(p in error_msg for p in _retryable_patterns)
+            if is_retryable:
                 print(
-                    f"\n[DEBUG JSON-RETRY] Timeout on attempt {attempt + 1}/{max_retries}: {e}"
+                    f"\n[DEBUG JSON-RETRY] Retryable error on attempt "
+                    f"{attempt + 1}/{max_retries}: {e}"
                 )
                 if attempt < max_retries - 1:
-                    print(f"[DEBUG JSON-RETRY] Retrying in 2 seconds...")
                     import time
                     time.sleep(2)
                     continue
-            # Re-raise non-timeout errors or final timeout
+            # Re-raise non-retryable-but-unrecognized errors or final
+            # retry of a retryable class (conservative: do not loop
+            # forever).
             raise
 
     raise RuntimeError("Unreachable: retry loop should have raised or returned")
@@ -332,10 +394,24 @@ def _parse_missed_cuts(missed: list[str]) -> dict[str, list[str]]:
         "fillet_failed": [],
         "chamfer_failed": [],
         "cut_error": [],
+        "cosmetic_warning": [],
     }
     for entry in missed:
         s = str(entry)
-        if s.startswith("FILLET_FAILED"):
+        # A partial/degraded edge treatment leaves valid geometry behind.  A
+        # FAILED entry with no selected edges is likewise non-structural: the
+        # requested cosmetic operation was omitted, but no boolean or mating
+        # feature failed.  Keep these visible without trapping the autonomous
+        # loop in expensive rewrites of an otherwise valid part.
+        if s.startswith((
+            "FILLET_DEGRADED", "FILLET_PARTIAL",
+            "CHAMFER_DEGRADED", "CHAMFER_PARTIAL",
+        )) or (
+            s.startswith(("FILLET_FAILED", "CHAMFER_FAILED"))
+            and "no edges matched filter" in s.lower()
+        ):
+            categories["cosmetic_warning"].append(s)
+        elif s.startswith("FILLET_FAILED"):
             categories["fillet_failed"].append(s)
         elif s.startswith("CHAMFER_FAILED"):
             categories["chamfer_failed"].append(s)
@@ -353,7 +429,12 @@ def _format_missed_cuts_errors(categories: dict[str, list[str]]) -> tuple[list[s
     dominant error type (e.g. "CUT_POSITION_ERROR", "FILLET_FAILED").
     """
     error_details: list[str] = []
-    counts = {k: len(v) for k, v in categories.items() if v}
+    # ``cosmetic_warning`` is intentionally omitted: callers still print the
+    # raw diagnostics, but only structurally meaningful failures block PASS.
+    counts = {
+        k: len(v) for k, v in categories.items()
+        if v and k != "cosmetic_warning"
+    }
 
     if categories["missed_cut"]:
         n = len(categories["missed_cut"])
@@ -400,12 +481,31 @@ def _format_missed_cuts_errors(categories: dict[str, list[str]]) -> tuple[list[s
     return error_details, label
 
 
+def _runtime_diagnostics_path(cwd: Path, iteration: int) -> Path | None:
+    """Return diagnostics produced by this exact execution iteration only.
+
+    Never fall back to ``temp_missed_0.json``: generated scripts omit the
+    file when an Aider repair removes every issue, so such a fallback revives
+    stale failures and makes a corrected part impossible to pass.
+    """
+    path = cwd / f"temp_missed_{iteration}.json"
+    return path if path.is_file() else None
+
+
 def _normalize_architect_plan(plan_dict: dict) -> dict:
     """Fix common LLM naming mistakes in step_type before Pydantic validation.
 
     The Architect LLM sometimes uses informal names that don't match the
     ``ModelingStepType`` enum.  This function maps them to valid values so
     the plan passes validation without wasting a retry round.
+
+    For primitive-solid step types (``box`` / ``cube`` / ``cylinder`` /
+    ``sphere`` / ``cone``) — which the LLM reaches for despite
+    ``geometric_architect.md`` Iron Rule 6 forbidding them — expand the
+    step into a ``sketch + extrude`` pair so the plan validates without a
+    retry. The LLM is trained on ``python_coder.md`` which teaches
+    ``Box(x,y,z)`` as a primitive, so the cross-stage bleed is common
+    even with the prompt rule.
     """
     _STEP_TYPE_ALIASES = {
         # LLM shorthand → correct enum value
@@ -421,16 +521,202 @@ def _normalize_architect_plan(plan_dict: dict) -> dict:
         "sweep": "extrude",             # sweep ≈ extrude along path; LLM must refine
         "loft": "extrude",              # loft ≈ extrude; LLM must refine
     }
+    # Primitive-solid step types forbidden by Iron Rule 6 but routinely
+    # emitted by the LLM. Mapped to ``extrude`` and, if the step carries
+    # dimensions info, expanded into a sketch+extrude pair (see below).
+    _PRIMITIVE_SOLID_TYPES = {"box", "cube", "cylinder", "sphere", "cone",
+                              "primitive", "solid"}
+
     steps = plan_dict.get("steps")
     if not isinstance(steps, list):
         return plan_dict
+
+    # First pass: simple alias substitution for non-primitive types.
     for step in steps:
         if not isinstance(step, dict):
             continue
         stype = step.get("step_type", "")
         if isinstance(stype, str) and stype in _STEP_TYPE_ALIASES:
             step["step_type"] = _STEP_TYPE_ALIASES[stype]
+
+    # Second pass: expand primitive-solid steps (box/cube/...) into
+    # sketch+extrude. These steps carry dimensions in ad-hoc fields the
+    # ModelingStep schema doesn't know (pydantic ignores unknowns), so
+    # without expansion the schema would pass but the Coder would emit
+    # no geometry (sketch_id=None, distance_mm=None). Expanding here
+    # preserves the LLM's dimensional intent.
+    sketches = plan_dict.get("sketches")
+    if not isinstance(sketches, list):
+        sketches = []
+        plan_dict["sketches"] = sketches
+
+    new_steps: list = []
+    for step in steps:
+        if not isinstance(step, dict):
+            new_steps.append(step)
+            continue
+        stype = step.get("step_type", "")
+        if not (isinstance(stype, str) and stype.lower() in _PRIMITIVE_SOLID_TYPES):
+            new_steps.append(step)
+            continue
+
+        dims = _extract_primitive_dimensions(step)
+        if dims is None:
+            # No dimensions found — fallback to plain alias so schema
+            # validates. Coder/Aider retry will recover the geometry.
+            step["step_type"] = "extrude"
+            new_steps.append(step)
+            print(f"[NORMALIZE] step_type={stype!r} has no dimensions; "
+                  f"aliasing to 'extrude' (Coder will need sketch_id)")
+            continue
+
+        # Got dimensions — expand into sketch + extrude pair. The new
+        # sketch is appended to plan_dict.sketches; the original step is
+        # rewritten in-place as the extrude step.
+        prim_kind = stype.lower()
+        sid_base = step.get("step_id") or f"step-{len(new_steps)+1:02d}"
+        sketch_id = f"{sid_base}-autogen-sketch"
+        sketch, extrude_step = _build_primitive_sketch_and_extrude(
+            prim_kind, dims, step, sketch_id
+        )
+        if sketch is None:
+            # Unsupported primitive (e.g. sphere has no sketch analogue) —
+            # alias to extrude and let Aider recover geometry from notes.
+            step["step_type"] = "extrude"
+            new_steps.append(step)
+            print(f"[NORMALIZE] step_type={stype!r} unsupported primitive "
+                  f"shape; aliasing to 'extrude'")
+            continue
+        sketches.append(sketch)
+        new_steps.append(extrude_step)
+        print(f"[NORMALIZE] expanded step_type={stype!r} dims={dims} "
+              f"into sketch {sketch_id!r} + extrude")
+
+    plan_dict["steps"] = new_steps
     return plan_dict
+
+
+def _extract_primitive_dimensions(step: dict) -> tuple[float, float, float] | None:
+    """Extract (w, h, d) from a primitive-solid step's ad-hoc fields.
+
+    The LLM emits dimensions under various field names; try each in order
+    and return the first parseable 3-tuple. Returns None if no dimensions
+    field is found.
+    """
+    def _parse_3list(v) -> tuple[float, float, float] | None:
+        if not isinstance(v, (list, tuple)) or len(v) != 3:
+            return None
+        try:
+            return tuple(float(x) for x in v)  # type: ignore[return-value]
+        except (TypeError, ValueError):
+            return None
+
+    # 3-list fields: dimensions, size, dims, extent, bbox
+    for key in ("dimensions", "dimensions_mm", "size", "size_mm",
+                "dims", "extent", "bbox"):
+        if key in step:
+            r = _parse_3list(step[key])
+            if r is not None:
+                return r
+
+    # Three separate numeric fields: width/height/depth (or length).
+    try:
+        w = float(step.get("width") or step.get("x_size") or 0)
+        h = float(step.get("height") or step.get("y_size") or 0)
+        d = float(step.get("depth") or step.get("length")
+                  or step.get("z_size") or 0)
+        if w > 0 and h > 0 and d > 0:
+            return (w, h, d)
+    except (TypeError, ValueError):
+        pass
+
+    # Single radius field for cylinder/sphere/cone: treat as (r, r, h)
+    # where h is from height/length if present, else 2*r.
+    try:
+        r = float(step.get("radius") or step.get("radius_mm") or 0)
+        if r > 0:
+            h = float(step.get("height") or step.get("length") or 2 * r)
+            return (r, r, h)
+    except (TypeError, ValueError):
+        pass
+
+    return None
+
+
+def _build_primitive_sketch_and_extrude(
+    prim_kind: str,
+    dims: tuple[float, float, float],
+    orig_step: dict,
+    sketch_id: str,
+) -> tuple[dict | None, dict]:
+    """Build a (sketch, extrude_step) pair replacing a primitive-solid step.
+
+    For box/cube: rectangle sketch on XY with width=w, height=h; extrude d.
+    For cylinder/cone: circle sketch on XY with radius=w; extrude h (cone
+       slope lost — Aider recovers from notes if needed).
+    For sphere: returns (None, ...) — sphere has no sketch+extrude analogue;
+       the caller aliases the step to 'extrude' as a placeholder.
+
+    The original step's step_id / label / depends_on / notes are preserved
+    on the extrude_step so downstream references stay intact.
+    """
+    w, h, d = dims
+    sid = orig_step.get("step_id") or sketch_id.replace("-autogen-sketch", "")
+    label = orig_step.get("label") or f"Extrude {prim_kind} primitive"
+    depends = orig_step.get("depends_on") or []
+    notes = orig_step.get("notes") or f"Auto-expanded from step_type={prim_kind!r} dims=({w},{h},{d})"
+
+    if prim_kind in ("box", "cube"):
+        sketch = {
+            "sketch_id": sketch_id,
+            "workplane": "XY",
+            "workplane_offset_mm": 0.0,
+            "entities": [{
+                "entity_type": "rectangle",
+                "width": w,
+                "height": h,
+            }],
+            "notes": f"Auto-generated rectangle {w}x{h} from {prim_kind} primitive",
+        }
+        extrude = {
+            "step_id": sid,
+            "step_type": "extrude",
+            "label": label,
+            "sketch_id": sketch_id,
+            "distance_mm": d,
+            "direction": "positive",
+            "depends_on": depends,
+            "notes": notes,
+        }
+        return sketch, extrude
+
+    if prim_kind in ("cylinder", "cone"):
+        radius = w  # _extract_primitive_dimensions returns (r, r, h) for these
+        sketch = {
+            "sketch_id": sketch_id,
+            "workplane": "XY",
+            "workplane_offset_mm": 0.0,
+            "entities": [{
+                "entity_type": "circle",
+                "center": {"x": 0.0, "y": 0.0},
+                "radius": radius,
+            }],
+            "notes": f"Auto-generated circle R={radius} from {prim_kind} primitive",
+        }
+        extrude = {
+            "step_id": sid,
+            "step_type": "extrude",
+            "label": label,
+            "sketch_id": sketch_id,
+            "distance_mm": d,  # = h from _extract_primitive_dimensions
+            "direction": "positive",
+            "depends_on": depends,
+            "notes": notes,
+        }
+        return sketch, extrude
+
+    # sphere / unknown — no sketch analogue
+    return None, orig_step
 
 
 def _qa_report_or_dict(error_details: list[str] | None) -> str:
@@ -450,6 +736,43 @@ def _qa_report_or_dict(error_details: list[str] | None) -> str:
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT_PYTHON_CODER = _load_prompt("python_coder")
+
+# ============================================================================
+# System Prompt — QA Judge (Phase 2.5 in autonomous_skill_loop)
+# ============================================================================
+
+# Module-level loading — fail-fast if qa_judge.md is missing (consistent with
+# SYSTEM_PROMPT_PYTHON_CODER and SYSTEM_PROMPT_SPEC_PLANNER loading strategy).
+# F12 fix: was previously lazy-loaded via _get_judge_system_prompt() to avoid
+# reading the file when JUDGE_ENABLED=False, but the prompt file read has
+# negligible cost (~1ms) and fail-fast is more consistent.
+SYSTEM_PROMPT_QA_JUDGE = _load_prompt("qa_judge")
+
+# F5 fix: narrowed multimodal-unsupported keyword detection.
+# Previous list ("image", "unsupported", "not support") was too broad and would
+# false-positive on errors like "rate limit exceeded for image-generation model"
+# or "model does not support streaming". New approach: two-part check — error
+# must mention BOTH an image/vision/multimodal concept AND an unsupported/
+# not-allowed concept. This eliminates false positives on non-multimodal errors.
+_MULTIMODAL_KEYWORDS = (
+    "image input", "image_url", "image content", "image_content",
+    "vision input", "vision model",
+    "multimodal", "multi-modal",
+    "does not support image", "not support image",
+    "does not support vision", "not support vision",
+    "image not allowed", "image not support",
+)
+_UNSUPPORTED_KEYWORDS = (
+    "not support", "unsupported", "not allowed", "does not support",
+    "invalid content", "is not support",
+)
+
+
+def _is_multimodal_unsupported_error(err_str: str) -> bool:
+    """Two-part check: error must mention BOTH multimodal concept AND unsupported concept."""
+    has_multimodal = any(k in err_str for k in _MULTIMODAL_KEYWORDS)
+    has_unsupported = any(k in err_str for k in _UNSUPPORTED_KEYWORDS)
+    return has_multimodal and has_unsupported
 
 
 # ============================================================================
@@ -581,6 +904,27 @@ def _node_python_coder_deterministic(
             generator_metadata=meta,
         )
 
+        # Write token snapshot to file before execution (crash safety).
+        # If run_script_generator crashes (e.g., OCP SIGSEGV at export_step),
+        # the parent reads this file to recover token stats that would
+        # otherwise be lost when the subprocess dies before printing result JSON.
+        try:
+            from multi_agent_cad.token_tracker import tracker as _pre_exec_tracker
+            import json as _json
+            _pre_exec_snap = _pre_exec_tracker.summary()
+            _snap_path = Path.cwd() / "temp_token_snapshot.json"
+            with open(_snap_path, "w") as _f:
+                _json.dump({
+                    "phase": "pre_execute",
+                    "n_calls": _pre_exec_snap["n_calls"],
+                    "total_tokens": _pre_exec_snap["total_tokens"],
+                    "total_input": _pre_exec_snap["total_input"],
+                    "total_output": _pre_exec_snap["total_output"],
+                    "total_cache_read": _pre_exec_snap["total_cache_read"],
+                }, _f)
+        except Exception:
+            pass
+
         # Run gen_step() → cadpy loads the module, calls gen_step(),
         # exports STEP + STL, generates GLB topology.
         run_script_generator(spec, "gen_step")
@@ -674,8 +1018,12 @@ def _validate_solid(solid, name="solid"):
     errors = []
 
     # 1. Check if valid (manifold, no self-intersections)
+    # build123d Shape.is_valid is a PROPERTY (bool), not a method.
     try:
-        if not solid.is_valid():
+        is_valid_val = solid.is_valid
+        if callable(is_valid_val):
+            is_valid_val = is_valid_val()
+        if not is_valid_val:
             errors.append(f"{name}: Solid is invalid (non-manifold or self-intersecting)")
     except Exception as e:
         errors.append(f"{name}: Validation error - {str(e)}")
@@ -802,8 +1150,12 @@ def _safe_union(a, b, name_a="solid_a", name_b="solid_b", min_overlap=0.1):
         overlap_y = min(bb_a.max.Y, bb_b.max.Y) - max(bb_a.min.Y, bb_b.min.Y)
         overlap_z = min(bb_a.max.Z, bb_b.max.Z) - max(bb_a.min.Z, bb_b.min.Z)
 
-        # Check if there's any overlap
-        if overlap_x <= 0 or overlap_y <= 0 or overlap_z <= 0:
+        # Allow coincident-face union: overlap == 0 means the solids touch at
+        # a face (e.g., a cap cylinder whose +Y face coincides with the box's
+        # -Y face). build123d `a + b` at overlap==0 returns a Compound (2
+        # disjoint solids) because OCCT's fuse needs a positive volume overlap.
+        # We handle that case below by injecting a sub-mm epsilon overlap.
+        if overlap_x < -0.01 or overlap_y < -0.01 or overlap_z < -0.01:
             all_errors.append(
                 f"{name_a} and {name_b} have no overlap. "
                 f"Overlap: X={overlap_x:.2f}, Y={overlap_y:.2f}, Z={overlap_z:.2f} mm. "
@@ -826,6 +1178,31 @@ def _safe_union(a, b, name_a="solid_a", name_b="solid_b", min_overlap=0.1):
     # Perform the union
     try:
         result = a + b
+
+        # Coincident-face handling: build123d `a + b` at overlap==0 returns a
+        # Compound of 2 disjoint solids (OCCT fuse needs positive overlap).
+        # Detect that and inject a sub-mm epsilon shift along the coincident
+        # axis to force a watertight single Solid. The shift is 0.005mm —
+        # invisible at CAD precision but enough for OCCT to merge.
+        try:
+            _n_solids = len(result.solids()) if hasattr(result, "solids") else 1
+        except Exception:
+            _n_solids = 1
+        if _n_solids > 1:
+            # Find the coincident axis (smallest overlap, near 0)
+            _overlaps = [overlap_x, overlap_y, overlap_z]
+            _axis_idx = _overlaps.index(min(_overlaps))
+            _shift = [0.0, 0.0, 0.0]
+            _shift[_axis_idx] = 0.005
+            try:
+                b_shifted = b.moved(Location(Vector(*_shift)))
+                result = a + b_shifted
+            except Exception:
+                try:
+                    b_shifted = b.translate(Vector(*_shift))
+                    result = a + b_shifted
+                except Exception:
+                    pass
 
         # Validate the result
         valid_result, errors_result = _validate_solid(result, f"union({name_a},{name_b})")
@@ -1466,10 +1843,10 @@ def _plan_to_code(plan, iteration: int) -> str:
                 # (e.g., if a pattern was applied to the tool operand)
                 lines.append(f"_measure_feature({tv}, '{target_id}-union-target', 'union_operand_a')")
                 lines.append(f"_measure_feature({ov}, '{tool_id}-union-tool', 'union_operand_b')")
-                lines.append(f"# Adaptive overlap: 0.3-0.5mm based on feature size")
+                lines.append(f"# Minimal fusion overlap: preserve requested feature datums")
                 lines.append(f"_bb0 = {tv}.bounding_box()")
                 lines.append(f"_bb1 = {ov}.bounding_box()")
-                lines.append(f"# Calculate adaptive overlap (5% of smaller dimension, clamped to 0.3-0.5mm)")
+                lines.append(f"# A 0.3-0.5mm push can extend an end flange into its mating plate.")
                 lines.append(f"_min_dim = min(")
                 lines.append(f"    _bb0.max.to_tuple()[0] - _bb0.min.to_tuple()[0],")
                 lines.append(f"    _bb0.max.to_tuple()[1] - _bb0.min.to_tuple()[1],")
@@ -1478,7 +1855,7 @@ def _plan_to_code(plan, iteration: int) -> str:
                 lines.append(f"    _bb1.max.to_tuple()[1] - _bb1.min.to_tuple()[1],")
                 lines.append(f"    _bb1.max.to_tuple()[2] - _bb1.min.to_tuple()[2],")
                 lines.append(f")")
-                lines.append(f"_overlap = max(0.3, min(0.5, _min_dim * 0.05))")
+                lines.append(f"_overlap = 0.02  # enough for OCCT union, below assembly clearance")
                 lines.append(f"_push = [0.0, 0.0, 0.0]")
                 lines.append(f"for _i in range(3):")
                 lines.append(f"    _gap = _bb0.min.to_tuple()[_i] - _bb1.max.to_tuple()[_i]")
@@ -1506,14 +1883,14 @@ def _plan_to_code(plan, iteration: int) -> str:
                     a = step_body[sids_list[-2]]
                     b = step_body[sids_list[-1]]
                     var = f"solid_{solid_count}"
-                    lines.append(f"# Union: {a} + {b}  (adaptive overlap: 0.3-0.5mm)")
+                    lines.append(f"# Union: {a} + {b}  (minimal fusion overlap)")
                     # Measure both operands BEFORE union (white-box instrumentation)
                     # Use modified keys to avoid overwriting original feature measurements
                     lines.append(f"_measure_feature({a}, '{sids_list[-2]}-union-target', 'union_operand_a')")
                     lines.append(f"_measure_feature({b}, '{sids_list[-1]}-union-tool', 'union_operand_b')")
                     lines.append(f"_bb0 = {a}.bounding_box()")
                     lines.append(f"_bb1 = {b}.bounding_box()")
-                    lines.append(f"# Calculate adaptive overlap (5% of smaller dimension, clamped to 0.3-0.5mm)")
+                    lines.append(f"# Keep nominal feature datums; only a tiny overlap is needed.")
                     lines.append(f"_min_dim = min(")
                     lines.append(f"    _bb0.max.to_tuple()[0] - _bb0.min.to_tuple()[0],")
                     lines.append(f"    _bb0.max.to_tuple()[1] - _bb0.min.to_tuple()[1],")
@@ -1522,7 +1899,7 @@ def _plan_to_code(plan, iteration: int) -> str:
                     lines.append(f"    _bb1.max.to_tuple()[1] - _bb1.min.to_tuple()[1],")
                     lines.append(f"    _bb1.max.to_tuple()[2] - _bb1.min.to_tuple()[2],")
                     lines.append(f")")
-                    lines.append(f"_overlap = max(0.3, min(0.5, _min_dim * 0.05))")
+                    lines.append(f"_overlap = 0.02  # below assembly clearance")
                     lines.append(f"_push = [0.0, 0.0, 0.0]")
                     lines.append(f"for _i in range(3):")
                     lines.append(f"    _gap = _bb0.min.to_tuple()[_i] - _bb1.max.to_tuple()[_i]")
@@ -2318,6 +2695,28 @@ def _has_unsupported_placeholders(code: str) -> tuple[bool, str | None]:
     return "# TODO_AIDER:" in code
 
 
+def _join_aider_summarizer(coder) -> None:
+    """Join aider's background chat-summarizer thread after coder.run().
+
+    When the conversation outgrows the model's chat-history budget, aider
+    spawns a NON-daemon thread that compresses the history via an LLM call.
+    MAC's pipeline finishes its last coder.run() without building another
+    prompt, so aider's own summarize_end() (which joins the thread) never
+    runs. At interpreter exit Python runs the concurrent.futures atexit
+    handler -- shutting litellm's global executor down -- BEFORE joining
+    non-daemon threads, so an in-flight summary call dies with "cannot
+    schedule new futures after shutdown": a full-conversation API call is
+    billed but discarded, and the noise it prints lands at the tail of
+    subprocess stdout where _tail_error looks for the REAL failure reason
+    (on the 2026-09-08 gantry run it masked the actual
+    "AUTONOMOUS LOOP -- MAX RETRIES EXHAUSTED" fatal).
+    """
+    try:
+        coder.summarize_end()
+    except Exception:
+        pass  # summary bookkeeping must never fail the pipeline
+
+
 def _fill_unsupported_with_aider(
     script_path: Path, code: str, user_request: str,
     special_features: list[str] | None = None,
@@ -2455,7 +2854,12 @@ Fillets/chamfers MUST come after ALL boolean operations (union, cut).
             os.environ[_API_KEY_ENV_VAR] = api_key
 
         model = Model(_AIDER_MODEL_NAME)
-        model.extra_params = {"max_tokens": _AIDER_MAX_TOKENS}  # avoid truncation
+        model.extra_params = {
+            "max_tokens": _AIDER_MAX_TOKENS,  # avoid truncation
+            # litellm-level request timeout (s): see LLM_CODEGEN_API_TIMEOUT.
+            "timeout": _CFG_LLM_CODEGEN_API_TIMEOUT,
+            "extra_body": {"enable_thinking": False},
+        }
         io = InputOutput(
             yes=True,
             pretty=False,
@@ -2467,9 +2871,14 @@ Fillets/chamfers MUST come after ALL boolean operations (union, cut).
             io=io,
             fnames=[str(script_path), _BUILD123D_REF],
             auto_commits=False,
+            # Assembly jobs are intentionally gitignored runtime artifacts.
+            # These paths are explicitly supplied by the workflow and must
+            # remain editable even though their parent directory is ignored.
+            add_gitignore_files=True,
         )
 
         coder.run(prompt)
+        _join_aider_summarizer(coder)
         print(f"[HYBRID CODER] Aider successfully filled {len(matches)} placeholders")
         return True
 
@@ -2532,7 +2941,7 @@ def node_python_coder(state: GraphState) -> dict:
     """Translate an ArchitectPlan into executable build123d Python code.
 
     1. Reads the ArchitectPlan and any previous QA feedback from state.
-    2. Calls Qwen 3.7-max (DashScope) to generate self-contained build123d code.
+    2. Calls Qwen 3.8-max (DashScope) to generate self-contained build123d code.
     3. Writes the code to ``temp_design_{iteration}.py``.
     4. Executes the script via ``subprocess.run``.
     5. On success: returns ``current_python_code``, ``current_step_path``,
@@ -2646,6 +3055,7 @@ def node_python_coder(state: GraphState) -> dict:
                 {"role": "user", "content": user_prompt},
             ],
             max_tokens=_CODER_MAX_TOKENS,
+            timeout=_CFG_LLM_CODEGEN_API_TIMEOUT,
             **_CODER_KWARGS,
         )
         raw_response = response.choices[0].message.content or ""
@@ -2750,13 +3160,15 @@ def node_python_coder(state: GraphState) -> dict:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=_CFG_LLM_API_TIMEOUT,  # configurable via config.py
+            timeout=_CFG_CAD_SCRIPT_TIMEOUT,
             cwd=str(cwd),
         )
     except subprocess.TimeoutExpired:
         return _coder_failure_state(
             iteration=iteration,
-            error_message="Script execution timed out after 120 seconds.",
+            error_message=(
+                f"Script execution timed out after {_CFG_CAD_SCRIPT_TIMEOUT} seconds."
+            ),
             script_path=str(script_path),
             node_history=_coder_history,
         )
@@ -5523,29 +5935,58 @@ def _build_autonomous_repair_prompt(
 
     **Important**: Each iteration only fixes **1-2 most critical errors**, do not attempt to fix all errors at once.
 
+    ### Judge has already decided REPAIR — execute, don't re-evaluate
+
+    The QA Judge agent has already evaluated the QA report and selected
+    `REPAIR` (not ACCEPT, not HALT). This means:
+    - The QA failures are **real** — not false positives (Judge would have ACCEPTed those)
+    - The request is **not mathematically self-contradictory** — Judge would have HALTed those
+    - Your job is to **execute the repair**, not re-decide whether to repair
+
+    The Judge's `reason` and `evidence` are prepended to `error_details` as
+    `JUDGE context (proceeding to repair): <reason> | Evidence: <evidence...>`.
+    If the reason starts with `DEFENSIVE CORRECTION:`, this is a physical-soundness
+    fix (e.g. add overlap, add fillet, increase thickness) that preserves user
+    intent — apply it as a defensive override. Otherwise, treat the reason as
+    Judge's prioritized guidance for which errors to fix first.
+
     ### Information Priority (from high to low)
 
-    1. **User Qualitative Requirements** (structure, function, design intent described in the original request) — highest priority
-    2. **QA Report** (overall bounding box, connectivity, watertightness) — core reference for topology and overall dimensions
-    3. **White-box Feature Measurement Data** (📏 Feature Measurements section) — core reference for feature-level dimensions
-    4. **User Quantitative Data** (specific dimension values) — satisfy as much as possible without violating the first three
+    1. **Judge's reason + evidence** (in error_details, prefixed with
+       `JUDGE context`) — Judge has done the high-level triage; trust its priority
+    2. **QA Report** (overall bounding box, connectivity, watertightness) — core
+       reference for topology and overall dimensions
+    3. **White-box Feature Measurement Data** (📏 Feature Measurements section) —
+       core reference for feature-level dimensions
+    4. **User Quantitative Data** (specific dimension values in user_request) —
+       satisfy as much as possible without violating the first three
+
+    **Note**: User qualitative intent vs QA report conflicts (e.g. user wants
+    multi-body assembly but QA flags FATAL connectivity) are **Judge's
+    responsibility** — Judge decides ACCEPT (multi-body is intentional) or
+    REPAIR (real disconnect). You won't see REPAIR for intentional multi-body
+    designs. If you somehow suspect a QA/Judge misjudgment, still apply the
+    fix — Judge's decision is authoritative; disputes go through the user
+    checkpoint (Phase 1.9) or by rerunning with `JUDGE_ENABLED=False`.
 
     **Processing Principles**:
-    - The QA report only detects overall bounding box dimensions, part connectivity, and watertightness. Connectivity and watertightness
-      errors must be fixed first (correct structure is the foundation of everything).
-    - Feature-level dimensions (hole diameter, plate thickness, boss height, fillet radius, etc.) must be verified by comparing white-box
-      measurement data with the user request. If a feature's `size_x/y/z` in the white-box data
-      deviates from the nominal in the user request by > 0.5mm, actively fix it.
-    - When QA suggestions clearly conflict with user qualitative intent (e.g., user requests a "gear system" but QA
-      reports a multi-body error), follow the user qualitative intent.
-    - Coordinate verification should use `min/max_x/y/z` (actual bounding box) from white-box data, not
-      hand calculations or coordinate comments in the code. Comments may be outdated from previous fixes without being updated.
+    - Feature-level dimensions (hole diameter, plate thickness, boss height,
+      fillet radius, etc.) must be verified by comparing white-box measurement
+      data with the user request. If a feature's `size_x/y/z` in the white-box
+      data deviates from the nominal in the user request by > 0.5mm, actively
+      fix it.
+    - Coordinate verification should use `min/max_x/y/z` (actual bounding box)
+      from white-box data, not hand calculations or coordinate comments in the
+      code. Comments may be outdated from previous fixes without being updated.
 
     **Examples**:
-    - QA report shows overall Z deviation 3mm → Check each feature's size_z in white-box data to locate the cause
-    - White-box data shows hole diameter feature size_x=6mm but user requests 14mm → Fix the hole cutting tool
-    - User requests gear system, QA reports multi-body error → Keep multi-body (user qualitative intent takes priority)
-    - User labels hole diameter 4mm but wall thickness at that position is only 3mm → Adjust hole diameter to a reasonable value (structure takes priority over quantitative data)
+    - QA report shows overall Z deviation 3mm → Check each feature's size_z in
+      white-box data to locate the cause
+    - White-box data shows hole diameter feature size_x=6mm but user requests
+      14mm → Fix the hole cutting tool
+    - User labels hole diameter 4mm but wall thickness at that position is only
+      3mm → Adjust hole diameter to a reasonable value (structure takes priority
+      over quantitative data)
 
     ## QA Error Report
 
@@ -5819,6 +6260,399 @@ def _build_autonomous_repair_prompt(
 
 
 # ============================================================================
+# QA Judge — model can self-terminate iteration on QA disagreement
+# ============================================================================
+
+
+def node_judge_qa(
+    *,
+    user_request: str,
+    qa_report: QAReport,
+    special_features: list[str],
+    feature_measurements: dict | None,
+    retry: int,
+    workflow_id: str,
+    current_stl_path: str | None = None,
+    semantic_check: bool = False,
+) -> JudgeDecision | None:
+    """Evaluate whether a QA report's failures warrant code repair.
+
+    This is the QA Judge agent (Phase 2.5 in ``node_autonomous_skill_loop``).
+    The Judge is a separate LLM call with its own prompt
+    (``prompts/qa_judge.md``) and structured JSON output. It can:
+
+    - ``accept`` — override QA failure as PASS, return ``ErrorType.NONE``
+    - ``repair`` — continue to Aider (normal flow)
+    - ``halt`` — stop iteration as ``ErrorType.FATAL``
+
+    Anti-hallucination design: the Judge sees only structured text
+    (feature_measurements, error_details, special_features, user_request)
+    plus **optionally** rendered multi-angle PNG views of the current STL
+    (when ``JUDGE_MULTIMODAL`` is enabled and the model supports vision).
+    Every accept/halt decision must cite concrete data points in the
+    ``evidence`` field. Empty evidence on ACCEPT/HALT → downgrade to REPAIR
+    by the caller (Phase 2.5 evidence gate in ``node_autonomous_skill_loop``).
+
+    Visual input (when enabled):
+    - ``JUDGE_MULTIMODAL="never"`` (off): text-only path, no rendering.
+    - ``JUDGE_MULTIMODAL="auto"`` (default): render N isometric PNG views
+      from ``current_stl_path``, send as ``image_url`` content blocks
+      alongside the text prompt. If the API errors out with a
+      multimodal-related message, retry without images (text-only fallback).
+    - ``JUDGE_MULTIMODAL="always"``: require images; if rendering failed,
+      return None (safe default → REPAIR).
+
+    Parameters
+    ----------
+    user_request : str
+        Original natural-language design intent (ground truth).
+    qa_report : QAReport
+        Merged QA report from the dual-engine QA node.
+    special_features : list[str]
+        Non-trivial geometric constraints extracted by Spec Planner
+        (symmetry, multi-body intent, feature placement rules, etc.).
+    feature_measurements : dict | None
+        White-box instrumentation: per-feature bounding boxes from
+        ``temp_measurements_{iter}.json``.
+    retry : int
+        Current outer retry number (0 = first attempt).
+    workflow_id : str
+        ``"original"`` (full pipeline) or ``"aider"`` (modify-existing).
+    current_stl_path : str | None
+        Path to the current STL file for visual rendering. None or missing
+        file → text-only path (no multimodal input).
+
+    Returns
+    -------
+    JudgeDecision | None
+        None on any failure (safe default → caller falls through to Aider,
+        never blocks the pipeline). Otherwise a parsed JudgeDecision.
+
+        The caller (``node_autonomous_skill_loop``) applies confidence +
+        evidence gates to decide whether to actually honor ``accept`` /
+        ``halt`` — empty evidence or low confidence on FATAL/TOPOLOGY is
+        downgraded to REPAIR.
+
+    Notes
+    -----
+    - Function is prefixed ``node_`` so ``token_tracker.py`` auto-wraps it
+      via ``_wrap_node`` (token_tracker.py:261-269) — per-module token
+      attribution appears as a separate ``node_judge_qa`` row in the
+      final token summary.
+    - Returns None when ``JUDGE_ENABLED=False`` or ``retry < JUDGE_MIN_RETRY``
+      (configurable in config.py). First retry always lets Aider genuinely
+      try — Judge only kicks in from ``JUDGE_MIN_RETRY`` (default 1).
+    - On LLM call failure or JSON parse failure, returns None (safe default
+      → continue to Aider). The ``_call_llm_json_with_retry`` helper already
+      retries 3× with self-correction on parse errors.
+    """
+    # -- Config gates -------------------------------------------------------
+    if not _CFG_JUDGE_ENABLED:
+        return None
+    if retry < _CFG_JUDGE_MIN_RETRY and not semantic_check:
+        return None
+
+    # -- Build user prompt -------------------------------------------------
+    error_details = list(qa_report.error_details or [])
+    error_type = qa_report.error_type
+    error_type_str = error_type.value if hasattr(error_type, "value") else str(error_type)
+
+    # Errors section
+    if error_details:
+        errors_lines = [f"  [{i}] {e}" for i, e in enumerate(error_details)]
+        errors_section = "\n".join(errors_lines)
+    else:
+        errors_section = "(no error_details — QA report has no failure items)"
+
+    # Special features section (same format as _build_autonomous_repair_prompt)
+    if special_features:
+        features_lines = [f"  [{i}] {feat}" for i, feat in enumerate(special_features)]
+        special_features_section = (
+            "## 🔍 Special Features (non-trivial geometric constraints)\n\n"
+            "These constraints were extracted from the user request by the Spec Planner.\n"
+            "If a special_feature explicitly documents the design intent that the QA report\n"
+            "flags as a failure (e.g. 'MUST be multi-body assembly' vs connectivity FATAL),\n"
+            "cite it in your evidence.\n\n"
+            + "\n".join(features_lines)
+        )
+    else:
+        special_features_section = (
+            "## 🔍 Special Features\n\n"
+            "(empty — no non-trivial geometric constraints extracted by Spec Planner)"
+        )
+
+    # Feature measurements section
+    if feature_measurements:
+        measurements_section = (
+            "## 📏 Feature Measurements (white-box instrumentation, pre-boolean-merge)\n\n"
+            "Each entry is a per-feature bounding box measured BEFORE boolean merge.\n"
+            "Use `size_x`/`size_y`/`size_z` to verify dimensions against the user request.\n"
+            "Use `min_x`/`min_y`/`min_z`/`max_x`/`max_y`/`max_z` to verify positions.\n\n"
+            "```json\n"
+            + json.dumps(feature_measurements, indent=2, ensure_ascii=False)
+            + "\n```\n"
+        )
+    else:
+        measurements_section = (
+            "## 📏 Feature Measurements\n\n"
+            "(not available — no temp_measurements_{iter}.json found on disk)"
+        )
+
+    task_text = (
+        "The deterministic QA checks passed. Use the rendered current-model "
+        "views, if present, to verify visible agreement with the original "
+        "natural-language request. Check overall shape, orientation, "
+        "handedness/symmetry, interface and hinge placement, feature shape, "
+        "and missing or floating geometry. If a visible mismatch exists, "
+        "choose repair and provide concrete modification_suggestions. If "
+        "rendered views are unavailable, semantic_verification must be "
+        "unverified and lack of vision must not trigger repair or halt."
+        if semantic_check else
+        "Evaluate whether the QA report's failures warrant code repair, or "
+        "whether the current model should be accepted as-is (false positive, "
+        "design intent satisfied, persistent kernel limitation) or the "
+        "request declared unimplementable (halt)."
+    )
+
+    user_prompt = textwrap.dedent(f"""\
+    ## Original User Request (ground truth — never deviate from this)
+
+    {user_request}
+
+    {special_features_section}
+
+    {measurements_section}
+
+    ## QA Error Report
+
+    Error type: {error_type_str}
+    Iteration: retry {retry} (workflow_id={workflow_id})
+
+    {errors_section}
+
+    ## Task
+
+    {task_text}
+
+    Follow the Anti-Hallucination Iron Rule from the system prompt: every
+    `accept` or `halt` decision MUST cite concrete data points in the
+    `evidence` field. If you cannot find at least one hard data point,
+    output `repair` instead.
+
+    Return ONLY the ```json fenced block — no other text.
+    """)
+
+    # -- Render multi-angle views (when multimodal enabled) ----------------
+    view_pngs: list[bytes] = []
+    multimodal_mode = _CFG_JUDGE_MULTIMODAL  # "auto" | "always" | "never"
+
+    if multimodal_mode != "never" and current_stl_path and Path(current_stl_path).is_file():
+        try:
+            from multi_agent_cad.render_views import (
+                _render_isometric_views,
+                _save_views_to_disk,
+                _encode_png_data_url,
+            )
+            view_pngs = _render_isometric_views(
+                Path(current_stl_path),
+                n_views=_CFG_JUDGE_VIEWS_COUNT,
+                size=_CFG_JUDGE_VIEW_SIZE,
+            )
+            if view_pngs and _CFG_JUDGE_SAVE_VIEWS:
+                cwd = Path.cwd()
+                views_dir = cwd / f"temp_judge_views_{retry}"
+                _save_views_to_disk(view_pngs, views_dir, prefix="view")
+                print(f"[JUDGE] Rendered {len(view_pngs)} views to {views_dir.name}")
+            elif view_pngs:
+                print(f"[JUDGE] Rendered {len(view_pngs)} views (disk save disabled)")
+        except Exception as exc:
+            print(f"[JUDGE] view rendering failed: {exc}")
+            if multimodal_mode == "always":
+                print(f"[JUDGE] JUDGE_MULTIMODAL=always but rendering failed — returning None (safe default REPAIR)")
+                return None
+            # auto mode → continue with text-only
+            view_pngs = []
+        # F3 fix: _render_isometric_views returns [] (not exception) on failure
+        # like degenerate mesh or empty STL. The except block above doesn't catch it.
+        # Explicit check: if always mode and no views rendered, return None.
+        if multimodal_mode == "always" and not view_pngs:
+            print(f"[JUDGE] JUDGE_MULTIMODAL=always but rendering produced no views — returning None (safe default REPAIR)")
+            return None
+    elif multimodal_mode == "always" and (not current_stl_path or not Path(current_stl_path).is_file()):
+        print(f"[JUDGE] JUDGE_MULTIMODAL=always but STL not available — returning None (safe default REPAIR)")
+        return None
+
+    # A semantic-only check needs rendered views of the generated model.
+    # With text-only providers (or a rendering failure in auto/never mode),
+    # skip it rather than inventing visual facts or blocking a valid result.
+    if semantic_check and not view_pngs:
+        print("[JUDGE] semantic visual check skipped: no rendered views")
+        return None
+
+    # -- Load user-provided reference images (independent scan) ------------
+    # User dropped images into user_input_images/ to specify the design
+    # visually. Loaded here in addition to the rendered view[N] blocks —
+    # lets Judge compare user_image[N] (intended) vs view[N] (current).
+    user_images: list[bytes] = []
+    if multimodal_mode != "never":
+        try:
+            from multi_agent_cad.image_preprocess import (
+                _load_user_images, _encode_jpeg_data_url,
+            )
+            user_images_dir = Path.cwd() / _CFG_USER_IMAGES_DIR
+            user_images = _load_user_images(
+                user_images_dir,
+                max_size=_CFG_USER_IMAGE_MAX_SIZE,
+                jpeg_quality=_CFG_USER_IMAGE_JPEG_QUALITY,
+            )
+            if user_images:
+                print(f"[JUDGE] Loaded {len(user_images)} user reference images from {user_images_dir.name}")
+        except Exception as exc:
+            print(f"[JUDGE] user image load failed: {exc}")
+            # auto mode → continue; always mode → already handled by rendering path
+            # (no STL → already returned None above)
+
+    # -- Build messages: text + user_image blocks + view blocks ------------
+    # OpenAI-compatible multimodal format: user content can be a list of
+    # {type: "text", text: ...} and {type: "image_url", image_url: {url: ...}}
+    # blocks. The SDK accepts both str and list[dict] for the content field.
+    # Order: text first (let LLM read context), then user_image[N] (intended
+    # design), then view[N] (current model) — natural reading flow.
+    text_first_block = {"type": "text", "text": user_prompt}
+    content_list: list[dict] = [text_first_block]
+    for img in user_images:
+        data_url = _encode_jpeg_data_url(img)
+        content_list.append({
+            "type": "image_url",
+            "image_url": {"url": data_url},
+        })
+    for png in view_pngs:
+        data_url = _encode_png_data_url(png)
+        content_list.append({
+            "type": "image_url",
+            "image_url": {"url": data_url},
+        })
+    if len(content_list) > 1:  # has any image blocks (user_image or view)
+        user_content: list[dict] | str = content_list
+        n_user = len(user_images)
+        n_view = len(view_pngs)
+        print(f"[JUDGE] Sending multimodal message: 1 text + {n_user} user images + {n_view} rendered views")
+    else:
+        user_content = user_prompt  # text-only path (no user images AND no rendered views)
+
+    messages: list[dict] = [
+        {"role": "system", "content": SYSTEM_PROMPT_QA_JUDGE},
+        {"role": "user", "content": user_content},
+    ]
+
+    # -- Call LLM (with auto-fallback on multimodal API errors) ------------
+    # Wrapped tightly so a missing API key (RuntimeError from _llm_client)
+    # also falls into the safe-default path — caller proceeds to Aider.
+    # Catches generic Exception (not just ValueError/RuntimeError) because the
+    # OpenAI SDK raises openai.BadRequestError for "model doesn't support image"
+    # — a subclass of openai.APIStatusError, NOT ValueError/RuntimeError. Without
+    # the broad catch, the auto-fallback would never fire on real multimodal-
+    # unsupported errors.
+    try:
+        client = _llm_client()
+        json_str, _raw_response = _call_llm_json_with_retry(
+            client, messages,
+            model=_JUDGE_MODEL,
+            max_tokens=_JUDGE_MAX_TOKENS,
+            temperature=_JUDGE_TEMP,
+            extra_kwargs=_JUDGE_KWARGS,
+            max_retries=3,
+        )
+    except Exception as exc:
+        err_str = str(exc).lower()
+        # Detect multimodal-unsupported errors (varies by provider).
+        # Common patterns:
+        #   OpenAI: "model 'X' does not support image input"
+        #   Qwen/DashScope: "param image_content is not supported by the model"
+        #   Anthropic: "image input not supported"
+        #   DeepSeek: "unsupported content type"
+        # F5 fix: two-part check via _is_multimodal_unsupported_error() —
+        # eliminates false positives on non-multimodal errors like
+        # "rate limit exceeded for image-generation model" or
+        # "model does not support streaming".
+        multimodal_unsupported = _is_multimodal_unsupported_error(err_str)
+        has_images = bool(view_pngs) or bool(user_images)
+        if (
+            semantic_check and has_images and multimodal_mode == "auto"
+            and multimodal_unsupported
+        ):
+            print(
+                f"[JUDGE] semantic visual check skipped: model does not "
+                f"support images ({exc})"
+            )
+            return None
+        if has_images and multimodal_mode == "auto" and multimodal_unsupported:
+            # Fallback: retry without images (drop both user_image and view blocks)
+            print(f"[JUDGE] multimodal unsupported ({exc}) — retrying text-only")
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT_QA_JUDGE},
+                {"role": "user", "content": user_prompt},
+            ]
+            try:
+                client = _llm_client()
+                json_str, _raw_response = _call_llm_json_with_retry(
+                    client, messages,
+                    model=_JUDGE_MODEL,
+                    max_tokens=_JUDGE_MAX_TOKENS,
+                    temperature=_JUDGE_TEMP,
+                    extra_kwargs=_JUDGE_KWARGS,
+                    max_retries=3,
+                )
+            except Exception as exc2:
+                print(f"[JUDGE] text-only fallback also failed: {exc2} — proceeding to repair (safe default)")
+                return None
+        else:
+            print(f"[JUDGE] LLM call failed: {exc} — proceeding to repair (safe default)")
+            return None
+
+    # -- Parse and validate ------------------------------------------------
+    try:
+        parsed_dict = json.loads(json_str)
+        decision = JudgeDecision.model_validate(parsed_dict)
+    except json.JSONDecodeError as exc:
+        print(f"[JUDGE] JSON decode failed: {exc} — proceeding to repair")
+        return None
+    except ValidationError as exc:
+        print(f"[JUDGE] schema validation failed: {exc} — proceeding to repair")
+        return None
+    except Exception as exc:
+        print(f"[JUDGE] parse failed: {exc} — proceeding to repair")
+        return None
+
+    if semantic_check:
+        has_view_evidence = any(
+            "view[" in item.lower() for item in decision.evidence
+        )
+        if decision.semantic_verification == "failed" and has_view_evidence:
+            suggestions = list(decision.modification_suggestions)
+            if not suggestions and decision.reason.strip():
+                suggestions = [decision.reason.strip()]
+            decision = decision.model_copy(update={
+                "action": JudgeAction.REPAIR,
+                "modification_suggestions": suggestions,
+            })
+        else:
+            semantic = decision.semantic_verification
+            if semantic in ("verified", "failed") and not has_view_evidence:
+                semantic = "unverified"
+            # A clean deterministic report must not be repaired on
+            # unsupported visual claims. A repair requires an explicit
+            # failed assessment grounded in a rendered current-model view.
+            decision = decision.model_copy(update={
+                "action": JudgeAction.ACCEPT,
+                "semantic_verification": semantic,
+                "modification_suggestions": [],
+            })
+
+    return decision
+
+
+# ============================================================================
 # Autonomous Skill Loop — Aider helpers
 # ============================================================================
 
@@ -5909,7 +6743,13 @@ Please replace the 'pass' statement in gen_step() with the full implementation.
                 original_code = script_path_obj.read_text(encoding="utf-8")
 
                 model = Model(_AIDER_MODEL_NAME)
-                model.extra_params = {"max_tokens": _AIDER_MAX_TOKENS}  # avoid truncation
+                model.extra_params = {
+            "max_tokens": _AIDER_MAX_TOKENS,  # avoid truncation
+            # litellm-level request timeout (s): full-script generation
+            # runs 30k-65k output tokens; 120s truncated these mid-file.
+            "timeout": _CFG_LLM_CODEGEN_API_TIMEOUT,
+            "extra_body": {"enable_thinking": False},
+        }
                 io = InputOutput(
                     yes=True,
                     pretty=False,
@@ -5920,8 +6760,10 @@ Please replace the 'pass' statement in gen_step() with the full implementation.
                     io=io,
                     fnames=[script_path, _BUILD123D_REF],
                     auto_commits=False,
+                    add_gitignore_files=True,
                 )
                 coder.run(generation_prompt)
+                _join_aider_summarizer(coder)
 
                 # Verify the file was modified
                 try:
@@ -5989,7 +6831,7 @@ Output the COMPLETE Python script with the implementation."""
                 temperature=_REPAIR_TEMP,
                 max_tokens=_REPAIR_MAX_TOKENS,
                 **_REPAIR_KWARGS,
-                timeout=_CFG_LLM_API_TIMEOUT,  # configurable via config.py
+                timeout=_CFG_LLM_CODEGEN_API_TIMEOUT,  # configurable via config.py
             )
 
             generated_code = response.choices[0].message.content.strip()
@@ -6034,7 +6876,7 @@ def _run_repair_on_script(
     """Repair a CAD Python script using Aider (primary) or direct API (fallback).
 
     **Primary path — Aider (headless)**:
-      Uses ``aider.coders.Coder`` with ``openai/qwen3.7-max`` to directly
+      Uses ``aider.coders.Coder`` with ``openai/qwen3.8-max`` to directly
       edit the script file in place.  Aider's edit formats (search/replace,
       unified diff) are more reliable for targeted code fixes than asking an
       LLM to regenerate the entire file.
@@ -6098,7 +6940,13 @@ def _run_repair_on_script(
                     original_code = ""
 
                 model = Model(_AIDER_MODEL_NAME)
-                model.extra_params = {"max_tokens": _AIDER_MAX_TOKENS}  # avoid truncation
+                model.extra_params = {
+            "max_tokens": _AIDER_MAX_TOKENS,  # avoid truncation
+            # litellm-level request timeout (s): full-script generation
+            # runs 30k-65k output tokens; 120s truncated these mid-file.
+            "timeout": _CFG_LLM_CODEGEN_API_TIMEOUT,
+            "extra_body": {"enable_thinking": False},
+        }
                 io = InputOutput(
                     yes=True,       # auto-confirm all prompts
                     pretty=False,   # no colored / interactive output
@@ -6109,8 +6957,10 @@ def _run_repair_on_script(
                     io=io,
                     fnames=[script_path, _BUILD123D_REF],
                     auto_commits=False,
+                    add_gitignore_files=True,
                 )
                 coder.run(repair_prompt)
+                _join_aider_summarizer(coder)
 
                 # Verify the file still has valid content
                 try:
@@ -6256,7 +7106,7 @@ def _run_direct_repair_fallback(
                     {"role": "user", "content": user_prompt},
                 ],
                 max_tokens=_REPAIR_MAX_TOKENS,
-                timeout=_CFG_LLM_API_TIMEOUT,  # configurable via config.py
+                timeout=_CFG_LLM_CODEGEN_API_TIMEOUT,  # configurable via config.py
                 **_REPAIR_KWARGS,
             )
             raw_response = response.choices[0].message.content or ""
@@ -6889,7 +7739,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
     # ------------------------------------------------------------------
     _skip_initial_qa = False
     if not step_path_str or not stl_path_str:
-        if workflow_id == "aider":
+        if workflow_id in ("aider", "resume"):
             # Aider-First workflow: initial generation failed, skip QA and go straight to repair
             _skip_initial_qa = True
             print("[AUTONOMOUS LOOP] Aider-First: No initial STEP/STL, skipping QA, entering repair loop")
@@ -6907,7 +7757,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
     # Use explicit path from state if provided, otherwise infer from workflow_id
     if script_path_str:
         script_path = Path(script_path_str)
-    elif workflow_id == "aider":
+    elif workflow_id in ("aider", "resume"):
         script_path = cwd / f"temp_design_aider_{iteration}.py"
     else:
         script_path = cwd / f"temp_design_{iteration}.py"
@@ -6946,10 +7796,19 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
     # Autonomous retry loop
     # ==================================================================
     _skip_qa = False  # True when previous execution failed — model unchanged
+    # F13: initialize judge_decision — included in ALL return paths so audit
+    # trail is complete (can distinguish "Judge didn't run" (None) from "Judge
+    # ran and chose REPAIR" (JudgeDecision with action=REPAIR)).
+    judge_decision: JudgeDecision | None = None
     # Snapshot the original user_request so per-iteration interventions
     # (choice 2) only affect the current round. Next iteration starts
     # fresh from the original, even if the user picked 2 last round.
     original_user_request = user_request
+    # The geometry currently held in ``current_step`` was measured when its
+    # script last executed.  Repairing at retry N writes measurements_N, but
+    # the next outer loop is N+1; using retry_iter there can silently load an
+    # unrelated file left by an older run. Track the artifact, not the loop.
+    current_measurement_iteration = iteration
     for retry in range(MAX_RETRIES):
         retry_iter = iteration + retry
         # Reset to original at the start of each iteration so interventions
@@ -6958,6 +7817,19 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
         print(f"\n{'='*60}")
         print(f"  AUTONOMOUS LOOP — Retry {retry + 1}/{MAX_RETRIES}")
         print(f"{'='*60}")
+
+        # Per-iteration token snapshot (for benchmark analysis)
+        try:
+            from multi_agent_cad.token_tracker import tracker as _iter_tracker
+            _iter_snap = _iter_tracker.summary()
+            print(f"[TOKEN SNAPSHOT] retry={retry} start "
+                  f"total_tokens={_iter_snap['total_tokens']} "
+                  f"api_calls={_iter_snap['n_calls']} "
+                  f"input={_iter_snap['total_input']} "
+                  f"output={_iter_snap['total_output']} "
+                  f"cache_read={_iter_snap['total_cache_read']}", flush=True)
+        except Exception:
+            pass
 
         # --------------------------------------------------------------
         # Phase 1: Dual-Engine QA
@@ -7006,7 +7878,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                 step_path=str(current_step),
                 cad_brief=cad_brief,
                 engine_b_mesh_resolution={},
-                iteration=retry_iter,
+                iteration=current_measurement_iteration,
                 selector_map=selector_map,
             )
 
@@ -7014,7 +7886,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
             engine_b = _run_engine_b_check_mesh(
                 stl_path=str(current_stl),
                 cad_brief=cad_brief,
-                iteration=retry_iter,
+                iteration=current_measurement_iteration,
             )
 
             # Merge reports
@@ -7033,7 +7905,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
         # coder that generates proper geometry from ArchitectPlan.
         # Skipped when QA was skipped (model unchanged) or when no initial
         # STEP/STL exists (Aider-First first iteration).
-        if not _skip_qa and not (_skip_initial_qa and retry == 0) and workflow_id == "aider":
+        if not _skip_qa and not (_skip_initial_qa and retry == 0) and workflow_id in ("aider", "resume"):
             geometry_errors = _validate_geometry_against_request(
                 step_path=str(current_step),
                 user_request=user_request,
@@ -7058,10 +7930,8 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
         # Without this check, a silently-failed chamfer/fillet would be missed
         # and the loop would report SUCCESS prematurely.
         if not _skip_qa or retry > 0:
-            missed_path = cwd / f"temp_missed_{retry_iter}.json"
-            if not missed_path.is_file():
-                missed_path = cwd / "temp_missed_0.json"
-            if missed_path.is_file():
+            missed_path = _runtime_diagnostics_path(cwd, current_measurement_iteration)
+            if missed_path is not None:
                 try:
                     missed = json.loads(missed_path.read_text(encoding="utf-8"))
                     if missed:
@@ -7112,6 +7982,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
             return {
                 "qa_report": last_qa_report,
                 "error_type": ErrorType.NONE,
+                "judge_decision": judge_decision,  # F13: might be None if Judge hasn't run
                 "current_step_path": str(current_step.resolve()),
                 "current_stl_path": str(rotated_stl.resolve()),
                 "current_python_code": python_code,
@@ -7155,9 +8026,71 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
         # skip PASS return: the baseline QA passing only means the existing
         # model is geometrically valid, NOT that the user's modification
         # requirements have been applied. Let Aider run first.
-        if (retry > 0 or workflow_id != "aider") and last_qa_report.all_passed and last_qa_report.error_type == ErrorType.NONE:
+        clean_geometric_pass = (
+            (retry > 0 or workflow_id != "aider")
+            and last_qa_report.all_passed
+            and last_qa_report.error_type == ErrorType.NONE
+        )
+        if clean_geometric_pass:
+            # Deterministic QA cannot establish visible semantic agreement
+            # (orientation, handedness, feature placement). Run one optional
+            # visual Judge pass. Text-only providers/render failures return
+            # None and leave the artifact deliverable as semantic-unverified.
+            semantic_measurements = None
+            semantic_measurements_file = (
+                cwd / f"temp_measurements_{current_measurement_iteration}.json"
+            )
+            if semantic_measurements_file.is_file():
+                try:
+                    with open(semantic_measurements_file, "r", encoding="utf-8") as f:
+                        semantic_measurements = json.load(f)
+                except Exception as exc:  # noqa: BLE001
+                    all_log_lines.append(
+                        f"semantic measurements unavailable: {exc}"
+                    )
+
+            semantic_decision = node_judge_qa(
+                user_request=user_request,
+                qa_report=last_qa_report,
+                special_features=_attr(cad_brief, "special_features", []) or [],
+                feature_measurements=semantic_measurements,
+                retry=retry,
+                workflow_id=workflow_id,
+                current_stl_path=str(current_stl) if current_stl else None,
+                semantic_check=True,
+            )
+            judge_decision = semantic_decision
+            if semantic_decision is not None:
+                last_qa_report.semantic_verification = (
+                    semantic_decision.semantic_verification
+                )
+                if semantic_decision.semantic_verification == "failed":
+                    suggestions = list(
+                        semantic_decision.modification_suggestions
+                    ) or [semantic_decision.reason]
+                    last_qa_report.semantic_issues = [semantic_decision.reason]
+                    last_qa_report.semantic_modification_suggestions = suggestions
+                    last_qa_report.all_passed = False
+                    last_qa_report.error_type = ErrorType.TOPOLOGY
+                    last_qa_report.failed_count = max(
+                        1, last_qa_report.failed_count
+                    )
+                    last_qa_report.error_details = [
+                        "VISUAL_SEMANTIC_MISMATCH: " + semantic_decision.reason,
+                        *(f"SUGGESTED_FIX: {item}" for item in suggestions),
+                    ]
+                    all_log_lines.append(
+                        "semantic Judge found a visible mismatch; continuing "
+                        "to the existing repair loop"
+                    )
+
+        if clean_geometric_pass and last_qa_report.all_passed:
             all_log_lines.append(
                 f"node_autonomous_skill_loop [retry {retry}]: ✅ ALL CHECKS PASSED"
+            )
+            all_log_lines.append(
+                "  Semantic verification: "
+                f"{last_qa_report.semantic_verification}"
             )
             all_log_lines.append(f"  Engine A: {engine_a.summary}")
             all_log_lines.append(f"  Engine B: {engine_b.summary}")
@@ -7175,6 +8108,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
             return {
                 "qa_report": last_qa_report,
                 "error_type": ErrorType.NONE,
+                "judge_decision": judge_decision,  # F13: might be None if Judge hasn't run
                 "current_step_path": str(current_step.resolve()),
                 "current_stl_path": str(rotated_stl.resolve()),
                 "current_python_code": python_code,
@@ -7182,6 +8116,127 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                 "execution_log": all_log_lines,
                 "node_history": list(state.get("node_history", [])) + ["autonomous_skill_loop"],
             }
+
+        # --------------------------------------------------------------
+        # Phase 2.5: QA Judge — model can override QA report
+        # --------------------------------------------------------------
+        # Load feature_measurements ONCE per outer retry and share between
+        # Judge (here) and Aider (Phase 4). Avoids double-reading from disk.
+        feature_measurements = None
+        measurements_file = cwd / f"temp_measurements_{current_measurement_iteration}.json"
+        if measurements_file.is_file():
+            try:
+                with open(measurements_file, 'r', encoding='utf-8') as f:
+                    feature_measurements = json.load(f)
+                print(f"[AUTONOMOUS JUDGE] Loaded {len(feature_measurements)} feature measurements from {measurements_file.name}")
+            except Exception as exc:
+                print(f"[AUTONOMOUS JUDGE] WARNING: Failed to load feature measurements: {exc}")
+
+        if judge_decision is None:
+            judge_decision = node_judge_qa(
+                user_request=user_request,
+                qa_report=last_qa_report,
+                special_features=_attr(cad_brief, "special_features", []) or [],
+                feature_measurements=feature_measurements,
+                retry=retry,
+                workflow_id=workflow_id,
+                current_stl_path=str(current_stl) if current_stl else None,
+            )
+        if judge_decision is not None:
+            all_log_lines.append(
+                f"node_autonomous_skill_loop [retry {retry}]: "
+                f"JUDGE → {judge_decision.action.value} "
+                f"(confidence={judge_decision.confidence}, "
+                f"evidence={len(judge_decision.evidence)} items, "
+                f"reason: {judge_decision.reason[:80]})"
+            )
+
+            # -- ACCEPT: confidence + evidence gate (anti-hallucination) --
+            if judge_decision.action == JudgeAction.ACCEPT:
+                err = last_qa_report.error_type
+                # F7 fix: filter empty/whitespace-only evidence entries — LLM can
+                # output evidence: [""] or ["N/A"] or ["based on general experience"]
+                # to bypass the gate. Only count entries with >3 non-whitespace chars.
+                meaningful_evidence = [
+                    e for e in judge_decision.evidence
+                    if e and e.strip() and len(e.strip()) > 3
+                ]
+                has_evidence = len(meaningful_evidence) > 0
+                is_high_conf = judge_decision.confidence == "high"
+                # Hard gate: FATAL/TOPOLOGY ACCEPT requires high confidence AND evidence
+                # DIMENSION ACCEPT requires evidence (any confidence)
+                if err in (ErrorType.FATAL, ErrorType.TOPOLOGY) and not (is_high_conf and has_evidence):
+                    all_log_lines.append(
+                        f"  Judge ACCEPT on {err.value} requires high confidence AND "
+                        f"non-empty evidence — proceeding to repair"
+                    )
+                elif not has_evidence:
+                    all_log_lines.append(
+                        f"  Judge ACCEPT has no evidence — proceeding to repair (anti-hallucination)"
+                    )
+                else:
+                    last_qa_report.error_details = [
+                        f"JUDGE OVERRIDE (confidence={judge_decision.confidence}): "
+                        f"{judge_decision.reason}",
+                        f"  Evidence cited: {'; '.join(judge_decision.evidence[:3])}",
+                        *(last_qa_report.error_details or []),
+                    ]
+                    rotated_stl, _orientation_info = _optimize_print_orientation(current_stl)
+                    return {
+                        "qa_report": last_qa_report,
+                        "error_type": ErrorType.NONE,
+                        "judge_decision": judge_decision,
+                        "current_step_path": str(current_step.resolve()),
+                        "current_stl_path": str(rotated_stl.resolve()),
+                        "current_python_code": python_code,
+                        "iteration_count": retry_iter + 1,
+                        "execution_log": all_log_lines,
+                        "node_history": list(state.get("node_history", [])) + ["autonomous_skill_loop"],
+                    }
+
+            # -- HALT: requires high confidence AND non-empty evidence --
+            if judge_decision.action == JudgeAction.HALT:
+                is_high_conf = judge_decision.confidence == "high"
+                # F7 fix: same evidence filtering as ACCEPT gate
+                meaningful_evidence = [
+                    e for e in judge_decision.evidence
+                    if e and e.strip() and len(e.strip()) > 3
+                ]
+                has_evidence = len(meaningful_evidence) > 0
+                if not (is_high_conf and has_evidence):
+                    all_log_lines.append(
+                        f"  Judge HALT requires high confidence AND non-empty evidence — "
+                        f"proceeding to repair (anti-hallucination)"
+                    )
+                else:
+                    all_log_lines.append(
+                        f"  Judge HALT — stopping iteration: {judge_decision.reason[:120]}"
+                    )
+                    return {
+                        "qa_report": last_qa_report,
+                        "error_type": ErrorType.FATAL,
+                        "judge_decision": judge_decision,
+                        "current_step_path": str(current_step.resolve()),
+                        "current_stl_path": str(current_stl.resolve()),
+                        "current_python_code": python_code,
+                        "iteration_count": retry_iter + 1,
+                        "execution_log": all_log_lines,
+                        "node_history": list(state.get("node_history", [])) + ["autonomous_skill_loop"],
+                    }
+
+            # -- REPAIR: fall through; inject judge's reason + evidence --
+            if judge_decision.reason:
+                aider_context = (
+                    f"JUDGE context (proceeding to repair): {judge_decision.reason}"
+                )
+                if judge_decision.evidence:
+                    aider_context += (
+                        f" | Evidence: {'; '.join(judge_decision.evidence[:2])}"
+                    )
+                last_qa_report.error_details = [
+                    aider_context,
+                    *(last_qa_report.error_details or []),
+                ]
 
         # --------------------------------------------------------------
         # Phase 3: Build repair prompt & run Aider or fallback repair
@@ -7239,18 +8294,19 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
 
         for exec_attempt in range(MAX_EXEC_RETRIES + 1):
             # -- Phase 4: Aider repair --
-            # Load feature measurements from white-box instrumentation
-            feature_measurements = None
-            measurements_file = cwd / f"temp_measurements_{retry_iter}.json"
-            if not measurements_file.is_file():
-                measurements_file = cwd / "temp_measurements_0.json"
-            if measurements_file.is_file():
-                try:
-                    with open(measurements_file, 'r', encoding='utf-8') as f:
-                        feature_measurements = json.load(f)
-                    print(f"[AUTONOMOUS REPAIR] Loaded {len(feature_measurements)} feature measurements from {measurements_file.name}")
-                except Exception as exc:
-                    print(f"[AUTONOMOUS REPAIR] WARNING: Failed to load feature measurements: {exc}")
+            # feature_measurements was hoisted to Phase 2.5 (loaded once per
+            # outer retry, shared between Judge and Aider). Re-load only on
+            # inner exec-retry > 0 since Aider may have rewritten the script
+            # and produced fresh measurements on a successful exec.
+            if exec_attempt > 0 or feature_measurements is None:
+                measurements_file = cwd / f"temp_measurements_{current_measurement_iteration}.json"
+                if measurements_file.is_file():
+                    try:
+                        with open(measurements_file, 'r', encoding='utf-8') as f:
+                            feature_measurements = json.load(f)
+                        print(f"[AUTONOMOUS REPAIR] Loaded {len(feature_measurements)} feature measurements from {measurements_file.name}")
+                    except Exception as exc:
+                        print(f"[AUTONOMOUS REPAIR] WARNING: Failed to load feature measurements: {exc}")
 
             aider_ok, aider_err = _run_repair_on_script(
                 script_path=str(script_path),
@@ -7274,6 +8330,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                 return {
                     "qa_report": last_qa_report,
                     "error_type": ErrorType.FATAL,
+                    "judge_decision": judge_decision,  # F13: audit trail on Aider-failed path
                     "current_step_path": str(current_step.resolve()),
                     "current_stl_path": str(current_stl.resolve()),
                     "current_python_code": python_code,
@@ -7289,7 +8346,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                 pass
 
             # -- Phase 5: Re-execute the fixed code --
-            if workflow_id == "aider":
+            if workflow_id in ("aider", "resume"):
                 new_step = cwd / f"temp_output_aider_autonomous_{retry_iter}.step"
                 new_stl = cwd / f"temp_output_aider_autonomous_{retry_iter}.stl"
             else:
@@ -7301,6 +8358,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
             if exec_ok:
                 current_step = new_step
                 current_stl = new_stl
+                current_measurement_iteration = retry_iter
                 _skip_qa = False  # Model updated — next round needs fresh QA
                 all_log_lines.append(
                     f"node_autonomous_skill_loop [retry {retry}]: "
@@ -7309,10 +8367,8 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                 )
 
                 # -- Check for missed cuts / fillet failures (runtime diagnostics) --
-                missed_path = cwd / f"temp_missed_{retry_iter}.json"
-                if not missed_path.is_file():
-                    missed_path = cwd / "temp_missed_0.json"  # fallback
-                if missed_path.is_file():
+                missed_path = _runtime_diagnostics_path(cwd, retry_iter)
+                if missed_path is not None:
                     try:
                         missed = json.loads(missed_path.read_text(encoding="utf-8"))
                         if missed:
@@ -7395,6 +8451,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
     return {
         "qa_report": last_qa_report,
         "error_type": ErrorType.FATAL,
+        "judge_decision": judge_decision,  # F13: audit trail on MAX_RETRIES path
         "current_step_path": str(current_step.resolve()),
         "current_stl_path": str(current_stl.resolve()),
         "current_python_code": python_code,
@@ -7439,7 +8496,7 @@ SYSTEM_PROMPT_GEOMETRIC_ARCHITECT = _load_prompt("geometric_architect")
 def node_spec_planner(state: GraphState) -> dict:
     """Parse the user's natural-language CAD request into a formal CADBrief.
 
-    Calls Qwen 3.7-max (DashScope) with a specialised system prompt that instructs it to
+    Calls Qwen 3.8-max (DashScope) with a specialised system prompt that instructs it to
     extract dimensions, infer defaults, standardise units, define an origin,
     and — most importantly — generate concrete VerificationTarget objects
     for the downstream QA engines.
@@ -7529,14 +8586,84 @@ def node_spec_planner(state: GraphState) -> dict:
     # ------------------------------------------------------------------
     # 2. Call Qwen (DashScope) with JSON retry
     # ------------------------------------------------------------------
+    # -- Load user-provided reference images (when multimodal enabled) -----
+    user_images: list[bytes] = []
+    sp_multimodal_mode = _CFG_SP_MULTIMODAL  # "auto" | "always" | "never"
+
+    if sp_multimodal_mode != "never":
+        try:
+            from multi_agent_cad.image_preprocess import (
+                _load_user_images, _encode_jpeg_data_url,
+            )
+            images_dir = Path.cwd() / _CFG_USER_IMAGES_DIR
+            user_images = _load_user_images(
+                images_dir,
+                max_size=_CFG_USER_IMAGE_MAX_SIZE,
+                jpeg_quality=_CFG_USER_IMAGE_JPEG_QUALITY,
+            )
+            if user_images:
+                print(f"[SPEC PLANNER] Loaded {len(user_images)} user images from {images_dir.name}")
+        except Exception as exc:
+            print(f"[SPEC PLANNER] user image load failed: {exc}")
+            if sp_multimodal_mode == "always":
+                return {
+                    "error_type": ErrorType.FATAL,
+                    "cad_brief": None,
+                    "execution_log": [
+                        f"node_spec_planner: FATAL — "
+                        f"SPEC_PLANNER_MULTIMODAL=always but image loading failed: {exc}"
+                    ],
+                    "node_history": list(state.get("node_history", [])) + ["planner"],
+                }
+            # auto mode → continue with text-only
+
+        # F2 fix: "always" mode requires images — _load_user_images returns []
+        # (not exception) on empty dir, so the except block above doesn't catch it.
+        # Explicit check: if always mode and no images loaded, return FATAL.
+        if sp_multimodal_mode == "always" and not user_images:
+            print(f"[SPEC PLANNER] SPEC_PLANNER_MULTIMODAL=always but no images found — returning FATAL")
+            return {
+                "error_type": ErrorType.FATAL,
+                "cad_brief": None,
+                "execution_log": [
+                    f"node_spec_planner: FATAL — "
+                    f"SPEC_PLANNER_MULTIMODAL=always but no user images found in user_input_images/"
+                ],
+                "node_history": list(state.get("node_history", [])) + ["planner"],
+            }
+
+    # -- Build messages (multimodal or text-only) -------------------------
+    if user_images:
+        # OpenAI-compatible multimodal: user content is a list of text + image_url blocks
+        content_list = [{"type": "text", "text": user_prompt}]
+        for img in user_images:
+            data_url = _encode_jpeg_data_url(img)
+            content_list.append({
+                "type": "image_url",
+                "image_url": {"url": data_url},
+            })
+        user_content: list[dict] | str = content_list
+        print(f"[SPEC PLANNER] Sending multimodal: 1 text + {len(user_images)} user images")
+    else:
+        user_content = user_prompt  # text-only path
+
     client = _llm_client()
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT_SPEC_PLANNER},
-        {"role": "user", "content": user_prompt},
+        {"role": "user", "content": user_content},
     ]
 
     json_str = ""
     raw_response = ""
+    # Broad except (not just ValueError/JSONDecodeError/RuntimeError) because
+    # the OpenAI SDK raises openai.BadRequestError for "model doesn't support
+    # image" — a subclass of openai.APIStatusError, NOT ValueError/RuntimeError.
+    # Without this, auto-fallback would never fire on real multimodal-unsupported
+    # errors from the API. The isinstance checks below distinguish:
+    #   - multimodal_unsupported → retry text-only
+    #   - ValueError (empty response) → FATAL
+    #   - JSONDecodeError → DIMENSION (let graph retry)
+    #   - other Exception → FATAL (unexpected)
     try:
         json_str, raw_response = _call_llm_json_with_retry(
             client, messages,
@@ -7546,31 +8673,77 @@ def node_spec_planner(state: GraphState) -> dict:
             extra_kwargs=_SPEC_PLANNER_KWARGS,
             max_retries=3,
         )
-    except ValueError as exc:
-        # Empty response after retries → FATAL
-        return {
-            "error_type": ErrorType.FATAL,
-            "cad_brief": None,  # Explicitly clear stale cad_brief
-            "execution_log": [
-                f"node_spec_planner: FATAL — {exc}"
-            ],
-            "node_history": list(state.get("node_history", [])) + ["planner"],
-        }
-    except json.JSONDecodeError as exc:
-        # JSON still broken after retries → let graph retry
-        print(f"\n[DEBUG PLANNER] JSON decode exhausted: {exc}\n")
-        return {
-            "error_type": ErrorType.DIMENSION,
-            "cad_brief": None,  # Explicitly clear stale cad_brief
-            "execution_log": [f"node_spec_planner: JSON Decode exhausted: {exc}"],
-            "node_history": list(state.get("node_history", [])) + ["planner"],
-        }
     except Exception as exc:
-        return _planner_fatal(
-            iteration=iteration,
-            reason=f"LLM API call failed: {exc}",
-            node="node_spec_planner",
-        )
+        # Auto-fallback on multimodal-unsupported API errors (only when images
+        # were sent and we're in auto mode)
+        err_str = str(exc).lower()
+        # F5 fix: two-part check via _is_multimodal_unsupported_error()
+        multimodal_unsupported = _is_multimodal_unsupported_error(err_str)
+        if user_images and sp_multimodal_mode == "auto" and multimodal_unsupported:
+            print(f"[SPEC PLANNER] multimodal unsupported ({exc}) — retrying text-only")
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT_SPEC_PLANNER},
+                {"role": "user", "content": user_prompt},
+            ]
+            try:
+                client = _llm_client()
+                json_str, raw_response = _call_llm_json_with_retry(
+                    client, messages,
+                    model=_SP_MODEL,
+                    max_tokens=_SP_MAX_TOKENS,
+                    temperature=_SP_TEMP,
+                    extra_kwargs=_SPEC_PLANNER_KWARGS,
+                    max_retries=3,
+                )
+            except Exception as exc2:
+                print(f"[SPEC PLANNER] text-only fallback failed: {exc2}")
+                # F4 fix: JSONDecodeError in text-only fallback should return
+                # DIMENSION (let graph retry planner), not FATAL — same as
+                # direct text-only path would do. Previous code always returned
+                # FATAL, which meant enabling multimodal could upgrade a
+                # recoverable JSON parse error to an unrecoverable pipeline halt.
+                if isinstance(exc2, json.JSONDecodeError):
+                    return {
+                        "error_type": ErrorType.DIMENSION,
+                        "cad_brief": None,
+                        "execution_log": [
+                            f"node_spec_planner: JSON Decode (text-only fallback): {exc2}"
+                        ],
+                        "node_history": list(state.get("node_history", [])) + ["planner"],
+                    }
+                return {
+                    "error_type": ErrorType.FATAL,
+                    "cad_brief": None,
+                    "execution_log": [
+                        f"node_spec_planner: FATAL — text-only fallback failed: {exc2}"
+                    ],
+                    "node_history": list(state.get("node_history", [])) + ["planner"],
+                }
+        elif isinstance(exc, ValueError):
+            # Empty response after retries → FATAL
+            return {
+                "error_type": ErrorType.FATAL,
+                "cad_brief": None,
+                "execution_log": [f"node_spec_planner: FATAL — {exc}"],
+                "node_history": list(state.get("node_history", [])) + ["planner"],
+            }
+        elif isinstance(exc, json.JSONDecodeError):
+            # JSON still broken after retries → let graph retry (DIMENSION)
+            _safe_print(f"\n[DEBUG PLANNER] JSON decode exhausted: {exc}\n")
+            return {
+                "error_type": ErrorType.DIMENSION,
+                "cad_brief": None,
+                "execution_log": [f"node_spec_planner: JSON Decode exhausted: {exc}"],
+                "node_history": list(state.get("node_history", [])) + ["planner"],
+            }
+        else:
+            # RuntimeError or other — unexpected, treat as FATAL
+            return {
+                "error_type": ErrorType.FATAL,
+                "cad_brief": None,
+                "execution_log": [f"node_spec_planner: FATAL — {exc}"],
+                "node_history": list(state.get("node_history", [])) + ["planner"],
+            }
 
     # ------------------------------------------------------------------
     # 3. Validate Pydantic schema
@@ -7579,7 +8752,7 @@ def node_spec_planner(state: GraphState) -> dict:
         parsed_dict = json.loads(json_str)
         cad_brief = CADBrief.model_validate(parsed_dict)
     except json.JSONDecodeError as e:
-        print(f"\n[DEBUG PLANNER] {e}\n")
+        _safe_print(f"\n[DEBUG PLANNER] {e}\n")
         return {
             "error_type": ErrorType.DIMENSION,
             "cad_brief": None,  # Explicitly clear stale cad_brief
@@ -7587,7 +8760,7 @@ def node_spec_planner(state: GraphState) -> dict:
             "node_history": list(state.get("node_history", [])) + ["planner"],
         }
     except ValidationError as e:
-        print(f"\n[DEBUG PLANNER] Schema Error: {e}\n")
+        _safe_print(f"\n[DEBUG PLANNER] Schema Error: {e}\n")
         return {
             "error_type": ErrorType.DIMENSION,
             "cad_brief": None,  # Explicitly clear stale cad_brief
@@ -7865,7 +9038,7 @@ def node_geometric_architect(state: GraphState) -> dict:
             architect_feedback += (
                 "\nCommon mistakes: using wrong ModelingStepType enum values, "
                 "putting arrays in key_dimensions (use separate scalar keys), "
-                "missing required fields (step_id, step_type, depends_on), "
+                "missing required fields (step_id, step_type, label, depends_on), "
                 "or having depends_on reference non-existent step_ids.\n"
             )
             revision_note = f"v{_attr(cad_brief, 'spec_version', 1)} — self-correction retry"
@@ -7911,7 +9084,7 @@ def node_geometric_architect(state: GraphState) -> dict:
         1. Define all 2D sketches first with unique sketch_id values.
         2. Order operations: additive → subtractive → finishing.
         3. Fillets and chamfers MUST be the last steps.
-        4. Every step needs correct depends_on references.
+        4. Every step needs a short label and correct depends_on references.
         5. Collect all numeric dimensions into key_dimensions.
         """)
 

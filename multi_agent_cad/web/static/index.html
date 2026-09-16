@@ -50,9 +50,9 @@
         </select>
       </label>
       <label>Output directory on server (optional)
-        <input type="text" id="dest_path" placeholder="/path/to/save/outputs (empty = keep in temp)" />
+        <input type="text" id="dest_path" placeholder="Optional path (requires MAC_WEB_ALLOW_DEST_PATH=1)" />
       </label>
-      <p class="hint">If set, the runner copies STEP/STL/GLB/.py/QA there after a successful run.</p>
+      <p class="hint">Disabled by default. Trusted local users may opt in with MAC_WEB_ALLOW_DEST_PATH=1.</p>
     </details>
 
     <details>

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "multi-agent-cad"
 version = "1.0.0"
 description = "MAC (multi agent cad): A decoupled multi-agent framework for text-to-CAD generation via constrained test-time compute."
-readme = "README.md"
+readme = "multi_agent_cad/README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "PUMA" }]
@@ -33,8 +33,6 @@ dependencies = [
     "pydantic>=2.5",
     # LLM clients (OpenAI-compatible — DashScope / Qwen / OpenAI / DeepSeek)
     "openai>=1.20.0",
-    # Autonomous code repair engine
-    "aider-chat>=0.50",
     # Optional fallback provider (Claude)
     "anthropic>=0.30",
 ]
@@ -70,12 +68,12 @@ all = [
 [project.scripts]
 # Restore config.py to defaults (the only module with a callable main()).
 # Run the workflows themselves via `python -m multi_agent_cad.graph` /
-# `python -m multi_agent_cad.graph_aider` — see README §6 for details.
+# `python -m multi_agent_cad.graph_aider` — see multi_agent_cad/README.md §6 for details.
 mac-config-reset = "multi_agent_cad._config_defaults:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["multi_agent_cad*"]
+where = [".", "packages/cadpy/src"]
+include = ["multi_agent_cad*", "mac_assembly*", "cadpy*"]
 exclude = ["tmp*", "legacy_refs*", "packages*", "pipeline_cache*", "tests*"]
 
 [tool.setuptools.package-data]
@@ -85,6 +83,12 @@ multi_agent_cad = [
     "WORKFLOW.md",
     "web/static/*",
 ]
+mac_assembly = [
+    "prompts/*.md",
+    "assembly_prompts/*.md",
+    "assembly_prompts/**/*.md",
+]
+cadpy = ["py.typed"]
 
 # ── Ruff config (optional — only used if ruff is installed) ─────────────────
 [tool.ruff]

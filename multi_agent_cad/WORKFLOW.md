@@ -80,13 +80,17 @@ flowchart TD
         P1["Phase 1: 双引擎 QA<br/>Engine A: cadpy STEP<br/>Engine B: check_mesh STL<br/>Union-Find 连通性兜底"]
         P1_9["Phase 1.9: 迭代 checkpoint<br/>10s 超时，默认选 1（自动迭代）"]
         P2{"Phase 2: QA 通过?"}
+        P2_5{"Phase 2.5: QA Judge<br/>(retry≥JUDGE_MIN_RETRY)<br/>accept / repair / halt"}
         P3["Phase 3: 构建修复 prompt<br/>QA 错误 + 白盒测量 + 运行时诊断"]
         P4["Phase 4: Aider 修复"]
         P5["Phase 5: 重新执行<br/>内层 ≤3 次即时重修复"]
 
         P1 --> P1_9 --> P2
         P2 -- yes --> R["优化打印方向 → END"]
-        P2 -- no --> P3 --> P4 --> P5 --> P1
+        P2 -- no --> P2_5
+        P2_5 -- accept (high conf + evidence) --> R
+        P2_5 -- halt (high conf + evidence) --> END_F["END (FATAL)"]
+        P2_5 -- repair / 降级 / 跳过 --> P3 --> P4 --> P5 --> P1
     end
 
     R --> Z["最终 STEP + STL + QA 报告"]
@@ -109,6 +113,7 @@ GraphState = {
 
     # QA 与循环控制
     "qa_report": QAReport,            # QA 报告
+    "judge_decision": JudgeDecision,  # QA Judge 输出 (Phase 2.5)，None 表示未调用或被跳过
     "error_type": ErrorType,          # 错误类型 (NONE/DIMENSION/TOPOLOGY/FATAL)
     "iteration_count": int,           # 当前迭代次数
     "max_iterations": int,            # 最大迭代次数 (通常 5)
@@ -256,6 +261,14 @@ for retry in range(5):
              Aider-First 工作流：retry=0 即使 QA 通过也不返回 ——
                user_request 是"修改需求"，基线几何 QA 通过 ≠ 修改已应用
                必须让 Aider 跑一轮，从 retry>=1 起才认 PASS
+    Phase 2.5: QA Judge —— 模型自决终止迭代（详见 §节点详解 §关键特性）
+             retry < JUDGE_MIN_RETRY (默认 1) → 跳过
+             调用 node_judge_qa 评估 QA 报告：
+               accept (high conf + evidence) → 返回 ErrorType.NONE
+               halt   (high conf + evidence) → 返回 ErrorType.FATAL
+               repair → 注入 context 到 error_details，走 Phase 3
+               accept on FATAL/TOPOLOGY 但 confidence≠high 或 evidence 空 → 降级 repair
+               LLM 调用失败 → None（safe default，走 Phase 3）
     Phase 3: 构建修复提示 (QA 错误 + 运行时诊断 + 特征测量)
              运行时诊断按类型分类: MISSED_CUT / FILLET_FAILED / CHAMFER_FAILED / CUT_ERROR
              如果连通性为 fatal → 抑制所有尺寸错误详情
@@ -326,6 +339,7 @@ for retry in range(5):
 
 **职责**:
 - 双引擎 QA + fallback 连通性检查
+- **Phase 2.5 QA Judge**（详见 §5）—— 模型自决终止迭代
 - Aider 修复（自动读取 `build123d_reference.md`）+ 重新执行
 - 内层执行重试（3 次即时重修复）
 
@@ -334,6 +348,228 @@ for retry in range(5):
 - Check 2: 面数合理性（face_count 为 None 时跳过，不再误报）
 - Check 3: 退化几何检测
 - Check 4: fillet 体积异常检测—— 如果 user_request 提到 fillet/chamfer 但体积减少 < 0.5%，报 "Fillet volume anomaly"
+
+### 5. QA Judge (`node_judge_qa`) — Phase 2.5
+
+**职责**: 收到 QA 报告之后，模型自己评估报告是否合理，如不合理或不需要修改可选择自行结束迭代，避免被强制跑满 5 轮重试。
+
+**何时介入**: `JUDGE_ENABLED=True` 且 `retry >= JUDGE_MIN_RETRY`（默认 1，可配置）。第一轮让 Aider 真正尝试一次，从第二轮起 Judge 才介入，避免无谓判断成本。
+
+**三种决策**:
+
+| 决策 | 含义 | 后果 |
+|---|---|---|
+| `accept` | QA 报告有误 / 设计意图已实质满足 / 持久内核限制 | 覆盖 QA 失败，返回 `ErrorType.NONE`，结束迭代 |
+| `repair` | 真有问题，Aider 有合理机会修复 | 继续走 Aider 修复流程（safe default）|
+| `halt` | 需求本身不可实现（自相矛盾 / 缺关键信息） | 停止迭代，返回 `ErrorType.FATAL` |
+
+**Judge 看到的输入**（注意：**看不到 3D 网格、STEP 拓扑或可视化**）:
+- `user_request` —— 原始自然语言设计意图（ground truth）
+- `special_features` —— Spec Planner 提取的非平凡几何约束（对称性、多体意图、特征方位等）
+- `feature_measurements` —— 白盒插桩数据（每个特征在 boolean 合并前的精确包围盒）
+- `error_details` —— 双引擎 QA 的失败列表
+- `retry_count` + `workflow_id`
+
+**反幻觉 5 层防御**（Judge 只看结构化文本，在复杂拓扑冲突上容易"空间想象力幻觉"——生成听起来合理但物理错误的 ACCEPT 理由）:
+
+1. **Prompt 层（主力）**: [prompts/qa_judge.md](prompts/qa_judge.md) 含 9 个 Few-Shot Examples（3 ACCEPT + 3 REPAIR + 1 HALT + 2 负例）+ Anti-Hallucination Iron Rule："如果你在测量数据中找不到支撑该拓扑冲突为合理设计的硬数据，请直接判定为 REPAIR，不要主观臆断"
+2. **Schema 层**: `JudgeDecision.evidence: list[str]` 字段，ACCEPT/HALT 必须非空；`confidence: Literal["high", "medium"]` 直接拒绝 `"low"`
+3. **Code 层**: Phase 2.5 evidence gate —— 空 evidence 在 ACCEPT/HALT 上自动降级为 REPAIR；FATAL/TOPOLOGY 上的 ACCEPT 还要求 `confidence="high"`
+4. **Audit 层**: 每个 `JUDGE →` 决策（含 confidence、evidence 条数、reason 截断）写入 `execution_log`，落盘可审计
+5. **Disable 层**: `JUDGE_ENABLED=False` 一键回退到改动前行为
+
+> 没有任何单一层是可靠的——Prompt 做主力、Schema/Code 兜底、Audit 抓漏网、Disable 是应急按钮。
+
+**Code-enforced gate（机械可验证）**:
+
+| 决策 | 错误类型 | 要求 |
+|---|---|---|
+| ACCEPT | DIMENSION | 非空 `evidence`（任意 confidence）|
+| ACCEPT | TOPOLOGY / FATAL | `confidence="high"` AND 非空 `evidence` |
+| HALT | 任意 | `confidence="high"` AND 非空 `evidence` |
+| REPAIR | 任意 | 无要求（安全默认）|
+
+**Prompt-enforced constraint（依赖 LLM 合规，无法机械验证）**:
+- DIMENSION ACCEPT 的 evidence 应引用 `is_mesh_noise=True` 或"偏差 < tolerance"的测量值
+- TOPOLOGY/FATAL ACCEPT 的 evidence 应引用 `special_features` 中明确记录设计意图的条目
+- HALT 的 evidence 应引用自相矛盾的 `key_parameters` 或缺失的关键信息
+
+**配置**（[config.py](config.py) 新增 Stage 5 块）:
+
+```python
+JUDGE_ENABLED = True                # toggle the Judge agent on/off
+JUDGE_MIN_RETRY = 1                # only invoke Judge after this many outer retries
+JUDGE_MODEL = "qwen3.8-max"
+JUDGE_TEMPERATURE = 0.0            # deterministic — judgment should be reproducible
+JUDGE_MAX_TOKENS = 4096
+JUDGE_KWARGS = {"extra_body": {"enable_thinking": True}}
+```
+
+改坏了用 `python -m multi_agent_cad._config_defaults --reset` 恢复默认。
+
+### 5.1 视觉渲染（多模态输入）
+
+**动机**: Judge 只看结构化文本时，在复杂拓扑冲突上容易"空间想象力幻觉"——生成听起来合理但物理错误的 ACCEPT 理由。给 Judge 喂实际渲染的模型多角度视图，让它用视觉 evidence 校准判断（例如 "view[1] 显示两个分离的齿轮，确认是设计意图的多体装配，QA 报告的 FATAL 连通性是误报"）。默认 `qwen3.8-max` 是多模态模型，直接走视觉路径；如果切到纯文本模型（如 `deepseek-chat`、`qwen3-coder` 等），auto 模式会自动检测 API 报错并跳过渲染步骤、回退到纯文本。
+
+**配置**（[config.py](config.py) Stage 5b 块）：
+
+```python
+JUDGE_MULTIMODAL = "auto"           # "auto" | "always" | "never"
+JUDGE_VIEWS_COUNT = 4               # 等轴测视图数（4 = 覆盖所有 8 卦限）
+JUDGE_VIEW_SIZE = 512               # PNG 分辨率（方形）
+JUDGE_SAVE_VIEWS = True             # 保存 PNG 到 temp_judge_views_{iter}/ 供审计
+```
+
+**三种模式行为**：
+
+| 模式 | 渲染 | 消息格式 | API 失败处理 |
+|---|---|---|---|
+| `"never"` | 跳过 | 纯文本（`content: str`） | 直接 None → REPAIR |
+| `"auto"`（默认） | 渲染 4 张 PNG | 多模态（`content: list[dict]`，1 text + 4 image_url） | 检测到 image/vision/multimodal/unsupported 错误 → 重试纯文本 |
+| `"always"` | 渲染 4 张 PNG | 多模态 | 渲染失败/无 STL → None → REPAIR；API 失败不重试 → None → REPAIR |
+
+**渲染流水线**（[render_views.py](render_views.py)）:
+
+1. `trimesh.load(stl_path, force='mesh')` 加载 STL（复用 [_optimize_print_orientation:6828](nodes.py#L6828) 的模式）
+2. 归一化：平移到 bbox 中心居中、缩放使 max-extent = 1，保证不同尺寸零件在视图中占满画面
+3. matplotlib `Poly3DCollection` 渲染，**特征边过滤策略**：
+   ```python
+   # 1. 面：不画三角形剖分边（edgecolors='none'）——光滑平面不显示 STL 三角剖分线
+   collection = Poly3DCollection(
+       polygons,                       # verts[faces] → (F, 3, 3) 顶点坐标数组
+       edgecolors='none',              # 跳过三角形剖分边，光滑表面保持光滑
+       alpha=0.9,
+       facecolors='#A0A0A0',           # 中性灰
+   )
+   ax.add_collection3d(collection)
+
+   # 2. 特征边：相邻面夹角 > 10° 的真正棱线（孔缘、面交线、倒角过渡）
+   angles = mesh.face_adjacency_angles              # (E,) 弧度
+   edge_pair_indices = mesh.face_adjacency_edges    # (E, 2) 顶点索引
+   feature_mask = angles > math.radians(10)
+   feature_edges = mesh.vertices[edge_pair_indices[feature_mask]]  # (E', 2, 3)
+
+   line_collection = Line3DCollection(
+       feature_edges,
+       colors='black',
+       linewidths=0.8,                # 比之前 0.2px 更粗，因为现在数量少
+   )
+   ax.add_collection3d(line_collection)
+   ```
+   **特征边过滤是关键**——STL 的三角剖分会在光滑平面上产生几十~几百条"假边"，让多模态模型误判为表面纹理，并淹没真正的几何特征（孔缘、棱线、倒角过渡）。用相邻面夹角 > 10° 过滤后，只保留真正的几何特征边（典型零件约 33% 的邻接边是特征边），光滑平面保持光滑，特征轮廓突出可识别
+4. 4 个等轴测视图角度（覆盖所有 8 卦限）：
+   - view[0]: elev=+30, azim=+45（前左上）
+   - view[1]: elev=+30, azim=+135（后右上）
+   - view[2]: elev=-30, azim=+45（前右下）
+   - view[3]: elev=-30, azim=+135（后左下）
+5. base64 编码 + 包成 `data:image/png;base64,...` data URL，按 OpenAI 兼容 `image_url` 格式塞进 messages
+
+**多模态 messages 构建**：
+
+```python
+content_list = [
+    {"type": "text", "text": user_prompt},     # 文本在前，让 LLM 先读上下文
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
+]
+messages = [
+    {"role": "system", "content": SYSTEM_PROMPT_QA_JUDGE},
+    {"role": "user", "content": content_list},  # list 而非 str
+]
+```
+
+OpenAI SDK 的 `chat.completions.create` 既接受 `content: str` 也接受 `content: list[dict]`，所以 `_call_llm_json_with_retry` 签名无需改动。
+
+**Auto-fallback 错误检测**：`except Exception as exc`（catch-all，**不是** `(ValueError, json.JSONDecodeError, RuntimeError)`——后者漏抓 OpenAI SDK 的 `BadRequestError`，导致 auto-fallback 永远不触发）。API 报错字符串小写后包含 `image` / `vision` / `multimodal` / `unsupported` / `invalid content` / `does not support` / `not support` 任一关键词 → 判定为模型不支持 vision → 重试纯文本路径。覆盖 OpenAI / Anthropic / 阿里云 / DeepSeek 各家 provider 的报错措辞。
+
+**Prompt 协同**：[prompts/qa_judge.md](prompts/qa_judge.md) §4 Visual Input section 告诉模型：
+- 收到 image content blocks 时如何引用 `view[N]: <观察>` 作为 evidence
+- 图像可能与 measurements 冲突时 trust measurements（matplotlib z-buffer 不完美）
+- 没图像时按现有 Anti-Hallucination Iron Rule 走 REPAIR
+
+**Token 成本**：每张 512×512 PNG ≈ 30-50KB base64；provider 通常按 1-2k token/张折算图像 token；4 张 ≈ 4-8k 额外输入 token/call。`JUDGE_MIN_RETRY=1` + `MAX_RETRIES=5` 下最坏 4 次多模态调用 = 16-32k 额外 token，仍 < MAC 总 896k 预算的 5%。
+
+**Web UI 兼容性**: Judge 的 print（`[JUDGE] Rendered 4 views to temp_judge_views_1/`、`[JUDGE] Sending multimodal message: 1 text block + 4 image blocks`）通过 [web/server.py:304](web/server.py#L304) 的非 JSON stdout fallback 路径，作为 `{"log": line}` SSE 事件实时推送到浏览器日志区；保存的 PNG 在 `temp_judge_views_{iter}/view_{i}.png` 可通过现有 `/api/jobs/{id}/files/` 下载。但 `_config_schema()` 不暴露 `JUDGE_MULTIMODAL` 等字段——使用默认值，要调整必须改 [config.py](config.py)。
+
+**LLM 调用失败**: safe default = REPAIR（fall through to Aider）。`_call_llm_json_with_retry` 已自带 3 次自纠错重试；最终失败 → `node_judge_qa` 返回 None → Phase 2.5 no-op → 走正常 Phase 3+ 流程。
+
+**5 层反幻觉防御不变**：视觉 evidence 只是 `JudgeDecision.evidence: list[str]` 的另一种合法字符串格式（`view[N]: ...`），仍然走 Phase 2.5 的空 evidence → REPAIR 降级 gate。FATAL/TOPOLOGY 上的 ACCEPT 仍要求 `confidence="high"` + 非空 evidence。
+
+### 5.2 用户参考图片（user_input_images/）
+
+**动机**: 用户除了文字 prompt 之外，经常想直接给一张草图、参考零件的照片、或参考几何截图，让 pipeline "照着做"。Spec Planner 看图提取几何信息（形状、对称性、孔位等），Judge 看图与渲染图对比（"用户期望的 vs 当前生成的"）。
+
+**用户输入**: 把图片放到 cwd 下 `user_input_images/` 文件夹（PNG/JPG/JPEG/WebP）。空文件夹 = 无图，pipeline 走纯文本路径。
+
+**配置**（[config.py](config.py) Stage 0 块）:
+
+```python
+USER_IMAGES_DIR = "user_input_images"           # cwd 下文件夹名
+USER_IMAGE_MAX_SIZE = 1024                       # 最大边长（保持纵横比，小图不放大）
+USER_IMAGE_JPEG_QUALITY = 85                    # JPEG 重编码质量
+SPEC_PLANNER_MULTIMODAL = "auto"                 # Spec Planner 多模态开关
+```
+
+`JUDGE_MULTIMODAL` 已在 §5.1 控制 Judge 端是否看用户图片。
+
+**字母序确定性排序**：图片按文件名字母序（不区分大小写）加载，**不用 mtime**。原因：mtime 在跨平台 / Git 同步 / 网盘同步下不稳定——批量复制时 stamp 几乎相同的 mtime，读取顺序在每次运行间不可预测地"跳动"（Flapping）。Spec Planner 第一次把正视图认作 `user_image[0]`，第二次重跑却把侧视图认作 `user_image[0]`，会让 CADBrief 确定性漂移、引发幻觉。字母序锁定每个文件集的读取顺序——用户命名 `1.jpg`、`2.jpg` 即可控制顺序，每次运行绝对一致。
+
+**图片预处理**（[image_preprocess.py](image_preprocess.py)）:
+
+1. **双路径扫描**：先扫 cwd 下 `user_input_images/`（CLI 模式直接命中），如果空则 fallback 扫 `<repo_root>/user_input_images/`（Web UI 模式下 web_runner chdir 到 per-job tempdir 后仍能找到用户的图）。**CLI 和 Web UI 用户都用同一份图片文件夹**——无需额外配置
+2. 扫描 `*.png/jpg/jpeg/webp`，按文件名字母序排序
+3. PIL 加载，转 RGB（去 alpha / palette）
+4. `max(width, height) > USER_IMAGE_MAX_SIZE` 时按比例缩放（小图不放大，避免浪费 token）
+5. 重编码 JPEG quality=USER_IMAGE_JPEG_QUALITY（即使原是 PNG 也转 JPEG，统一压缩比避免大 PNG 涨 token）
+5. base64 + `data:image/jpeg;base64,...` data URL
+
+**职责分工**（关键架构决策）:
+
+- **Spec Planner** 读用户图片 + 文字 prompt，把图片中的几何信息（形状、对称性、孔位）提取到 `key_parameters.user_image[N]: <描述>` —— 下游 Architect / Aider 通过 key_parameters 间接获取视觉意图，**不需要看图**
+- **Judge** 同时读用户图片 + 自己渲染的 4 张等轴测视图，对比 `user_image[N]`（用户期望）vs `view[N]`（当前生成）。Judge 的 `reason` 字段把视觉对比结论传给 Aider（如 `"view[1] vs user_image[0]: lug 轮廓是三角形而非用户要求的半圆"`），Aider 据此修代码——**Aider 不直接看图**
+- **Aider** 保持纯文本上下文，避免重构 `coder.run(prompt)` 接口 + 每轮重发图的高 token 成本
+
+**消息构建**:
+
+```python
+# Spec Planner messages（多模态时）
+content = [
+    {"type": "text", "text": user_prompt},
+    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}},  # user_image[0]
+    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}},  # user_image[1]
+    ...
+]
+
+# Judge messages（多模态时）
+content = [
+    {"type": "text", "text": user_prompt},
+    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}},  # user_image[0]
+    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}},  # user_image[1]
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},   # view[0] rendered
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},   # view[1] rendered
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},   # view[2] rendered
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},   # view[3] rendered
+]
+```
+
+**多模态检测 + auto-fallback**: 与 §5.1 的 Judge 模式对称。`SPEC_PLANNER_MULTIMODAL` 取值：
+- `"auto"`（默认）：尝试发图；API 报错含 `image`/`vision`/`multimodal`/`unsupported`/`invalid content`/`does not support` → 重试纯文本
+- `"always"`：必须有图；加载失败 → Spec Planner 返回 FATAL
+- `"never"`：跳过扫描，强制纯文本
+
+**默认 `qwen3.8-max` 支持多模态**（vision + text）——auto 模式下直接走多模态路径，Spec Planner 读 `user_input_images/` 提取几何信息，Judge 同时对比用户原图和渲染视图。如果切到纯文本模型（如 `deepseek-chat`、`qwen3-coder` 等），auto 模式会检测到 API 报错含 `image`/`vision`/`multimodal`/`unsupported`/`does not support`/`not support`/`invalid content` 关键词 → 自动重试纯文本路径，图片被丢弃但 pipeline 仍能完成。
+
+**背景杂物处理**: 用户照片可能含桌面、手、其他物体。**不做背景去除**（flood-fill / 分割算法风险高，易损物体边缘）。靠 prompt 提示——[spec_planner.md §6](prompts/spec_planner.md) 和 [qa_judge.md §4.1](prompts/qa_judge.md) 都明确告诉模型 "用户图片可能含背景杂物，关注主要物体几何形状，忽略背景"。用户要干净图片自己裁好再放文件夹。
+
+**Spec Planner 缓存交互**：现有 `pipeline_cache/cad_brief.json` 缓存机制（[nodes.py:7426](nodes.py#L7426)）跳过 Spec Planner 如果命中缓存。用户改图但保留文本 prompt 时，缓存命中导致图片不重读。要换图重跑必须清缓存：`rm pipeline_cache/cad_brief.json`，或设 `force_refresh=True`。
+
+**Web UI 兼容性**: v1 不暴露 `user_input_images/` 上传字段。用户手动把图放到服务端文件夹；Judge / Spec Planner 的 print（`[SPEC PLANNER] Loaded 2 user images`、`[JUDGE] Loaded 2 user reference images`）通过现有 SSE 路径实时流到浏览器日志区。Web UI 上传字段 + per-job tempdir 持图待 v2。
+
+**Token 成本**: 每张 JPEG ~50-150KB（1024×1024 max + q=85），provider 通常按 1-2k token/张折算。Judge 2-3 张用户图 + 4 张渲染视图 ≈ 6-14k 额外输入 token/call；Spec Planner 2-3 张用户图 ≈ 2-6k 额外输入 token/call。最坏 4 次 Judge 调用 + 1 次 Spec Planner = ~30-60k 额外 token，仍 < MAC 总 896k 预算的 7%。
+
+**HEIC 不支持**: stock PIL 不支持 iPhone HEIC 格式，需要 `pillow-heif` 插件。用户要 HEIC 自己转 JPG。
 
 ---
 
@@ -448,7 +684,7 @@ Aider 自动读取 `build123d_reference.md`（通过 `fnames` 参数注入），
 ### Aider 修复流程
 
 **双路径设计**:
-- **主路径 (Aider)**: 使用 `aider.coders.Coder` + `qwen3.7-max`，`fnames` 包含脚本路径 + `build123d_reference.md`
+- **主路径 (Aider)**: 使用 `aider.coders.Coder` + `qwen3.8-max`，`fnames` 包含脚本路径 + `build123d_reference.md`
 - **回退路径 (Direct API)**: 当 Aider 不可用时，直接调用 DashScope API。系统 prompt (`_SYSTEM_PROMPT_REPAIR`) 包含与 `build123d_reference.md` 等价的内容。
 
 **build123d API 参考文件**:
@@ -466,9 +702,23 @@ Aider 自动读取 `build123d_reference.md`（通过 `fnames` 参数注入），
 
 1. 用户原始需求（ground truth）
 2. 白盒特征测量数据
-3. 信息优先级：用户定性需求 > QA 报告 > 白盒数据 > 用户定量数据
-4. QA 错误报告
-5. 九条铁律
+3. **Judge 已决策 REPAIR — 执行而非重新判断**（Judge 接管"用户意图 vs QA 冲突"判断后，Aider 不再重复）
+4. **信息优先级**（5 级，Judge 接管后新增第 1 级）：
+   - Judge 的 reason + evidence（前置在 error_details 里，前缀 `JUDGE context (proceeding to repair): ...`）
+   - QA 报告（overall bounding box, connectivity, watertightness）
+   - 白盒数据（特征级尺寸）
+   - 用户定量数据
+5. QA 错误报告（含 Judge 的 reason + evidence 前置）
+6. 九条铁律
+
+**Judge 决策注入 Aider 的机制**：
+- Judge 选 REPAIR 时，其 `reason` + `evidence` 通过 [nodes.py Phase 2.5](nodes.py) 注入 `last_qa_report.error_details` 的最前面，格式为 `JUDGE context (proceeding to repair): <reason> | Evidence: <evidence...>`
+- Aider 在修复 prompt 里看到这段，知道 Judge 已判断 + 优先级 + 修复方向
+- **防御性修正前缀**：如果 Judge 的 reason 以 `DEFENSIVE CORRECTION:` 开头，表示这是物理合理性修正（如加 overlap、加圆角、增加壁厚），保留用户意图但确保物理可行——Aider 应当作"防御性覆盖"执行。这是之前单 agent 隐式防御性修正的显式化、可审计化版本
+- **三种决策对应三种 Aider 行为**：
+  - ACCEPT → Aider 不被调用（Judge 已确认当前模型可用）
+  - REPAIR → Aider 按 Judge 的 reason + error_type 修代码
+  - HALT → Aider 不被调用（Judge 已确认需求不可实现）
 
 **铁律**:
 1. **特征保护**: 禁止删除特征来逃避检查
@@ -517,6 +767,30 @@ polygon 实体仅 `control_points` 存在（且 notes 无 arc/custom 关键词�
 ### 7. Architect Offset 的无损传递 (`_place_sketch`)
 
 直接用 architect 的 `workplane_offset_mm`（sign-inverted），不用 derived 的 `offset_from_center`。0.0 是有效值（特征在中心），不触发 fallback。
+
+### 8. QA Judge —— 模型自决终止迭代 (`node_judge_qa`)
+
+**动机**: 没有 Judge 之前，`node_autonomous_skill_loop` 的 PASS 判定完全由 QA 的 `all_passed` 决定，QA 报告失败就强制跑满 5 轮 Aider 修复——把重试预算浪费在 QA 误报、设计意图已满足但差一丝精度、物理不可实现（如 P8 叶轮圆角冲突）或多体装配被误判 FATAL 上。
+
+**设计**: 在 Phase 2（PASS 判定）和 Phase 3（构建修复 prompt）之间插入 Phase 2.5，调用独立的 Judge LLM 评估报告合理性，可输出 `accept` / `repair` / `halt`。详见 §节点详解 §5。
+
+**反幻觉核心**: Judge 看不到 3D 网格，只能从 `feature_measurements` + `error_details` + `special_features` + `user_request` 推断。在复杂拓扑冲突上容易"空间想象力幻觉"——5 层防御（prompt 9 个 Few-Shot Examples + schema evidence 字段 + code evidence gate + audit log + disable 开关）缺一不可。
+
+**关键收益**:
+- P8 叶轮圆角冲突这类持久内核限制 → Judge 在 4 次失败后 ACCEPT，把唯一 benchmark 失败转成有理有据的 ACCEPT
+- P9 螺旋楼梯防御性修正 → Judge 选 **REPAIR + `DEFENSIVE CORRECTION:` 前缀**，把"加 overlap 避免断裂"的物理合理性修正指令传给 Aider（之前单 agent 隐式做的，现在显式可审计）
+- 多体装配被误判 FATAL → `special_features` 已记录意图，Judge 直接 ACCEPT，省下 5 轮徒劳修复
+- 需求自相矛盾（如 Ø80mm bore in 60mm-wide block）→ Judge 直接 HALT，不浪费 Aider 5 轮修复预算
+
+**三种决策 + 防御性修正机制**（Judge 三决策对应三种场景）：
+
+| 场景 | 决策 | 例 |
+|---|---|---|
+| 需求自相矛盾（数学不可实现）| HALT | Ø80mm bore in 60mm block（数学上切断块体）|
+| 物理常识不足（数学可修）| REPAIR + `DEFENSIVE CORRECTION:` 前缀 | P9 踏步加 overlap、薄壁加圆角 |
+| QA 误报（设计意图已实质满足）| ACCEPT | 多体装配被误判 FATAL（带 special_features 证据）|
+
+**默认配置**: `JUDGE_ENABLED=True`、`JUDGE_MIN_RETRY=1`、`JUDGE_MODEL=qwen3.8-max`（thinking 启用，多模态：支持文本 + 图像输入）。要关掉设 `JUDGE_ENABLED=False`。
 
 ---
 

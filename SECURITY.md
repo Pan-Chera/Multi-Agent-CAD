@@ -26,4 +26,13 @@ Security concerns relevant to this project include:
 - Exposure of API keys or credentials in generated output or logs
 - Supply chain risks in the dependency chain (build123d, aider-chat, langgraph, etc.)
 
-This project is a research-oriented CAD code-generation system. It executes model-generated Python code in a subprocess — that is by design and is not itself a vulnerability. However, if you find a way that a crafted input could escape the subprocess sandbox or access resources beyond the intended scope, that qualifies as a reportable issue.
+This project executes model-generated Python code in a child process. A child
+process provides lifecycle isolation, **not a security sandbox**: generated code
+runs with the same operating-system permissions as the user who started MAC.
+Run the project only with trusted prompts and dependencies, preferably in a
+disposable container or restricted account. The Web UI binds to localhost by
+default and must not be exposed to an untrusted network without an independent
+authentication and sandboxing layer.
+
+Reports of credential exposure, unsafe default network exposure, or unexpected
+access beyond the documented process privileges are in scope.

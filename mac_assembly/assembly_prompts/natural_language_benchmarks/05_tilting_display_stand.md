@@ -1,0 +1,17 @@
+# Adjustable Tilting Display Stand
+
+Create a compact three-part desktop display stand for holding a small inspection target. Use millimetres throughout. The finished assembly must contain exactly three physical parts: a weighted base, an upright support arm, and a tilting display panel. Do not add pins, screws, bearings, motors, decorations, labels, or a displayed workpiece as separate parts.
+
+The weighted base is a low asymmetric wedge rather than a plain rectangular plate. Its footprint is approximately 120 millimetres wide along X and 90 millimetres deep along Y, with a flat bottom at Z zero. The rear half is about 18 millimetres high and the front half slopes down to about 8 millimetres high. Round only the four vertical outside corners with a modest radius. Cut one broad shallow rectangular pocket into the top surface for visual detail, but leave a solid border at least 10 millimetres wide and do not cut through the bottom.
+
+The upright support arm is one connected bent solid with a constant rectangular cross-section approximately 18 millimetres wide and 14 millimetres thick. In side view it rises from the rear-centre region of the base, leans forward, and then bends into a short near-vertical upper section. Its total height above the base is approximately 105 millimetres. The bend must be a broad overlapping connection with no seam, point contact, or disconnected pieces. Add a small triangular reinforcing rib at the lower bend as part of the same solid. The bottom face of the arm is rigidly mounted on the base without penetrating below the base top.
+
+At the upper end of the support arm, form a basic forked hinge as an integral part of the arm. It has two parallel ears separated along X, with coaxial circular bores of radius 4 millimetres. The common hinge axis runs horizontally along X. Both ears must be connected to the arm and must contain enough material around the bores.
+
+The display panel is a single connected six-sided plate with clipped upper corners, not a rectangle and not a regular hexagon. It is approximately 82 millimetres wide, 62 millimetres high, and 8 millimetres thick. Its broad display face is vertical in the delivered neutral pose. Add one shallow circular recess, 32 millimetres in diameter and 2 millimetres deep, centred on the front face; it must remain a recess rather than a through-hole.
+
+Fuse one central hinge tongue to the rear of the panel near its lower edge. The tongue fits between the two support-arm ears with approximately 0.2 millimetres total side clearance. Its radius-4-millimetre through-bore is coaxial with the two arm bores along X. The tongue and panel must form one connected solid, while the tongue and fork ears must not occupy the same material volume.
+
+The base is the root. The support arm is rigidly attached to it. The panel has the assembly's only active degree of freedom: a revolute joint about the horizontal X axis at the upper hinge. Use zero degrees for the upright neutral pose and permit approximately minus 25 to plus 45 degrees of tilt. At zero angle, the panel must be centred on the support, visibly connected through the hinge, clear of the base and arm, and entirely above the base.
+
+Deliver separate-part STEP geometry, an assembled STL and GLB, and a URDF with exactly one active revolute joint. Reject any result with a rectangular panel, a straight unbent support, a floating hinge ear, disconnected arm segments, a blocked hinge bore, a panel embedded in the support, or an extra physical part.

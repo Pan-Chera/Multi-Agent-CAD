@@ -4,10 +4,9 @@ Run with::
 
     python -m multi_agent_cad.web
 
-Listens on ``0.0.0.0:8000`` by default (override with ``MAC_WEB_HOST`` /
-``MAC_WEB_PORT``). Single-user, trusted-network only — the pipeline
-executes generated Python server-side; treat the server as your own dev
-environment.
+Listens on ``127.0.0.1:8000`` by default (override with ``MAC_WEB_HOST`` /
+``MAC_WEB_PORT``). This is a local, single-user tool: generated Python runs
+with the launching user's privileges and is not sandboxed.
 
 Architecture::
 
@@ -119,7 +118,7 @@ async def _cleanup_loop() -> None:
 _PROVIDER_PRESETS: dict[str, dict[str, str]] = {
     "qwen": {
         "ds_base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-        "model_hint": "qwen3.7-max",
+        "model_hint": "qwen3.8-max",
     },
     "openai": {
         "ds_base_url": "https://api.openai.com/v1",
@@ -172,6 +171,9 @@ async def _lifespan(app: FastAPI):
 
 app = FastAPI(title="MAC Web UI", lifespan=_lifespan)
 
+_DEFAULT_HOST = "127.0.0.1"
+_ALLOW_DEST_PATH_ENV = "MAC_WEB_ALLOW_DEST_PATH"
+
 
 @app.get("/api/health")
 async def health() -> dict:
@@ -196,6 +198,12 @@ async def run(req: Request) -> dict:
         raise HTTPException(400, "prompt is required")
     if not api_key:
         raise HTTPException(400, "api_key is required (fill it in the form)")
+    if dest_path and os.environ.get(_ALLOW_DEST_PATH_ENV) != "1":
+        raise HTTPException(
+            403,
+            "dest_path is disabled by default; set MAC_WEB_ALLOW_DEST_PATH=1 "
+            "only for a trusted local deployment",
+        )
 
     job_id = uuid.uuid4().hex[:12]
     tempdir = Path(tempfile.mkdtemp(prefix=f"macjob_{job_id}_"))
@@ -578,14 +586,13 @@ if _STATIC_DIR.is_dir():
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    host = os.environ.get("MAC_WEB_HOST", "0.0.0.0")
+    host = os.environ.get("MAC_WEB_HOST", _DEFAULT_HOST)
     port = int(os.environ.get("MAC_WEB_PORT", "8000"))
-    # 0.0.0.0 listens on all interfaces but is not a valid browser URL on
-    # Windows (ERR_ADDRESS_INVALID). Show 127.0.0.1 as the clickable URL when
-    # host is 0.0.0.0, while still binding to all interfaces for LAN access.
+    # If a user explicitly opts into all-interface binding, show a usable
+    # local browser URL instead of 0.0.0.0 (invalid as a destination on Windows).
     display_host = "127.0.0.1" if host == "0.0.0.0" else host
     print(f"\n  MAC Web UI — http://{display_host}:{port}")
-    print("  Single-user, trusted-network only. Generated .py runs server-side.")
+    print("  Local single-user mode. Generated .py runs with this user's privileges.")
     print(f"  Auto-cleanup: job tempdirs removed {_CLEANUP_AFTER_SECONDS // 3600}h after completion.\n")
     uvicorn.run(app, host=host, port=port, log_level="info")
 

@@ -7,15 +7,42 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
-# Sets the DASHSCOPE_API_KEY secret at runtime. The pipeline calls
-# Qwen3.7-max via DashScope; without a key the smoke test cannot run.
-# Configure this secret in repo Settings → Secrets and variables → Actions.
+# The release-contract job is deterministic and never calls an external model.
+# The optional smoke job uses DASHSCOPE_API_KEY when the repository secret is set.
 
 jobs:
+  release-contract:
+    name: Release contract (no API key)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[mesh,science,dev,web]"
+
+      - name: Run release-contract tests
+        env:
+          DASHSCOPE_API_KEY: ""
+        run: python -m pytest tests/release -q
+
+      - name: Compile public packages
+        run: python -m compileall -q multi_agent_cad mac_assembly packages/cadpy/src/cadpy
+
   smoke-test:
     name: Pipeline smoke test (default prompt)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    needs: release-contract
     env:
       DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
 
@@ -43,11 +70,14 @@ jobs:
           pip install -e .
 
       - name: Install mesh + science extras
-        run: pip install -e ".[mesh,science]"
+        run: |
+          pip install -e ".[mesh,science]"
+          pip install --no-deps "aider-chat==0.82.3"
 
       - name: Verify import
         run: |
           python -c "import multi_agent_cad; print('multi_agent_cad', multi_agent_cad.__version__)"
+          python -c "import mac_assembly, cadpy; print('mac_assembly and cadpy OK')"
           python -c "from multi_agent_cad.graph import build_graph; print('build_graph OK')"
 
       - name: Run pipeline (default prompt)

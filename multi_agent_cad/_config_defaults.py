@@ -41,16 +41,15 @@ time. Changes take effect on the next run.
 # API Key & Provider
 # ============================================================================
 #
-# DashScope (Alibaba Cloud Bailian) API key for accessing qwen3.7-max.
+# DashScope (Alibaba Cloud Bailian) API key for accessing qwen3.8-max.
 #
 # Priority (checked at runtime by ``_llm_client()`` in nodes.py):
 #   1. Environment variable ``DASHSCOPE_API_KEY``  (recommended -- especially
 #      for shared / version-controlled environments).
 #   2. ``DS_API_KEY`` below  (fallback for local development).
 #
-# SECURITY NOTE: This file contains a real API key. Do NOT commit it to
-# version control, share it, or paste it in chat. If leaked, regenerate
-# the key in the Bailian console immediately.
+# Keep this value empty in version control. Prefer DASHSCOPE_API_KEY in the
+# process environment; if a key is ever exposed, rotate it immediately.
 
 DS_API_KEY = ""
 
@@ -82,8 +81,13 @@ MAX_EXEC_RETRIES = 3
 # Timeouts (seconds)
 # ============================================================================
 
-# LLM API call (DashScope qwen3.7-max) for spec_planner / architect / coder.
-LLM_API_TIMEOUT = 120
+# LLM API call for JSON planning stages (Spec Planner / Geometric Architect /
+# assembly Decomposer / Mating Architect / Judges).
+LLM_API_TIMEOUT = 1800
+
+# LLM API call for large code generation / repair paths (Python Coder,
+# Aider-backed generation + repair).
+LLM_CODEGEN_API_TIMEOUT = 1800
 
 # check_mesh.py subprocess timeout (Engine B -- STL mesh analysis).
 CHECK_MESH_TIMEOUT = 180
@@ -124,7 +128,7 @@ INTERVENTION_INPUT_TIMEOUT = 3600
 # DS_BASE_URL is shared across all stages (same endpoint).
 #
 # Model names: every *_MODEL below is just the model ID served on DS_BASE_URL.
-# The default "qwen3.7-max" is the flagship model of Alibaba DashScope. Swap in
+# The default "qwen3.8-max" is the flagship model of Alibaba DashScope. Swap in
 # "gpt-5.6", "deepseek-v4-pro", "gemini-3.6-flash", a local Ollama model, etc.
 # Nothing in the code is Qwen-specific except the `enable_thinking` toggle in
 # *_KWARGS (set *_KWARGS = {} for providers without such a toggle). See the
@@ -133,21 +137,46 @@ INTERVENTION_INPUT_TIMEOUT = 3600
 DS_BASE_URL = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 
 # --- Stage 1: Spec Planner -----------------------------------------------
-SPEC_PLANNER_MODEL = "qwen3.7-max"
+SPEC_PLANNER_MODEL = "qwen3.8-max"
 SPEC_PLANNER_TEMPERATURE = 0.0
 SPEC_PLANNER_MAX_TOKENS = 32768
 SPEC_PLANNER_KWARGS = {"extra_body": {"enable_thinking": True}}
 
+# --- Stage 0: User-provided reference images (shared by Spec Planner + Judge) ---
+# When user drops image files into user_input_images/ (PNG/JPG/JPEG/WebP),
+# the pipeline auto-loads them and feeds to Spec Planner + Judge as
+# image_url content blocks alongside the text prompt. Lets users
+# specify designs visually (sketch, photo of existing part, screenshot).
+# Empty folder = no images, existing text-only path.
+#
+# Files sorted alphabetically (case-insensitive) -- deterministic across
+# platforms / Git sync / cloud sync. mtime-based sort is fragile and would
+# cause CADBrief to drift between runs (hallucination risk).
+#
+# Each image: resized to max edge = USER_IMAGE_MAX_SIZE (keeps aspect ratio,
+# smaller images NOT upscaled), re-encoded as JPEG quality=USER_IMAGE_JPEG_QUALITY.
+USER_IMAGES_DIR = "user_input_images"           # folder name in cwd
+USER_IMAGE_MAX_SIZE = 1024                       # max edge length (pixels)
+USER_IMAGE_JPEG_QUALITY = 85                    # JPEG re-encode quality (1-95)
+
+# --- Stage 1b: Spec Planner multimodal mode ------------------------------
+# Mirrors JUDGE_MULTIMODAL pattern. When user_input_images/ has images:
+#   "auto"   (default) -- try send images; API errors matching image/vision/
+#                          multimodal/unsupported -> retry without images
+#   "always"           -- require images; loading failure -> FATAL
+#   "never"            -- skip scanning user_input_images/ (force text-only)
+SPEC_PLANNER_MULTIMODAL = "auto"   # "auto" | "always" | "never"
+
 # --- Stage 2: Geometric Architect ---------------------------------------
 # Thinking disabled for JSON determinism (saves output tokens).
-ARCHITECT_MODEL = "qwen3.7-max"
+ARCHITECT_MODEL = "qwen3.8-max"
 ARCHITECT_TEMPERATURE = 0.0
 ARCHITECT_MAX_TOKENS = 32768
 ARCHITECT_KWARGS = {"extra_body": {"enable_thinking": False}}
 
 # --- Stage 3: Python Coder ----------------------------------------------
 # Uses LLM only as fallback when the deterministic coder fails.
-CODER_MODEL = "qwen3.7-max"
+CODER_MODEL = "qwen3.8-max"
 CODER_TEMPERATURE = 0.0
 CODER_MAX_TOKENS = 32768
 CODER_KWARGS = {"extra_body": {"enable_thinking": True}}
@@ -155,19 +184,55 @@ CODER_KWARGS = {"extra_body": {"enable_thinking": True}}
 # --- Stage 4: Autonomous Skill Loop ------------------------------------
 # Primary: Aider (uses Aider\'s own Model() class with provider-prefixed name).
 # Switch providers by changing AIDER_MODEL:
-#   Qwen:          "openai/qwen3.7-max"
+#   Qwen:          "openai/qwen3.8-max"
 #   Anthropic:     "anthropic/claude-sonnet-4-6"
 #   DeepSeek:      "deepseek/deepseek-v4-pro"
 #   Gemini:        "gemini/gemini-3.6-flash"
-AIDER_MODEL = "openai/qwen3.7-max"
+AIDER_MODEL = "openai/qwen3.8-max"
 AIDER_MAX_TOKENS = 65536
 
 # Fallback: direct DashScope API (used when Aider is unavailable, or for
 # initial generation in the Aider-First workflow).
-REPAIR_MODEL = "qwen3.7-max"
+REPAIR_MODEL = "qwen3.8-max"
 REPAIR_TEMPERATURE = 0.3   # slightly creative -- multiple valid fix paths
 REPAIR_MAX_TOKENS = 32768
 REPAIR_KWARGS = {"extra_body": {"enable_thinking": True}}
+
+# --- Stage 5: QA Judge (Phase 2.5 in autonomous_skill_loop) ----------------
+# The Judge evaluates whether a QA report's failures warrant code repair, or
+# whether the current model should be accepted as-is (false positive, design
+# intent satisfied, persistent kernel limitation) or the request declared
+# unimplementable (halt). Gives the model agency to terminate iteration
+# early instead of being forced to repair for the full MAX_RETRIES budget.
+#
+# Anti-hallucination: the Judge sees only structured text (no 3D mesh), so
+# accept/halt decisions MUST cite concrete data points in the `evidence`
+# field. Empty evidence -> downgrade to repair (enforced in nodes.py).
+# FATAL/TOPOLOGY accept also requires confidence="high".
+JUDGE_ENABLED = True                # toggle the Judge agent on/off
+JUDGE_MIN_RETRY = 1                 # only invoke Judge after this many outer retries
+JUDGE_MODEL = "qwen3.8-max"
+JUDGE_TEMPERATURE = 0.0             # deterministic -- judgment should be reproducible
+JUDGE_MAX_TOKENS = 4096             # decision is short; ample headroom
+JUDGE_KWARGS = {"extra_body": {"enable_thinking": True}}  # thinking helps judgment
+
+# --- Stage 5b: QA Judge visual rendering (multimodal input) ---------------
+# When multimodal is enabled, Judge renders N isometric PNG views from the
+# current STL and sends them as image_url content blocks alongside the text
+# prompt. Lets the LLM ground its decision in actual visual geometry --
+# mitigating the "spatial imagination hallucination" risk where the LLM,
+# seeing only structured text, generates plausible-sounding but physically-
+# wrong ACCEPT reasons.
+#
+# JUDGE_MULTIMODAL:
+#   "auto"   (default) -- try send images; on API error matching image/vision/
+#                          multimodal/unsupported, retry without images (text-only)
+#   "always"           -- require images in messages; if rendering failed, REPAIR
+#   "never"            -- text-only (skip rendering entirely)
+JUDGE_MULTIMODAL = "auto"           # "auto" | "always" | "never"
+JUDGE_VIEWS_COUNT = 4               # number of isometric views (4 default = all 8 octants)
+JUDGE_VIEW_SIZE = 512               # image resolution (PNG, square)
+JUDGE_SAVE_VIEWS = True             # save rendered PNGs to temp_judge_views_{iter}/ for audit
 
 # ============================================================================
 # User Request (default prompt)

@@ -153,20 +153,20 @@ The Coder will generate: `Pos(0, 0, 34) * Rot(X=90) * Cylinder(r=7, h=100)` (Y: 
      "notes": "Side wall at rear edge, extends Z=0..40 through base for overlap"}
   ],
   "steps": [
-    {"step_id": "step-01-extrude-base", "step_type": "extrude",
+    {"step_id": "step-01-extrude-base", "step_type": "extrude", "label": "Extrude base plate",
      "sketch_id": "base-profile", "distance_mm": 4.0, "direction": "positive",
      "depends_on": [], "notes": "Base plate Z=0..4"},
-    {"step_id": "step-02-extrude-side", "step_type": "extrude",
+    {"step_id": "step-02-extrude-side", "step_type": "extrude", "label": "Extrude side wall",
      "sketch_id": "side-profile", "distance_mm": 4.0, "direction": "positive",
      "depends_on": ["step-01-extrude-base"], "notes": "Side wall from Y=-20"},
-    {"step_id": "step-03-union", "step_type": "boolean_union",
+    {"step_id": "step-03-union", "step_type": "boolean_union", "label": "Fuse base and wall",
      "target_step_id": "step-01-extrude-base", "tool_step_id": "step-02-extrude-side",
      "depends_on": ["step-01-extrude-base", "step-02-extrude-side"]},
-    {"step_id": "step-04-hole-1", "step_type": "hole",
+    {"step_id": "step-04-hole-1", "step_type": "hole", "label": "Drill mounting hole",
      "hole_diameter_mm": 4.2, "hole_position": {"x": 12.5, "y": 10.0, "z": 0.0},
      "depends_on": ["step-03-union"],
      "notes": "Through-hole along Z, base Z=0..4"},
-    {"step_id": "step-05-fillet", "step_type": "fillet",
+    {"step_id": "step-05-fillet", "step_type": "fillet", "label": "Fillet vertical edges",
      "radius_mm": 2.0, "edge_selector": "vertical",
      "depends_on": ["step-04-hole-1"],
      "notes": "Fillet LAST — after all booleans and holes"}
@@ -295,6 +295,47 @@ with proper build123d API:
 
 ``num_sides`` + ``circumscribed_radius`` is ONLY for true regular polygons
 (hexagon, octagon, etc.) like bolt heads or gear blanks.
+
+### 🔴 Iron Rule 6: No `box` / `cube` / `cylinder` / `sphere` step_type
+
+The ``ModelingStepType`` enum does NOT include primitive-solid step types.
+``Box()``, ``Cylinder()``, ``Sphere()``, ``Cone()`` are **Python Coder**
+build123d primitives, NOT ``ArchitectPlan`` step types.  Emitting
+``"step_type": "box"`` causes schema validation to fail (the enum only
+accepts ``sketch_2d``, ``extrude``, ``revolve``, ``fillet``, ``chamfer``,
+``hole``, ``simple_hole``, ``counterbore_hole``, ``extrude_cut``, ``cut``,
+``boolean_union``, ``boolean_cut``, ``boolean_intersect``, ``pattern_linear``,
+``pattern_circular``, ``mirror``, ``shell``, ``draft``, ``rib``, ``reference``)
+and wastes an autonomous-loop retry.
+
+For a rectangular prism (the most common case where the LLM reaches for
+``Box``), emit a ``rectangle`` sketch on ``XY`` + an ``extrude`` step:
+
+❌ WRONG (``box`` is not a valid step_type — schema rejects, retry wasted):
+
+```json
+{"step_id": "step-01-base", "step_type": "box",
+ "dimensions": [20, 10, 10], "position": [-10, 0, 5]}
+```
+
+✅ CORRECT (sketch + extrude — the canonical ArchitectPlan pattern):
+
+```json
+{"sketches": [
+  {"sketch_id": "base-profile", "workplane": "XY", "workplane_offset_mm": 0.0,
+   "entities": [{"entity_type": "rectangle", "width": 20.0, "height": 10.0}],
+   "notes": "Base rectangle 20x10, centered on origin"}
+ ],
+ "steps": [
+  {"step_id": "step-01-extrude-base", "step_type": "extrude", "label": "Extrude base prism",
+   "sketch_id": "base-profile", "distance_mm": 10.0, "direction": "positive",
+   "depends_on": [], "notes": "Base prism Z=0..10"}
+ ]}
+```
+
+For cylindrical primitives use ``circle`` sketch + ``extrude``; for revolved
+solids use ``circle``/``arc`` sketch + ``revolve``.  Never use primitive-solid
+step types.
 
 ---
 

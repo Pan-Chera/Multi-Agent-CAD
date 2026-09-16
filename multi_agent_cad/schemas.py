@@ -54,6 +54,29 @@ class ErrorType(str, Enum):
     should halt and report to the user."""
 
 
+class JudgeAction(str, Enum):
+    """Decision produced by the QA Judge agent (Phase 2.5 of the autonomous
+    skill loop).
+
+    The Judge evaluates whether a QA report's failures warrant code repair
+    or whether the current model should be accepted/halted. This gives the
+    model agency to terminate iteration early when it believes the QA report
+    is wrong or the request is unimplementable.
+    """
+
+    ACCEPT = "accept"
+    """Override QA failure as PASS — model believes current artifacts are
+    correct (false positive, design intent satisfied, intentional
+    multi-body, persistent kernel limitation, etc.)."""
+
+    REPAIR = "repair"
+    """Continue to Aider — model believes a real fix is needed. Safe default."""
+
+    HALT = "halt"
+    """Stop iteration as FATAL — model believes the request is unimplementable
+    (contradictory requirements, missing critical info)."""
+
+
 class ModelingStepType(str, Enum):
     """Well-known operation types that map to build123d API calls."""
 
@@ -1008,6 +1031,13 @@ class QAReport(BaseModel):
         description="Specific error descriptions to guide the upstream agent's fix.",
     )
 
+    # Optional visual-semantic assessment. Deterministic QA remains the
+    # authority for measurable geometry; lack of a vision-capable model is
+    # represented as ``unverified`` and never blocks artifact delivery.
+    semantic_verification: Literal["verified", "failed", "unverified"] = "unverified"
+    semantic_issues: list[str] = Field(default_factory=list)
+    semantic_modification_suggestions: list[str] = Field(default_factory=list)
+
     # -- Improvement suggestions (from check_mesh's analysis) --
     improvement_suggestions: list[str] = Field(
         default_factory=list,
@@ -1045,6 +1075,76 @@ class QAReport(BaseModel):
     iteration: int = Field(
         0,
         description="Which QA iteration this report corresponds to.",
+    )
+
+
+# ============================================================================
+#  Judge Decision (QA Judge agent output — Phase 2.5)
+# ============================================================================
+
+
+class JudgeDecision(BaseModel):
+    """Decision produced by the QA Judge agent.
+
+    The Judge evaluates whether a QA report's failures warrant code repair
+    or whether the current model should be accepted/halted. This gives the
+    model agency to terminate iteration early when it believes the QA report
+    is wrong (false positive, design intent satisfied, persistent kernel
+    limitation) or the request is unimplementable (contradictory specs).
+
+    Anti-hallucination design: the Judge sees only structured text (no 3D
+    mesh), so every ``accept``/``halt`` decision MUST be grounded in concrete
+    data points cited in ``evidence``. Empty evidence on ACCEPT/HALT is
+    downgraded to REPAIR by nodes.py (Phase 2.5 evidence gate).
+    """
+
+    action: JudgeAction = Field(
+        ...,
+        description="Decision: accept (override QA as PASS), repair (continue "
+        "to Aider), or halt (stop as FATAL).",
+    )
+    reason: str = Field(
+        ...,
+        description="1-2 sentence justification. For ``repair``: an "
+        "actionable hint for Aider. For ``accept``/``halt``: reference which "
+        "evidence entries support the decision.",
+    )
+    confidence: Literal["high", "medium"] = Field(
+        "medium",
+        description="Confidence level. ``high`` = ≥2 concrete data points "
+        "support the decision; ``medium`` = 1 data point but ambiguous. "
+        "``low`` is forbidden for accept/halt — output repair instead. "
+        "FATAL/TOPOLOGY accept and any halt require ``high`` (enforced in "
+        "nodes.py Phase 2.5).",
+    )
+    evidence: list[str] = Field(
+        default_factory=list,
+        description="Specific data points cited to support the decision. "
+        "Each entry is a string naming a concrete data point, e.g. "
+        "\"special_features[2]: 'Planetary gear system MUST be multi-body'\", "
+        "\"measurements.hole-2.size_z = 0.0 mm\", "
+        "\"is_mesh_noise = True\", "
+        "\"retry_count = 4, FILLET_FAILED on retries 1-4\". "
+        "**Required non-empty for accept and halt** — empty evidence on "
+        "ACCEPT/HALT is downgraded to REPAIR by nodes.py (anti-hallucination gate).",
+    )
+    disputed_errors: list[int] = Field(
+        default_factory=list,
+        description="0-based indices into ``QAReport.error_details`` that "
+        "the judge disagrees with. **Audit-only field (F8)** — the pipeline "
+        "does not currently act on these indices for routing or filtering. "
+        "Retained for audit trail / future implementation.",
+    )
+    semantic_verification: Literal["verified", "failed", "unverified"] = Field(
+        default="unverified",
+        description=(
+            "Visual agreement with the request. Use verified/failed only when "
+            "rendered current-model views were actually available."
+        ),
+    )
+    modification_suggestions: list[str] = Field(
+        default_factory=list,
+        description="Concrete minimal code/model changes when repair is selected.",
     )
 
 
@@ -1097,6 +1197,21 @@ class GraphState(TypedDict, total=False):
     qa_report: QAReport | None
     """Merged QA report from the Dual-Engine QA node.  Its error_type field
     determines the next routing decision."""
+
+    # -- QA Judge output (Phase 2.5) --
+    judge_decision: JudgeDecision | None
+    """Latest decision from the QA Judge agent.  None if Judge hasn't run
+    (e.g. ``JUDGE_ENABLED=False`` or ``retry < JUDGE_MIN_RETRY``).  When the
+    Judge decides ``accept``, the pipeline overrides QA failure as PASS and
+    returns ``ErrorType.NONE``.  When ``halt``, returns ``ErrorType.FATAL``.
+    When ``repair``, falls through to Aider with the Judge's reason prepended
+    to ``error_details``.
+
+    **Audit field (F8)** — ``graph.py`` routing functions do NOT read this
+    field; ``node_autonomous_skill_loop`` uses it internally for ACCEPT/HALT/
+    REPAIR decisions and writes it to state for audit/traceability. The
+    field is included in all return paths (including REPAIR and MAX_RETRIES
+    exhausted) so the audit trail is complete."""
 
     # -- Loop control --
     iteration_count: int
