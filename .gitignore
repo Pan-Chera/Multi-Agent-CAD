@@ -68,6 +68,11 @@ pipeline_cache/
 # placed_stl, judge views, etc. Pure runtime artifacts - never commit.
 assembly_jobs/
 
+# Local assembly prompt drafts without a completed assembly output.
+mac_assembly/assembly_prompts/complex_models/Orbital_Service_Satellite_Request.md
+mac_assembly/assembly_prompts/complex_models/Quadruped_Inspection_Robot_Request.md
+mac_assembly/assembly_prompts/natural_language_benchmarks/05_tilting_display_stand.md
+
 # Local Claude Code state (session logs, scheduled tasks).
 .claude/
 
