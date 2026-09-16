@@ -18,8 +18,8 @@ transform applied to the part-local resolved anchor). So:
 - ``joint_world = Location(fixed_endpoint.position, fixed_endpoint.orientation)``
   -- the joint frame's pose in WORLD coords.
 - ``<joint origin>`` (joint frame in PARENT link frame) =
-  ``parent_world⁻¹ × joint_world`` where ``parent_world`` comes from
-  ``assembly_manifest.json``.
+  ``parent_link_world⁻¹ × joint_world``. A non-root parent link frame is
+  its incoming joint frame, NOT the part mesh frame in the manifest.
 - ``<visual>/<collision>/<inertial> origin`` of CHILD link =
   ``joint_world⁻¹ × child_world`` (mesh-local frame's pose in joint/child
   frame). For ROOT link (no parent mate), visual origin = ``root_world``
@@ -61,6 +61,8 @@ import json
 import math
 import os
 import shutil
+import sys
+import warnings
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -93,6 +95,11 @@ def export_urdf(work_dir: Path | str, brief=None) -> Path | None:
         if not tree_ok:
             print("  [urdf] link tree not a single-root tree; skipping URDF")
             return None
+        labels = {root} | {m["moving_endpoint"]["part"] for m in mates}
+        missing_locs = sorted(labels - world_locs.keys())
+        if missing_locs:
+            print(f"  [urdf] no world location for part(s) {missing_locs}; skipping URDF")
+            return None
 
         assembly_name = (
             getattr(brief, "assembly_name", None) or work_dir.name
@@ -109,6 +116,9 @@ def export_urdf(work_dir: Path | str, brief=None) -> Path | None:
         # joint_world.inverse * child_world (where joint_world is from the
         # mate where this link is the moving side).
         visual_offsets: dict[str, tuple[list, list]] = {}
+        link_world: dict[str, tuple[list, list]] = {
+            root: ([0, 0, 0], [0, 0, 0])
+        }
         # Root's world transform.
         if root in world_locs:
             visual_offsets[root] = world_locs[root]
@@ -116,17 +126,13 @@ def export_urdf(work_dir: Path | str, brief=None) -> Path | None:
         for m in mates:
             child = m["moving_endpoint"]["part"]
             joint_world = _endpoint_to_loc(m["fixed_endpoint"])
-            child_world = world_locs.get(child)
-            if child_world is None:
-                continue
+            link_world[child] = joint_world
+            child_world = world_locs[child]
             visual_offsets[child] = _compose_loc_inverse(
                 joint_world, child_world
             )
 
         # Collect all labels (root + every child referenced by a mate).
-        labels = {root}
-        for m in mates:
-            labels.add(m["moving_endpoint"]["part"])
         labels = sorted(labels)
 
         # Pre-flight: every link needs its mesh. Emitting joints that
@@ -149,21 +155,30 @@ def export_urdf(work_dir: Path | str, brief=None) -> Path | None:
 
         for m in mates:
             parent = m["fixed_endpoint"]["part"]
-            parent_world = world_locs.get(parent, ([0, 0, 0], [0, 0, 0]))
+            parent_world = link_world[parent]
             _emit_joint(robot_elem=robot, mate=m, parent_world=parent_world)
 
+        pose_error = _zero_pose_error(robot, world_locs)
+        if pose_error:
+            print(f"  [urdf] zero-pose mismatch: {pose_error}; skipping URDF")
+            return None
+
         urdf_path = urdf_dir / f"{assembly_name}.urdf"
+        candidate_path = urdf_dir / f".{assembly_name}.candidate.urdf"
         ET.ElementTree(robot).write(
-            urdf_path, encoding="utf-8", xml_declaration=True
+            candidate_path, encoding="utf-8", xml_declaration=True
         )
 
-        status, msg = _validate(urdf_path)
+        status, msg = _validate(candidate_path)
         if status == "failed":
-            print(f"  [urdf] validation warning: {msg}")
+            print(f"  [urdf] validation failed: {msg}; skipping URDF")
+            candidate_path.unlink(missing_ok=True)
+            return None
         elif status == "unvalidated":
             # Honest status (D4): no validator was importable, so "no
             # error found" must NOT be reported as "validated".
             print(f"  [urdf] unvalidated: {msg}")
+        candidate_path.replace(urdf_path)
         return urdf_path
     except Exception as exc:  # noqa: BLE001 - best-effort
         print(f"  [urdf] export failed: {exc}")
@@ -234,7 +249,7 @@ def _load_world_locations(work_dir: Path) -> dict[str, tuple[list, list]]:
         loc = entry.get("location") or {}
         t = loc.get("translation") or [0, 0, 0]
         r = loc.get("rotation_euler_xyz_deg") or [0, 0, 0]
-        out[label] = (list(t), list(r))
+        out[label] = (list(t), _cad_xyz_to_urdf_rpy(r))
     return out
 
 
@@ -327,8 +342,8 @@ def _find_part_stl(work_dir: Path, part_label: str) -> Path | None:
 def _euler_xyz_deg_to_matrix(orient_deg) -> Any | None:
     """Euler XYZ (degrees) -> 3x3 rotation matrix (numpy array).
 
-    Convention: extrinsic XYZ = Rz @ Ry @ Rx (URDF rpy convention, matches
-    build123d's Location.orientation). Returns ``None`` if numpy
+    Convention: URDF RPY = Rz @ Ry @ Rx. Raw build123d intrinsic XYZ
+    values are converted at the JSON loading boundary. Returns ``None`` if numpy
     unavailable; returns identity if orientation is all-zero.
     """
     try:
@@ -347,11 +362,30 @@ def _euler_xyz_deg_to_matrix(orient_deg) -> Any | None:
     return Rz @ Ry @ Rx
 
 
+def _cad_xyz_to_urdf_rpy(orient_deg) -> list[float]:
+    """Convert build123d intrinsic XYZ (Rx @ Ry @ Rz) to URDF RPY degrees."""
+    import numpy as np
+
+    rx, ry, rz = (float(v) * DEG_TO_RAD for v in orient_deg)
+    cx, sx = math.cos(rx), math.sin(rx)
+    cy, sy = math.cos(ry), math.sin(ry)
+    cz, sz = math.cos(rz), math.sin(rz)
+    Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+    return [v / DEG_TO_RAD for v in _matrix_to_euler_xyz_rad(Rx @ Ry @ Rz)]
+
+
 def _matrix_to_euler_xyz_rad(R) -> list[float]:
     """3x3 rotation matrix -> Euler XYZ radians (extrinsic = URDF rpy)."""
     try:
         from scipy.spatial.transform import Rotation
-        return list(Rotation.from_matrix(R).as_euler("xyz"))
+        # At gimbal lock the Euler triple is non-unique, but the resulting
+        # matrix is exact. Repeated warnings for ordinary 90-degree joints
+        # obscure actionable exporter diagnostics.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Gimbal lock detected")
+            return list(Rotation.from_matrix(R).as_euler("xyz"))
     except ImportError:
         pass
     import math as _m
@@ -366,9 +400,9 @@ def _matrix_to_euler_xyz_rad(R) -> list[float]:
 
 
 def _endpoint_to_loc(endpoint: dict) -> tuple[list, list]:
-    """Extract (position_mm, orientation_deg) from a mate endpoint."""
+    """Extract (position_mm, URDF RPY degrees) from a CAD mate endpoint."""
     pos = list(endpoint.get("position", [0, 0, 0]))
-    ori = list(endpoint.get("orientation", [0, 0, 0]))
+    ori = _cad_xyz_to_urdf_rpy(endpoint.get("orientation", [0, 0, 0]))
     return pos, ori
 
 
@@ -434,6 +468,61 @@ def _loc_to_origin_strs(position_mm, orientation_deg) -> tuple[str, str]:
         f"{px:.6f} {py:.6f} {pz:.6f}",
         f"{rx:.6f} {ry:.6f} {rz:.6f}",
     )
+
+
+def _zero_pose_error(robot_elem, world_locs: dict) -> str | None:
+    """Check every visual's zero-q world pose against the CAD manifest.
+
+    XML parsing alone cannot detect a valid URDF whose links are displaced or
+    rotated. Compute FK over the generated tree before delivering the file.
+    """
+    import numpy as np
+
+    def transform(origin):
+        xyz = [float(v) / MM_TO_M for v in origin.get("xyz", "0 0 0").split()]
+        rpy = [float(v) / DEG_TO_RAD for v in origin.get("rpy", "0 0 0").split()]
+        result = np.eye(4)
+        result[:3, :3] = _euler_xyz_deg_to_matrix(rpy)
+        result[:3, 3] = xyz
+        return result
+
+    joints = robot_elem.findall("joint")
+    children = {j.find("child").get("link") for j in joints}
+    roots = {l.get("name") for l in robot_elem.findall("link")} - children
+    if len(roots) != 1:
+        return "URDF has no unique root"
+    link_world = {roots.pop(): np.eye(4)}
+    pending = list(joints)
+    while pending:
+        ready = [j for j in pending if j.find("parent").get("link") in link_world]
+        if not ready:
+            return "URDF joint tree is disconnected"
+        for joint in ready:
+            parent = joint.find("parent").get("link")
+            child = joint.find("child").get("link")
+            link_world[child] = link_world[parent] @ transform(joint.find("origin"))
+            pending.remove(joint)
+
+    for link in robot_elem.findall("link"):
+        label = link.get("name")
+        if label not in world_locs:
+            continue  # ball/cylindrical kinematic dummy links have no CAD mesh
+        visual = link.find("visual")
+        if visual is None:
+            return f"{label}: missing visual"
+        actual = link_world[label] @ transform(visual.find("origin"))
+        pos_mm, rpy_deg = world_locs[label]
+        expected = np.eye(4)
+        expected[:3, :3] = _euler_xyz_deg_to_matrix(rpy_deg)
+        expected[:3, 3] = pos_mm
+        position_error = float(np.linalg.norm(actual[:3, 3] - expected[:3, 3]))
+        relative = actual[:3, :3].T @ expected[:3, :3]
+        angle_error = math.degrees(math.acos(max(-1.0, min(1.0,
+            (float(np.trace(relative)) - 1.0) / 2.0))))
+        if position_error > 0.1 or angle_error > 0.1:
+            return (f"{label}: {position_error:.3f} mm, "
+                    f"{angle_error:.3f} deg")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -749,8 +838,10 @@ def _emit_joint(robot_elem, mate: dict,
         # continuous = unlimited rotation; no <limit> element required.
         return
 
-    if rel in ("rigid", "face_to_face", "coaxial"):
+    if rel in ("rigid", "face_to_face"):
         jtype = "fixed"
+    elif rel == "coaxial":
+        jtype = "continuous"
     elif rel == "revolute":
         # Explicit MateSpec limits -> bounded revolute; no limits ->
         # continuous (unlimited rotation). Borrowing the QA sweep range
@@ -840,13 +931,26 @@ def _validate(urdf_path: Path) -> tuple[str, str]:
     source_path = skill_dir / "source.py"
     if source_path.is_file():
         try:
+            module_name = "_mac_urdf_skill_source"
             spec = importlib.util.spec_from_file_location(
-                "urdf_skill_source", source_path
+                module_name, source_path
             )
             if spec is None or spec.loader is None:
                 return "failed", "urdf-skill: spec load failed"
             module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+            # source.py declares dataclasses with postponed annotations;
+            # dataclasses needs the executing module in sys.modules. Keep
+            # registration scoped so the optional validator cannot shadow
+            # another module named 'source'.
+            previous = sys.modules.get(module_name)
+            sys.modules[module_name] = module
+            try:
+                spec.loader.exec_module(module)
+            finally:
+                if previous is None:
+                    sys.modules.pop(module_name, None)
+                else:
+                    sys.modules[module_name] = previous
             module.read_urdf_source(urdf_path)  # Path, not str
             return "ok", "urdf-skill source.py"
         except Exception as exc:  # noqa: BLE001
