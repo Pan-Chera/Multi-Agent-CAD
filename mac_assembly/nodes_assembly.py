@@ -1284,7 +1284,29 @@ def _validate_mating_plan(plan: MatingPlan, brief: AssemblyBrief) -> list[str]:
 
     moved = [m.moving_part_id for m in plan.mates]
     unmoved = graph_part_ids - set(moved)
-    if plan.mates:
+    n_graph = len(graph_part_ids)
+    # Edge-count necessary condition (BUG-013): a tree on N nodes needs N-1
+    # edges. The Pydantic schema can't enforce this because it doesn't see
+    # the brief (and ``len(brief.parts)`` over-counts template-only parts).
+    # Catches the silent-under-expansion case: 3 non-template parts + 0
+    # mates used to pass validation and the assembler emitted only the
+    # root part while QA reported PASS.
+    if n_graph > 1 and len(plan.mates) < n_graph - 1:
+        errors.append(
+            f"mate graph is under-connected: {len(plan.mates)} mate(s) for "
+            f"{n_graph} non-template part(s) -- a spanning tree needs at "
+            f"least {n_graph - 1} mate(s)"
+        )
+    # Connectivity / single-root / acyclicity checks. The ``plan.mates``
+    # guard used to skip these when mates was empty, which let multi-part
+    # briefs with zero mates through. Use ``n_graph > 1`` instead: a
+    # single-part (or empty) graph is trivially valid; a multi-part graph
+    # needs exactly one fixed root (``unmoved`` size 1), and a toposort
+    # that consumes every mate (else there's a cycle in a sub-component).
+    # The unmoved set IS the connectivity check -- a disconnected graph
+    # has >= 2 unmoved roots (forest) or 0 (cycle through all parts);
+    # toposort catches the mixed case (one tree + one cyclic component).
+    if n_graph > 1:
         if not unmoved:
             errors.append("every part is moved by some mate -- need a fixed root")
         elif len(unmoved) > 1:

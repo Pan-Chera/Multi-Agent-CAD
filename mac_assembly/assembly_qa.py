@@ -49,6 +49,14 @@ from mac_assembly.schemas_assembly import (
 from multi_agent_cad.render_views import _render_isometric_views
 
 
+# Volume below which a mesh is treated as zero-volume for interference
+# probing (BUG-016). ``_pair_collides`` uses ``min(|Va|, |Vb|)`` as a
+# penetration proxy; a zero-volume mesh (flat plate, single-triangle STL,
+# sheet metal without thickness) zeroes the proxy and false-passes. The
+# epsilon catches near-degenerate shells (floating-point thickness).
+_ZERO_VOLUME_EPS_MM3 = 1e-9
+
+
 # ---------------------------------------------------------------------------
 # Geometry loading
 # ---------------------------------------------------------------------------
@@ -1499,6 +1507,47 @@ def _pair_collides(mesh_a, mesh_b) -> tuple[bool | None, str, float]:
         None to "no collision" was a false PASS.
     """
     depth_tol = cfg.INTERFERENCE_DEPTH_TOL_MM
+    # Zero-volume / non-finite mesh guard (BUG-016): the volume-based
+    # penetration proxy ``vol = frac * min(|Va|, |Vb|)`` collapses to 0
+    # when either mesh has no enclosed volume (flat plates, sheet metal,
+    # single-triangle STLs). ``vol <= tol`` is then trivially true and the
+    # pair false-passes even when a zero-volume plate clearly crosses a
+    # closed box. NaN/inf volume (from a malformed mesh where trimesh's
+    # ``center_mass = integrated[1:4] / volume`` divides by zero, or from a
+    # property that raises on a degenerate shell) bypasses the ``<= eps``
+    # comparison entirely (``nan <= x`` is False) and the proxy propagates
+    # NaN, producing a nonsense collision verdict. Return UNVERIFIABLE --
+    # the volume proxy is degenerate for this geometry, and surface
+    # sampling alone is not an authoritative collision test. The try wraps
+    # the property access: ``getattr`` only defaults when the attribute is
+    # ABSENT, not when the property RAISES, so a raising ``volume``
+    # property would escape the function and crash the QA pipeline.
+    try:
+        vol_a = float(abs(getattr(mesh_a, "volume", 0.0)))
+        vol_b = float(abs(getattr(mesh_b, "volume", 0.0)))
+    except Exception:  # noqa: BLE001 - volume property raised (malformed mesh)
+        return (
+            None,
+            "UNVERIFIABLE (mesh.volume property raised) -- cannot "
+            "establish a finite volume for the collision probe",
+            0.0,
+        )
+    bad_a = (not math.isfinite(vol_a)) or vol_a <= _ZERO_VOLUME_EPS_MM3
+    bad_b = (not math.isfinite(vol_b)) or vol_b <= _ZERO_VOLUME_EPS_MM3
+    if bad_a or bad_b:
+        if bad_a and bad_b:
+            zero_side = "both meshes"
+        elif bad_a:
+            zero_side = "mesh_a"
+        else:
+            zero_side = "mesh_b"
+        return (
+            None,
+            f"UNVERIFIABLE (zero-volume {zero_side}: vol_a={vol_a:.3e}, "
+            f"vol_b={vol_b:.3e}) -- volume-based penetration proxy is "
+            f"degenerate; surface sampling alone is not authoritative",
+            0.0,
+        )
     try:
         pts_a = _sample_surface(mesh_a)
         pts_b = _sample_surface(mesh_b)

@@ -116,7 +116,7 @@ PartBuilder chooses the smallest reliable path for each component:
    an independent opposite-handed component, such as a right jaw derived from
    a left jaw.
 
-The current [`BUILDERS`](builders.py) registry contains **28** parameterized
+The current [`BUILDERS`](builders.py) registry contains **29** parameterized
 builders. Treat the source registry as authoritative if this number changes.
 Builders target common failure-prone structures such as horizontal bores,
 clevises, linkage bars, plates, bushings, yokes, trussed arm links, and sensor

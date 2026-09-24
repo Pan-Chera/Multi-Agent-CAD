@@ -91,7 +91,7 @@ document.getElementById("run-btn").addEventListener("click", async () => {
 
   const r = await fetch("/api/run", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-MAC-CSRF": "1" },
     body: JSON.stringify(body),
   });
   if (!r.ok) {
@@ -113,7 +113,10 @@ document.getElementById("stop-btn").addEventListener("click", async () => {
   stopBtn.textContent = "Cancelling...";
   status.textContent = "Cancelling — waiting for subprocess to exit...";
   try {
-    await fetch(`/api/jobs/${currentJobId}/cancel`, { method: "POST" });
+    await fetch(`/api/jobs/${currentJobId}/cancel`, {
+      method: "POST",
+      headers: { "X-MAC-CSRF": "1" },
+    });
   } catch (e) {
     status.textContent = "Cancel request failed: " + e;
     stopBtn.disabled = false;

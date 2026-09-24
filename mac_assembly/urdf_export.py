@@ -71,6 +71,15 @@ MM_TO_M = 0.001
 DEG_TO_RAD = math.pi / 180.0
 DEFAULT_DENSITY_KG_M3 = 1000.0
 
+# Volume below which a link mesh is treated as zero-volume (BUG-008).
+# ``_inertial_from_mesh`` already returns mass=0 for ``mesh.volume <= 0``;
+# the preflight uses the same threshold (with a small epsilon to catch
+# near-degenerate shells) so a zero-volume link never reaches _emit_link
+# -- a URDF missing <inertial> blocks lets PyBullet silently assign
+# mass=1.0 and MuJoCo reject outright. Kept local rather than imported
+# from assembly_qa to avoid coupling the two modules' volume contracts.
+_ZERO_VOLUME_EPS_MM3 = 1e-9
+
 # Principal axis name -> URDF <axis xyz> string (ball decomposition).
 _AXIS_STRS = {"x": "1 0 0", "y": "0 1 0", "z": "0 0 1"}
 
@@ -145,6 +154,51 @@ def export_urdf(work_dir: Path | str, brief=None) -> Path | None:
         missing = sorted(l for l, p in mesh_by_label.items() if p is None)
         if missing:
             print(f"  [urdf] no STL for part(s) {missing}; skipping URDF export")
+            return None
+
+        # Zero-volume mesh preflight (BUG-008): a zero-volume link emits
+        # <visual> + <collision> but no <inertial> -- _inertial_from_mesh
+        # returns mass=0 for ``mesh.volume <= 0`` and _emit_link then skips
+        # the <inertial> block. PyBullet silently assigns mass=1.0 (with a
+        # printed warning); MuJoCo rejects the URDF outright. Fail closed
+        # at preflight instead of emitting a URDF with wrong dynamics.
+        # Runs BEFORE any link is emitted so no half-URDF reaches disk.
+        try:
+            import trimesh  # noqa: F401
+        except ImportError:
+            print("  [urdf] trimesh unavailable; cannot preflight mesh volumes; skipping URDF export")
+            return None
+        zero_vol_links = []
+        for label in labels:
+            stl_path = mesh_by_label[label]
+            # Load + volume probe in one try: ``getattr`` only defaults when
+            # the attribute is ABSENT, not when the property RAISES, so a
+            # raising ``volume`` property (malformed mesh) must be caught
+            # here rather than escape to the outer handler and print a
+            # generic "export failed". NaN/inf volume (``nan <= eps`` is
+            # False) would otherwise pass the preflight and let
+            # ``_inertial_from_mesh`` compute ``mass = nan`` (skipping
+            # ``<inertial>`` -- the exact BUG-008 regression) or
+            # ``mass = inf`` (emitting ``<inertial>`` with non-finite
+            # dynamics that PyBullet/MuJoCo reject).
+            try:
+                _preflight_mesh = trimesh.load(str(stl_path), force="mesh")
+                preflight_empty = bool(getattr(_preflight_mesh, "is_empty", False))
+                preflight_vol = float(getattr(_preflight_mesh, "volume", 0.0))
+            except Exception as exc:  # noqa: BLE001 - load/volume failure = unverifiable
+                print(f"  [urdf] mesh load or volume probe failed for {label!r}: {exc}; skipping URDF export")
+                return None
+            if (
+                preflight_empty
+                or not math.isfinite(preflight_vol)
+                or preflight_vol <= _ZERO_VOLUME_EPS_MM3
+            ):
+                zero_vol_links.append(label)
+        if zero_vol_links:
+            print(
+                f"  [urdf] zero-volume mesh for link(s) {sorted(zero_vol_links)}; "
+                f"refusing to emit URDF with wrong dynamics (fix the part geometry)"
+            )
             return None
 
         for label in labels:

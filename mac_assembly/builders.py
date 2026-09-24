@@ -2081,6 +2081,7 @@ BUILDERS = {
     "crane_counterweight_frame": crane_counterweight_frame,
     "rounded_finger_bar_y": rounded_finger_bar_y,
     "rounded_palm_plate_xy": rounded_palm_plate_xy,
+    "bent_jaw_xz": bent_jaw_xz,
 }
 
 
