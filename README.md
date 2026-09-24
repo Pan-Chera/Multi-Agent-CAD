@@ -223,6 +223,48 @@ your user account's permissions, so do not expose it directly to an untrusted
 network. Copying results to an arbitrary local directory is disabled unless
 `MAC_WEB_ALLOW_DEST_PATH=1` is explicitly set.
 
+#### Web UI security and environment variables
+
+State-changing API endpoints (`POST`, `PUT`, `PATCH`, `DELETE`) require a
+custom `X-MAC-CSRF: 1` header. The browser frontend sends it automatically;
+non-browser clients (curl, HTTP libraries) must add it manually or the server
+returns `403`:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/run \
+  -H "X-MAC-CSRF: 1" \
+  -H "Content-Type: application/json" \
+  -d '{"user_request": "a 30 mm cube"}'
+```
+
+`GET` endpoints (`/api/health`, `/api/jobs`, status polling) are unaffected.
+
+The following environment variables control Web UI behavior:
+
+- `MAC_WEB_HOST` — bind address. Loopback values (`127.0.0.1`, `localhost`,
+  `::1`, the default) also enable a loopback `Host` allowlist as a
+  defense-in-depth CSRF layer. Binding to a non-loopback address (LAN
+  deployment) disables that layer; the `X-MAC-CSRF` header remains required.
+- `MAC_WEB_ALLOW_CUSTOM_ENDPOINT=1` — opt in to non-loopback
+  OpenAI-compatible `DS_BASE_URL` hosts: vLLM on a private hostname, a
+  corporate gateway, or Ollama / LM Studio on a non-loopback address. Default
+  off; otherwise the host must match the provider allowlist (loopback,
+  `api.openai.com`, `api.deepseek.com`, `generativelanguage.googleapis.com`,
+  `.aliyuncs.com`, `.googleapis.com`). Scheme (`http`/`https`) is always
+  enforced.
+- `MAC_WEB_ALLOW_DEST_PATH=1` — opt in to the `dest_path` artifact-copy
+  feature. When set, `MAC_WEB_DEST_ROOT` must also be set to an absolute
+  directory, and each request's `dest_path` must be relative and resolve
+  under that root. Absolute `dest_path` and `..` traversal are rejected.
+- `MAC_CHILD_ENV_ALLOW=VAR1,VAR2` — pass additional non-secret environment
+  variables through to the generated-Python subprocess (for example,
+  `HTTP_PROXY,HTTPS_PROXY` on a corporate network). The default allowlist is
+  `PATH`, `HOME`, `TMPDIR`, `TMP`, `TEMP`, `LANG`, `LC_ALL`, `LC_CTYPE`,
+  `PYTHONPATH`, `PYTHONIOENCODING`, `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`,
+  plus `ITERATION` set per child. **Never list API keys or credentials
+  here** — env-var stripping reduces secret leakage but does not sandbox
+  the subprocess; see [SECURITY.md](SECURITY.md).
+
 ### Generate an assembly
 
 Assembly input is also ordinary natural language. Run an included request:
