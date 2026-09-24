@@ -60,6 +60,58 @@ def _safe_print(*args, **kwargs) -> None:
 
 
 # ---------------------------------------------------------------------------
+# C3 — Generated-Python subprocess env allowlist.
+#
+# The LLM-authored CAD script is executed via ``subprocess.run``. Passing the
+# full parent env leaks every operator-set secret (ANTHROPIC_API_KEY,
+# DEEPSEEK_API_KEY, etc.) plus the request-body api_key (DASHSCOPE_API_KEY,
+# OPENAI_API_KEY, OPENAI_API_BASE) into the child. The allowlist below keeps
+# only the runtime vars the script actually needs (PATH, locale, library
+# search paths, temp dir, PYTHONPATH) and passes ITERATION explicitly.
+#
+# This is env-secret stripping only. The generated Python still has the
+# launching user's filesystem and network access, so this is NOT a security
+# sandbox; the SECURITY.md disclaimer continues to apply. Real sandboxing
+# (containers / namespaces) is deferred to a future minor release.
+# ---------------------------------------------------------------------------
+_CHILD_ENV_ALLOWLIST = frozenset({
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "PYTHONPATH",
+    "PYTHONIOENCODING",
+    "LD_LIBRARY_PATH",   # OCP / build123d native libs on Linux
+    "DYLD_LIBRARY_PATH",  # OCP / build123d native libs on macOS
+})
+
+_CHILD_ENV_ALLOW_OVERRIDE = "MAC_CHILD_ENV_ALLOW"
+
+
+def _build_child_env(iteration: int) -> dict[str, str]:
+    """Build an allowlisted env dict for the generated-Python subprocess.
+
+    ITERATION is set explicitly (the previous code mutated ``os.environ`` at
+    process level, which leaked the value into every other subprocess in the
+    web_runner; now it lives only in this child's env).
+
+    Operators who need additional vars (e.g. ``HTTP_PROXY`` for a corporate
+    network) set ``MAC_CHILD_ENV_ALLOW=VAR1,VAR2``; those names are added to
+    the allowlist on top of the defaults above.
+    """
+    extra = os.environ.get(_CHILD_ENV_ALLOW_OVERRIDE, "")
+    extra_names = {n.strip() for n in extra.split(",") if n.strip()}
+    allow = _CHILD_ENV_ALLOWLIST | extra_names
+    child_env = {k: v for k, v in os.environ.items() if k in allow}
+    child_env["ITERATION"] = str(iteration)
+    return child_env
+
+
+# ---------------------------------------------------------------------------
 # Qwen / DashScope client factory
 # ---------------------------------------------------------------------------
 #
@@ -3163,6 +3215,7 @@ def node_python_coder(state: GraphState) -> dict:
             encoding="utf-8",
             timeout=_CFG_CAD_SCRIPT_TIMEOUT,
             cwd=str(cwd),
+            env=_build_child_env(iteration),
         )
     except subprocess.TimeoutExpired:
         return _coder_failure_state(
@@ -7182,10 +7235,10 @@ def _execute_cad_script(
     """
     cwd = script_path.parent
 
-    # Set ITERATION environment variable so the script can write measurements
-    # to the correct file (temp_measurements_{iteration}.json)
-    import os as _os
-    _os.environ["ITERATION"] = str(iteration)
+    # Build the child env using the C3 allowlist. ITERATION is set explicitly
+    # here; the previous code mutated ``os.environ`` at process level, which
+    # leaked the value into every other subprocess in the web_runner.
+    child_env = _build_child_env(iteration)
 
     # Delete stale runtime diagnostics from previous runs.
     # The generated script only writes temp_missed_{iter}.json if _MISSED_CUTS
@@ -7267,6 +7320,7 @@ def _execute_cad_script(
             errors="replace",
             timeout=timeout,
             cwd=str(cwd),
+            env=child_env,
         )
     except subprocess.TimeoutExpired:
         print(f"[EXECUTE CAD] Timed out after {timeout}s")
