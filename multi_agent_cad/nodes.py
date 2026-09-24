@@ -792,6 +792,11 @@ def _node_python_coder_deterministic(
     # Pre-compute node_history for failure state
     _coder_history = list(state.get("node_history", [])) + ["coder"]
 
+    cwd = Path.cwd()
+    script_path = cwd / f"temp_design_{iteration}.py"
+    step_path = cwd / f"temp_output_{iteration}.step"
+    stl_path = cwd / f"temp_output_{iteration}.stl"
+
     try:
         code = _plan_to_code(architect_plan, iteration)
     except NotImplementedError as e:
@@ -805,14 +810,9 @@ def _node_python_coder_deterministic(
         return _coder_failure_state(
             iteration=iteration,
             error_message=f"Deterministic coder code generation failed: {e}\n\nTraceback:\n{traceback.format_exc()}",
-            script_path=str(cwd / f"temp_design_{iteration}.py"),
+            script_path=str(script_path),
             node_history=_coder_history,
         )
-
-    cwd = Path.cwd()
-    script_path = cwd / f"temp_design_{iteration}.py"
-    step_path = cwd / f"temp_output_{iteration}.step"
-    stl_path = cwd / f"temp_output_{iteration}.stl"
 
     # Split generated code at the solids marker.
     # Module-level: imports, shim, key_dimensions, helper functions.
@@ -2869,7 +2869,8 @@ Fillets/chamfers MUST come after ALL boolean operations (union, cut).
         coder = Coder.create(
             main_model=model,
             io=io,
-            fnames=[str(script_path), _BUILD123D_REF],
+            fnames=[str(script_path)],
+            read_only_fnames=[_BUILD123D_REF],
             auto_commits=False,
             # Assembly jobs are intentionally gitignored runtime artifacts.
             # These paths are explicitly supplied by the workflow and must
@@ -5819,15 +5820,19 @@ def _to_verification_target(raw) -> VerificationTarget | None:
 def _extract_json_from_llm(raw: str) -> str:
     """Aggressively extract JSON object from LLM response.
 
-    1. Try `` ```json { ... } ``` `` or `` ``` { ... } ``` `` fences.
+    1. Try `` ```json { ... } ``` `` or `` ``` { ... } ``` `` fences. If
+       multiple fenced JSON blocks appear (e.g. an example followed by the
+       actual answer), the *last* one is returned -- matches the contract
+       of ``_extract_code_from_llm_response`` where the final block is the
+       complete payload.
     2. Fall back to outermost ``{ ... }`` span via rfind.
     3. Return raw text if nothing matches.
     """
     # Priority 1: fenced JSON block — use greedy .* so nested braces work
     pattern = r"```(?:json)?\s*\n?(.*?)\n?\s*```"
-    match = re.search(pattern, raw, flags=re.DOTALL)
-    if match:
-        content = match.group(1).strip()
+    matches = re.findall(pattern, raw, flags=re.DOTALL)
+    if matches:
+        content = matches[-1].strip()
         # Find the outermost JSON object inside the fence content
         start = content.find("{")
         end = content.rfind("}")
@@ -6758,7 +6763,8 @@ Please replace the 'pass' statement in gen_step() with the full implementation.
                 coder = Coder.create(
                     main_model=model,
                     io=io,
-                    fnames=[script_path, _BUILD123D_REF],
+                    fnames=[script_path],
+                    read_only_fnames=[_BUILD123D_REF],
                     auto_commits=False,
                     add_gitignore_files=True,
                 )
@@ -6955,7 +6961,8 @@ def _run_repair_on_script(
                 coder = Coder.create(
                     main_model=model,
                     io=io,
-                    fnames=[script_path, _BUILD123D_REF],
+                    fnames=[script_path],
+                    read_only_fnames=[_BUILD123D_REF],
                     auto_commits=False,
                     add_gitignore_files=True,
                 )
