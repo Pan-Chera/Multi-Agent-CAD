@@ -174,6 +174,8 @@ app = FastAPI(title="MAC Web UI", lifespan=_lifespan)
 
 _DEFAULT_HOST = "127.0.0.1"
 _ALLOW_DEST_PATH_ENV = "MAC_WEB_ALLOW_DEST_PATH"
+_ALLOW_CUSTOM_ENDPOINT_ENV = "MAC_WEB_ALLOW_CUSTOM_ENDPOINT"
+_DEST_ROOT_ENV = "MAC_WEB_DEST_ROOT"
 
 # C1 — Browser boundary / CSRF defense.
 # Loopback hosts allowed in the Host header when the server is bound to a
@@ -214,6 +216,95 @@ def _origin_host_port(origin: str) -> str:
     if parsed.port:
         return f"{parsed.hostname}:{parsed.port}"
     return parsed.hostname
+
+
+# C2 — DS_BASE_URL scheme + host allowlist.
+# Default deployment only accepts http(s) with host in the loopback set or
+# a recognized provider suffix. ``MAC_WEB_ALLOW_CUSTOM_ENDPOINT=1`` skips the
+# host check (scheme check still applies) for operators running corporate
+# gateways, vLLM on a private host, etc.
+_ALLOWED_DS_SCHEMES = frozenset({"http", "https"})
+_PROVIDER_HOST_EXACT = frozenset({
+    "api.openai.com",
+    "api.deepseek.com",
+    "generativelanguage.googleapis.com",
+})
+_PROVIDER_HOST_SUFFIXES = (
+    ".aliyuncs.com",       # DashScope regional endpoints (token-plan.cn-beijing.maas.aliyuncs.com, etc.)
+    ".googleapis.com",     # Google Gemini OpenAI-compatible endpoint family
+)
+
+
+def _is_allowed_ds_base_url(url: str) -> bool:
+    """Return True if ``url`` is acceptable as ``config.DS_BASE_URL``.
+
+    Empty / whitespace-only URLs are accepted (config default is used).
+    Scheme must be ``http`` or ``https``. Host must be loopback or a
+    recognized provider suffix unless ``MAC_WEB_ALLOW_CUSTOM_ENDPOINT=1``.
+    """
+    if not url or not url.strip():
+        return True
+    try:
+        parsed = urlparse(url.strip())
+    except ValueError:
+        return False
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in _ALLOWED_DS_SCHEMES:
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    if os.environ.get(_ALLOW_CUSTOM_ENDPOINT_ENV) == "1":
+        return True
+    if host in _LOOPBACK_HOSTS:
+        return True
+    if host in _PROVIDER_HOST_EXACT:
+        return True
+    return any(host.endswith(suf) for suf in _PROVIDER_HOST_SUFFIXES)
+
+
+def _validate_dest_path(dest: str) -> Path:
+    """Resolve ``dest`` against ``MAC_WEB_DEST_ROOT``.
+
+    Pre-conditions (checked by caller): ``dest`` is non-empty and
+    ``MAC_WEB_ALLOW_DEST_PATH=1`` is set. This function:
+
+    1. Requires ``MAC_WEB_DEST_ROOT`` (absolute path) to be set.
+    2. Rejects absolute ``dest`` values.
+    3. Resolves ``root / dest`` and requires the result to remain under
+       the resolved root (blocks ``..`` traversal).
+
+    Returns the resolved absolute path on success. Raises ``HTTPException``
+    with status 400 on any violation.
+    """
+    root_env = os.environ.get(_DEST_ROOT_ENV, "").strip()
+    if not root_env:
+        raise HTTPException(
+            400,
+            "MAC_WEB_DEST_ROOT must be set to an absolute directory when "
+            "MAC_WEB_ALLOW_DEST_PATH=1; dest_path is interpreted relative to that root",
+        )
+    root = Path(root_env)
+    if not root.is_absolute():
+        raise HTTPException(
+            400,
+            "MAC_WEB_DEST_ROOT must be an absolute directory path",
+        )
+    p = Path(dest)
+    if p.is_absolute():
+        raise HTTPException(
+            400,
+            "dest_path must be relative, not absolute",
+        )
+    root_resolved = root.resolve(strict=False)
+    resolved = (root_resolved / p).resolve(strict=False)
+    if not resolved.is_relative_to(root_resolved):
+        raise HTTPException(
+            400,
+            "dest_path escapes MAC_WEB_DEST_ROOT",
+        )
+    return resolved
+
 
 
 @app.middleware("http")
@@ -308,12 +399,27 @@ async def run(req: Request) -> dict:
         raise HTTPException(400, "prompt is required")
     if not api_key:
         raise HTTPException(400, "api_key is required (fill it in the form)")
+
+    # C2 — DS_BASE_URL scheme + host allowlist. Reject with 400 (not run-then-fail)
+    # so an attacker cannot drive a job with an off-policy endpoint.
+    ds_base_url = config.get("DS_BASE_URL", "") or ""
+    if ds_base_url and not _is_allowed_ds_base_url(ds_base_url):
+        if not (os.environ.get(_ALLOW_CUSTOM_ENDPOINT_ENV) == "1"):
+            raise HTTPException(
+                400,
+                "DS_BASE_URL host not in provider allowlist; set "
+                "MAC_WEB_ALLOW_CUSTOM_ENDPOINT=1 to allow custom endpoints",
+            )
+        raise HTTPException(400, "DS_BASE_URL must use http or https scheme")
+
+    # C2 — dest_path: keep opt-in gate, add MAC_WEB_DEST_ROOT + relative-under-root.
     if dest_path and os.environ.get(_ALLOW_DEST_PATH_ENV) != "1":
         raise HTTPException(
             403,
             "dest_path is disabled by default; set MAC_WEB_ALLOW_DEST_PATH=1 "
             "only for a trusted local deployment",
         )
+    safe_dest_path: Path | None = _validate_dest_path(dest_path) if dest_path else None
 
     job_id = uuid.uuid4().hex[:12]
     tempdir = Path(tempfile.mkdtemp(prefix=f"macjob_{job_id}_"))
@@ -358,7 +464,7 @@ async def run(req: Request) -> dict:
     job: dict[str, Any] = {
         "proc": proc,
         "tempdir": tempdir,
-        "dest_path": dest_path or None,
+        "dest_path": str(safe_dest_path) if safe_dest_path else None,
         "queue": queue,
         "result": None,
         "started_at": time.time(),
@@ -534,9 +640,26 @@ async def _watcher_task(job_id: str, job: dict) -> None:
 
 
 def _copy_artifacts(result: dict, dest: str) -> None:
-    """Copy generated artifacts to the user-specified server-side path (req #2)."""
+    """Copy generated artifacts to the user-specified server-side path.
+
+    Defense-in-depth: re-check that ``dest`` is still under
+    ``MAC_WEB_DEST_ROOT`` before writing. The request-time validator already
+    enforced this, but a local attacker who can mutate env between request
+    and copy could otherwise redirect the write.
+    """
     try:
         dest_path = Path(dest)
+        root_env = os.environ.get(_DEST_ROOT_ENV, "").strip()
+        if root_env:
+            root_resolved = Path(root_env).resolve(strict=False)
+            dest_resolved = dest_path.resolve(strict=False)
+            if not dest_resolved.is_relative_to(root_resolved):
+                print(
+                    f"[web] copy artifacts refused: dest {dest} escapes "
+                    f"MAC_WEB_DEST_ROOT",
+                    file=sys.stderr,
+                )
+                return
         dest_path.mkdir(parents=True, exist_ok=True)
         for key in ("step", "stl", "glb", "py", "measurements", "missed"):
             src = result.get(key)
