@@ -209,13 +209,16 @@ def _origin_host_port(origin: str) -> str:
         return ""
     try:
         parsed = urlparse(origin.strip())
+        host = parsed.hostname
+        port = parsed.port
     except ValueError:
         return ""
-    if not parsed.hostname:
+    if not host:
         return ""
-    if parsed.port:
-        return f"{parsed.hostname}:{parsed.port}"
-    return parsed.hostname
+    # Preserve IPv6 brackets so comparison with Host and _split_host_port
+    # both work ("[::1]:8000", not the ambiguous "::1:8000").
+    host = f"[{host}]" if ":" in host else host
+    return f"{host}:{port}" if port is not None else host
 
 
 # C2 — DS_BASE_URL scheme + host allowlist.
@@ -356,7 +359,7 @@ async def _csrf_guard(request: Request, call_next):
     if origin:
         origin_hp = _origin_host_port(origin)
         host_header = request.headers.get("Host", "")
-        if origin_hp and origin_hp != host_header:
+        if origin_hp != host_header:
             origin_host = _split_host_port(origin_hp)
             request_host = _split_host_port(host_header)
             if not (origin_host in _LOOPBACK_HOSTS and request_host in _LOOPBACK_HOSTS):
