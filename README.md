@@ -234,7 +234,7 @@ returns `403`:
 curl -X POST http://127.0.0.1:8000/api/run \
   -H "X-MAC-CSRF: 1" \
   -H "Content-Type: application/json" \
-  -d '{"user_request": "a 30 mm cube"}'
+  -d '{"prompt": "a 30 mm cube", "api_key": "YOUR_API_KEY"}'
 ```
 
 `GET` endpoints (`/api/health`, `/api/jobs`, status polling) are unaffected.
@@ -261,9 +261,15 @@ The following environment variables control Web UI behavior:
   `HTTP_PROXY,HTTPS_PROXY` on a corporate network). The default allowlist is
   `PATH`, `HOME`, `TMPDIR`, `TMP`, `TEMP`, `LANG`, `LC_ALL`, `LC_CTYPE`,
   `PYTHONPATH`, `PYTHONIOENCODING`, `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`,
-  plus `ITERATION` set per child. **Never list API keys or credentials
+  `SYSTEMROOT`, `WINDIR`, plus `ITERATION` set per child. This applies to
+  deterministic / Aider-assisted cadpy generation as well as the LLM fallback
+  and repair runners. **Never list API keys or credentials
   here** — env-var stripping reduces secret leakage but does not sandbox
   the subprocess; see [SECURITY.md](SECURITY.md).
+
+Generated CAD execution, including the cadpy runner, uses `CAD_SCRIPT_TIMEOUT`
+from `multi_agent_cad/config.py`. Increase it for models whose geometry or export
+needs more time; execution failures continue through the existing repair flow.
 
 ### Generate an assembly
 

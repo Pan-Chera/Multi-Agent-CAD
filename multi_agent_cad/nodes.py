@@ -87,6 +87,8 @@ _CHILD_ENV_ALLOWLIST = frozenset({
     "PYTHONIOENCODING",
     "LD_LIBRARY_PATH",   # OCP / build123d native libs on Linux
     "DYLD_LIBRARY_PATH",  # OCP / build123d native libs on macOS
+    "SYSTEMROOT",        # Windows native DLL / side-by-side assembly loading
+    "WINDIR",
 })
 
 _CHILD_ENV_ALLOW_OVERRIDE = "MAC_CHILD_ENV_ALLOW"
@@ -837,9 +839,9 @@ def _node_python_coder_deterministic(
 ) -> dict | None:
     """Translate ArchitectPlan → gen_step() code, execute via cadpy.generation.
 
-    Uses the repo's battle-tested ``cadpy.generation.run_script_generator()``
-    pipeline — the same one ``scripts/step`` uses.  This handles STEP export,
-    STL sidecar, error handling, and shell/env setup automatically.
+    Uses the same ``cadpy.generation.run_script_generator()`` pipeline in a
+    child process with an allowlisted environment, including after Aider has
+    filled unsupported operations. Artifact paths and QA routing stay here.
     """
     # Pre-compute node_history for failure state
     _coder_history = list(state.get("node_history", [])) + ["coder"]
@@ -919,43 +921,8 @@ def _node_python_coder_deterministic(
             traceback.print_exc()
             return None  # This is intentional - triggers LLM fallback in node_python_coder
 
-    # ── Execute via cadpy.generation (same pipeline as scripts/step) ──
+    # ── Execute via cadpy.generation in a filtered child process ──
     try:
-        _cadpy_src = str(_REPO_ROOT / "packages" / "cadpy" / "src")
-        if _cadpy_src not in sys.path:
-            sys.path.insert(0, _cadpy_src)
-        from cadpy.generation import EntrySpec, run_script_generator
-        from cadpy.metadata import GeneratorMetadata
-
-        # Minimal metadata — tells cadpy this script defines gen_step()
-        meta = GeneratorMetadata(
-            script_path=script_path,
-            kind="part",
-            display_name=f"temp_{iteration}",
-            generator_names=("gen_step",),
-            has_gen_step=True,
-            has_gen_dxf=False,
-            has_gen_urdf=False,
-            has_gen_sdf=False,
-            stl=str(stl_path) if stl_path.is_file() else None,
-            three_mf=None,
-            mesh_tolerance=None,
-            mesh_angular_tolerance=None,
-        )
-
-        spec = EntrySpec(
-            source_ref=f"temp_{iteration}",
-            cad_ref=f"temp_{iteration}",
-            kind="part",
-            source_path=script_path,
-            display_name=f"temp_{iteration}",
-            source="generated",
-            step_path=step_path,
-            script_path=script_path,
-            stl_path=stl_path,
-            generator_metadata=meta,
-        )
-
         # Write token snapshot to file before execution (crash safety).
         # If run_script_generator crashes (e.g., OCP SIGSEGV at export_step),
         # the parent reads this file to recover token stats that would
@@ -977,9 +944,48 @@ def _node_python_coder_deterministic(
         except Exception:
             pass
 
-        # Run gen_step() → cadpy loads the module, calls gen_step(),
-        # exports STEP + STL, generates GLB topology.
-        run_script_generator(spec, "gen_step")
+        # Loading the generated module also executes its top-level code.
+        # Keep BOTH loading and gen_step() out of the provider-bearing parent.
+        cmd = [
+            sys.executable, "-u", str(Path(__file__).with_name("_cadpy_runner.py")),
+            "--script", str(script_path),
+            "--step", str(step_path),
+            "--stl", str(stl_path),
+            "--iteration", str(iteration),
+            "--watch-parent",
+        ]
+        with subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(cwd),
+            env=_build_child_env(iteration),
+        ) as proc:
+            # communicate() normally closes stdin. Retain the write end as a
+            # lifetime pipe instead, so Web cancellation also stops this child.
+            parent_pipe = proc.stdin
+            proc.stdin = None
+            try:
+                stdout, stderr = proc.communicate(timeout=_CFG_CAD_SCRIPT_TIMEOUT)
+            except BaseException:
+                proc.kill()
+                proc.communicate()
+                raise
+            finally:
+                parent_pipe.close()
+        if stdout:
+            _safe_print(stdout.rstrip())
+        if stderr:
+            _safe_print(stderr.rstrip())
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"cadpy subprocess exited with returncode {proc.returncode}.\n"
+                f"{_tail(stderr or stdout, 40)}"
+            )
 
     except Exception as e:
         print(f"[DETERMINISTIC CODER] cadpy pipeline failed: {e}")

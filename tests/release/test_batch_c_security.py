@@ -89,6 +89,50 @@ def client(web_env, fake_proc, monkeypatch):
 class TestCSRFMiddleware:
     """C1: required custom header + loopback Host + Origin + Sec-Fetch-Site."""
 
+    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "[::1]"])
+    def test_same_origin_loopback_cancel_reaches_route(self, web_env, host):
+        """IPv4 and IPv6 browser requests pass CSRF and reach the 404 guard."""
+        from multi_agent_cad.web import server
+
+        web_env.setenv("MAC_WEB_HOST", host.strip("[]"))
+        # Older Starlette TestClient versions cannot parse an IPv6 URL;
+        # supply the actual wire Host/Origin headers explicitly instead.
+        with TestClient(server.app, base_url="http://127.0.0.1:8000") as c:
+            r = c.post(
+                "/api/jobs/nonexistent-review-job/cancel",
+                headers={"Host": f"{host}:8000", "X-MAC-CSRF": "1", "Origin": f"http://{host}:8000",
+                         "Sec-Fetch-Site": "same-origin"},
+            )
+        assert r.status_code == 404, r.text
+
+    @pytest.mark.parametrize("origin", [
+        "http://[::1]:bad", "http://[::1]:99999", "http://[::1", "null",
+        "https://evil.example",
+    ])
+    def test_ipv6_invalid_or_foreign_origin_rejected(self, web_env, origin):
+        from multi_agent_cad.web import server
+
+        web_env.setenv("MAC_WEB_HOST", "::1")
+        with TestClient(server.app, base_url="http://127.0.0.1:8000") as c:
+            r = c.post(
+                "/api/jobs/nonexistent-review-job/cancel",
+                headers={"Host": "[::1]:8000", "X-MAC-CSRF": "1", "Origin": origin},
+            )
+        assert r.status_code == 403
+
+    def test_readme_curl_body_is_accepted(self, client):
+        import json
+        import shlex
+
+        readme = (Path(__file__).resolve().parents[2] / "README.md").read_text()
+        example = readme.split("curl -X POST http://127.0.0.1:8000/api/run", 1)[1]
+        args = shlex.split(example.split("```", 1)[0].replace("\\\n", ""))
+        headers = dict(args[i + 1].split(": ", 1)
+                       for i, arg in enumerate(args) if arg == "-H")
+        body = json.loads(args[args.index("-d") + 1])
+        r = client.post("/api/run", headers=headers, json=body)
+        assert r.status_code == 200, r.text
+
     def test_get_not_gated(self, client):
         """GET endpoints are not subject to the CSRF guard."""
         r = client.get("/api/health", headers={"Origin": "https://evil.example"})
@@ -486,10 +530,13 @@ class TestChildEnvAllowlist:
         monkeypatch.setenv("PYTHONPATH", "/repo")
         monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/ocp/lib")
         monkeypatch.setenv("DYLD_LIBRARY_PATH", "/opt/ocp/lib")
+        monkeypatch.setenv("SYSTEMROOT", "C:\\Windows")
+        monkeypatch.setenv("WINDIR", "C:\\Windows")
 
         env = _build_child_env(iteration=0)
         for k in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL",
-                  "PYTHONPATH", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
+                  "PYTHONPATH", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH",
+                  "SYSTEMROOT", "WINDIR"):
             assert k in env, f"required runtime var {k} missing from child env"
         assert env["ITERATION"] == "0"
 
