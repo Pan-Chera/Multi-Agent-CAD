@@ -24,8 +24,8 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    # CAD kernel
-    "build123d>=0.8",
+    # cadpy uses OCP 7.x APIs; build123d 0.13 switches to incompatible OCP 8.
+    "build123d>=0.8,<0.13",
     # LangGraph orchestration (pinned for Python 3.11 compat)
     "langgraph>=0.2,<0.3",
     "langgraph-checkpoint>=2.0,<3.0",

@@ -24,8 +24,8 @@ dependencies:
   # ── pip-installed packages (fast-moving, PyPI-first) ──────────────────
   - pip:
       # --- CAD kernel ---
-      # build123d pulls in cadquery-ocp-novtk (provides `OCP`) transitively
-      - build123d>=0.8
+      # Keep OCP 7.x: build123d 0.13 switches to OCP 8, incompatible with cadpy.
+      - build123d>=0.8,<0.13
 
       # --- LangGraph orchestration (pinned for Python 3.11 compat) ---
       - langgraph>=0.2,<0.3

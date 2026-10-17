@@ -8,8 +8,9 @@ version = "0.3.8"
 description = "Shared STEP/GLB topology artifact generation runtime for CAD skills."
 requires-python = ">=3.11"
 dependencies = [
-  "build123d",
-  "cadquery-ocp-novtk",
+  # The STEP scene runtime uses OCP 7.x APIs removed in OCP 8.
+  "build123d>=0.8,<0.13",
+  "cadquery-ocp-novtk<8",
 ]
 
 [project.scripts]

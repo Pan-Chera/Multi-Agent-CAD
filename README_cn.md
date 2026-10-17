@@ -138,6 +138,10 @@ build123d 使用的 NumPy 2.x 冲突，因此没有放入 `environment.yml`；
 
 默认配置使用兼容 OpenAI API 的 DashScope 接口。其他提供商的配置见[单零件模型配置说明](multi_agent_cad/README_cn.md#配置与模型提供商)。
 
+内置 cadpy 运行时目前依赖 OCP 7.x，因此安装配置限制 `build123d<0.13`。
+0.13 切换到了 OCP 8，无法加载当前的 STEP 运行时。如果已有环境已经升级，执行
+`python -m pip install "build123d>=0.8,<0.13"` 可恢复兼容的依赖版本。
+
 > **pip 用户（无 conda）**：`aider-chat` 锁定 `numpy==1.26.4`，与 `build123d>=0.8` 要求的 `numpy>=2,<3` 冲突，纯 pip 直接装失败。走以下 workaround（已在 macOS arm64 + Python 3.11 验证）：
 >
 > ```bash
@@ -148,7 +152,7 @@ build123d 使用的 NumPy 2.x 冲突，因此没有放入 `environment.yml`；
 > # 已验证 aider 0.82.3 在 numpy 2.x 上能正常 import——上游的 pin 是过度保守。
 > pip install "aider-chat==0.82.3"
 > pip install --no-deps --force-reinstall "numpy>=2,<2.3"
-> pip install "build123d>=0.8" "langgraph>=0.2,<0.3" "langgraph-checkpoint>=2.0,<3.0" \
+> pip install "build123d>=0.8,<0.13" "langgraph>=0.2,<0.3" "langgraph-checkpoint>=2.0,<3.0" \
 >             "pydantic>=2.5" "openai>=1.20.0" "anthropic>=0.30" \
 >             "trimesh>=4.0" "rtree>=1.1" "scipy>=1.10" "scikit-learn>=1.3" \
 >             "fastapi>=0.110" "uvicorn[standard]>=0.27" "ipython>=8.15" "pytest>=7.4"

@@ -23,7 +23,7 @@ trimesh>=4.0
 rtree>=1.1
 
 # ── CAD kernel ────────────────────────────────────────────────────────
-build123d>=0.8          # pulls in cadquery-ocp-novtk (provides `OCP`) transitively
+build123d>=0.8,<0.13    # keep OCP 7.x; cadpy is not yet compatible with OCP 8
 
 # ── LangGraph orchestration ───────────────────────────────────────────
 langgraph>=0.2,<0.3

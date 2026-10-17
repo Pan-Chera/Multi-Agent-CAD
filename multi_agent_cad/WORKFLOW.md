@@ -969,7 +969,7 @@ Multi-Agent-CAD/
 ```
 langgraph>=0.2,<0.3
 langgraph-checkpoint>=2.0,<3.0
-build123d>=0.8               # CAD 建模引擎；transitive 拉到 cadquery-ocp-novtk（提供 `OCP`）
+build123d>=0.8,<0.13         # CAD 建模引擎；保持 OCP 7.x，cadpy 尚不兼容 OCP 8
 pydantic>=2.5
 aider-chat>=0.50            # Aider 代码修复 (手动装: pip install --no-deps aider-chat==0.82.3, 绕开 numpy==1.26.4 pin)
 openai>=1.20.0              # DashScope API (Qwen，OpenAI 兼容端点)

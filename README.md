@@ -179,6 +179,11 @@ The default configuration targets an OpenAI-compatible DashScope endpoint.
 Other providers are covered in the
 [single-part configuration guide](multi_agent_cad/README.md#configuration-and-model-providers).
 
+The bundled cadpy runtime currently requires OCP 7.x, so installation constrains
+`build123d` to `<0.13`. Version 0.13 switches to OCP 8 and cannot load the current
+STEP runtime. If an existing environment has already upgraded, run
+`python -m pip install "build123d>=0.8,<0.13"` to restore compatible dependencies.
+
 > **pip users (no conda)**: `aider-chat` pins `numpy==1.26.4`, but `build123d>=0.8` requires `numpy>=2,<3` — these conflict in pure pip. Use this workaround (verified on macOS arm64 + Python 3.11):
 >
 > ```bash
@@ -189,7 +194,7 @@ Other providers are covered in the
 > # Verified: aider 0.82.3 imports cleanly on numpy 2.x — the pin is over-cautious upstream.
 > pip install "aider-chat==0.82.3"
 > pip install --no-deps --force-reinstall "numpy>=2,<2.3"
-> pip install "build123d>=0.8" "langgraph>=0.2,<0.3" "langgraph-checkpoint>=2.0,<3.0" \
+> pip install "build123d>=0.8,<0.13" "langgraph>=0.2,<0.3" "langgraph-checkpoint>=2.0,<3.0" \
 >             "pydantic>=2.5" "openai>=1.20.0" "anthropic>=0.30" \
 >             "trimesh>=4.0" "rtree>=1.1" "scipy>=1.10" "scikit-learn>=1.3" \
 >             "fastapi>=0.110" "uvicorn[standard]>=0.27" "ipython>=8.15" "pytest>=7.4"
