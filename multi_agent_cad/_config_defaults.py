@@ -37,6 +37,8 @@ This file is loaded by ``nodes.py`` and ``token_tracker.py`` at import
 time. Changes take effect on the next run.
 """
 
+import os
+
 # ============================================================================
 # API Key & Provider
 # ============================================================================
@@ -82,12 +84,13 @@ MAX_EXEC_RETRIES = 3
 # ============================================================================
 
 # LLM API call for JSON planning stages (Spec Planner / Geometric Architect /
-# assembly Decomposer / Mating Architect / Judges).
-LLM_API_TIMEOUT = 1800
+# assembly Decomposer / Mating Architect / Judges). Thinking-enabled Qwen
+# responses can take substantially longer, so the default is 1800s.
+LLM_API_TIMEOUT = int(os.environ.get("MAC_LLM_API_TIMEOUT") or "1800")
 
 # LLM API call for large code generation / repair paths (Python Coder,
-# Aider-backed generation + repair).
-LLM_CODEGEN_API_TIMEOUT = 1800
+# Aider-backed generation + repair). Override independently of planning calls.
+LLM_CODEGEN_API_TIMEOUT = int(os.environ.get("MAC_LLM_CODEGEN_API_TIMEOUT") or "1800")
 
 # check_mesh.py subprocess timeout (Engine B -- STL mesh analysis).
 CHECK_MESH_TIMEOUT = 180

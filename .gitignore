@@ -82,6 +82,9 @@ mac_assembly/assembly_prompts/natural_language_benchmarks/05_tilting_display_sta
 tests/*
 !tests/release/
 !tests/release/**
+# Stable timeout and public-prompt regressions also run in CI.
+!tests/test_llm_timeouts.py
+!tests/test_natural_language_benchmark_prompts.py
 
 # ── Local dev scripts & scratch space ──────────────────────────────────────
 tmp/

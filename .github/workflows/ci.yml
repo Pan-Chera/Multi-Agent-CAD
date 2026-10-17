@@ -33,7 +33,7 @@ jobs:
       - name: Run release-contract tests
         env:
           DASHSCOPE_API_KEY: ""
-        run: python -m pytest tests/release -q
+        run: python -m pytest tests/release tests/test_llm_timeouts.py tests/test_natural_language_benchmark_prompts.py -q
 
       - name: Compile public packages
         run: python -m compileall -q multi_agent_cad mac_assembly packages/cadpy/src/cadpy
