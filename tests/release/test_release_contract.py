@@ -32,6 +32,10 @@ def _assignment_value(path: Path, name: str):
 
 def test_public_packages_import() -> None:
     import cadpy  # noqa: F401
+    # cadpy's lazy top-level import does not exercise its OCP-dependent runtime.
+    # Issue #10: an incompatible kernel must fail CI without an API key.
+    import cadpy.generation  # noqa: F401
+    import cadpy.step_scene  # noqa: F401
     import mac_assembly  # noqa: F401
     import multi_agent_cad  # noqa: F401
 

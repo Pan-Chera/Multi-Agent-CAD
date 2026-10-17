@@ -78,6 +78,7 @@ jobs:
         run: |
           python -c "import multi_agent_cad; print('multi_agent_cad', multi_agent_cad.__version__)"
           python -c "import mac_assembly, cadpy; print('mac_assembly and cadpy OK')"
+          python -c "import cadpy.generation, cadpy.step_scene; print('cadpy CAD runtime OK')"
           python -c "from multi_agent_cad.graph import build_graph; print('build_graph OK')"
 
       - name: Run pipeline (default prompt)
