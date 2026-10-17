@@ -40,3 +40,9 @@ without an independent authentication and sandboxing layer.
 
 Reports of credential exposure, unsafe default network exposure, or unexpected
 access beyond the documented process privileges are in scope.
+
+Aider's hybrid coding, initial generation, and repair stages disable automatic
+URL detection. Links in CAD requests or repair feedback remain plain prompt
+text; they do not trigger Aider's web scraping or the associated automatic
+Playwright/package installation. Model API calls and the generated-code
+permissions described above still apply.

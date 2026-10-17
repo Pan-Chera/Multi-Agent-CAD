@@ -2927,6 +2927,9 @@ Fillets/chamfers MUST come after ALL boolean operations (union, cut).
         coder = Coder.create(
             main_model=model,
             io=io,
+            # Prompt URLs are CAD context, not permission to scrape pages or
+            # trigger Aider's automatic Playwright/package installation.
+            detect_urls=False,
             fnames=[str(script_path)],
             read_only_fnames=[_BUILD123D_REF],
             auto_commits=False,
@@ -6822,6 +6825,7 @@ Please replace the 'pass' statement in gen_step() with the full implementation.
                 coder = Coder.create(
                     main_model=model,
                     io=io,
+                    detect_urls=False,
                     fnames=[script_path],
                     read_only_fnames=[_BUILD123D_REF],
                     auto_commits=False,
@@ -7020,6 +7024,7 @@ def _run_repair_on_script(
                 coder = Coder.create(
                     main_model=model,
                     io=io,
+                    detect_urls=False,
                     fnames=[script_path],
                     read_only_fnames=[_BUILD123D_REF],
                     auto_commits=False,

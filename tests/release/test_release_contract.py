@@ -286,5 +286,8 @@ def test_build123d_ref_not_in_editable_fnames() -> None:
             problems.append("Coder.create must keep auto_commits=False")
         if not gitignore_kws or not isinstance(gitignore_kws[0].value, ast.Constant) or gitignore_kws[0].value.value is not True:
             problems.append("Coder.create must keep add_gitignore_files=True")
+        url_kws = [kw for kw in call.keywords if kw.arg == "detect_urls"]
+        if not url_kws or not isinstance(url_kws[0].value, ast.Constant) or url_kws[0].value.value is not False:
+            problems.append("Coder.create must set detect_urls=False (issue #11)")
 
     assert not problems, "BUG-007 / Aider-contract regression: " + "; ".join(problems)
