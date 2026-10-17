@@ -223,6 +223,18 @@ pip install -e ".[web]"
 python -m multi_agent_cad.web
 ```
 
+The provider selector includes OpenRouter (`https://openrouter.ai/api/v1`).
+Switching presets fills suggested stage and Aider model names; models you have
+edited manually are preserved. Existing endpoint and model settings are loaded
+from `config.py` when the page opens. For OpenRouter, Aider uses an
+OpenAI-compatible model name such as `openai/qwen/qwen3-max`.
+
+If the key field is blank, the Web UI uses the server's `DASHSCOPE_API_KEY`,
+then `DS_API_KEY` from `config.py`. Explicit form keys take priority; API clients
+can also supply the existing `config.DS_API_KEY` request field. Server keys are
+never included in the configuration schema response or written to job config
+files. Use a key for the selected provider.
+
 The UI listens on `127.0.0.1` by default. It executes generated Python with
 your user account's permissions, so do not expose it directly to an untrusted
 network. Copying results to an arbitrary local directory is disabled unless
@@ -254,7 +266,7 @@ The following environment variables control Web UI behavior:
   OpenAI-compatible `DS_BASE_URL` hosts: vLLM on a private hostname, a
   corporate gateway, or Ollama / LM Studio on a non-loopback address. Default
   off; otherwise the host must match the provider allowlist (loopback,
-  `api.openai.com`, `api.deepseek.com`, `generativelanguage.googleapis.com`,
+  `api.openai.com`, `api.deepseek.com`, `openrouter.ai`, `generativelanguage.googleapis.com`,
   `.aliyuncs.com`, `.googleapis.com`). Scheme (`http`/`https`) is always
   enforced.
 - `MAC_WEB_ALLOW_DEST_PATH=1` — opt in to the `dest_path` artifact-copy

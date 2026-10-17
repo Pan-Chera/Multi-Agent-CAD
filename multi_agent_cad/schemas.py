@@ -21,7 +21,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, TypedDict, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 
 # ============================================================================
@@ -260,6 +260,13 @@ class VerificationTarget(BaseModel):
         0.1,
         description="Allowed negative deviation from nominal (mm).",
     )
+
+    @field_validator("tolerance_upper", "tolerance_lower", mode="before")
+    @classmethod
+    def _default_null_tolerance(cls, value: Any, info: ValidationInfo) -> Any:
+        # Some compatible models emit null instead of omitting an optional
+        # tolerance. Preserve explicit values, including zero.
+        return cls.model_fields[info.field_name].default if value is None else value
 
     # -- Feature selectors (how to locate the measurement site) --
     face_selector_expression: str | None = Field(

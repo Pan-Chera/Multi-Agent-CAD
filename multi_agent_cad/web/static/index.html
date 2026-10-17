@@ -21,15 +21,18 @@
       <label>Provider preset
         <select id="provider">
           <option value="qwen">Qwen (DashScope, default)</option>
+          <option value="openrouter">OpenRouter</option>
           <option value="openai">OpenAI</option>
           <option value="deepseek">DeepSeek</option>
           <option value="gemini">Google Gemini</option>
           <option value="ollama">Local Ollama</option>
+          <option value="custom">Custom endpoint</option>
         </select>
       </label>
-      <label>API key <input type="password" id="api_key" placeholder="sk-..." autocomplete="off" /></label>
+      <label>API key <input type="password" id="api_key" placeholder="Optional if configured on server" autocomplete="off" /></label>
       <label>DS_BASE_URL <input type="text" id="DS_BASE_URL" /></label>
       <p class="hint">Switching provider auto-fills DS_BASE_URL and a suggested model name. The thinking toggle (<code>*_KWARGS</code>) is Qwen-specific — leave it for Qwen, ignore for others.</p>
+      <p class="hint">Leave the key blank to use the server's DASHSCOPE_API_KEY or DS_API_KEY in config.py. Use a key for the selected provider.</p>
     </details>
 
     <details>
@@ -38,6 +41,7 @@
         <thead><tr><th>Stage</th><th>Model</th><th>Temp</th><th>Max tokens</th></tr></thead>
         <tbody></tbody>
       </table>
+      <label>Aider repair model <input type="text" id="AIDER_MODEL" /></label>
     </details>
 
     <details open>

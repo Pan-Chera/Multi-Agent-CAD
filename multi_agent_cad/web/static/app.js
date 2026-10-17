@@ -11,6 +11,19 @@ const STAGES = [
 let providers = {};
 let currentJobId = null;
 
+function matchingProvider(baseUrl) {
+  try {
+    const url = new URL(baseUrl);
+    for (const [name, preset] of Object.entries(providers)) {
+      const candidate = new URL(preset.ds_base_url);
+      if (url.origin === candidate.origin &&
+          url.pathname.replace(/\/+$/, "") === candidate.pathname.replace(/\/+$/, "") &&
+          url.search === candidate.search) return name;
+    }
+  } catch { /* An incomplete or custom URL has no preset. */ }
+  return "custom";
+}
+
 async function loadSchema() {
   const r = await fetch("/api/config/schema");
   const d = await r.json();
@@ -22,7 +35,8 @@ async function loadSchema() {
   document.getElementById("workflow").value = cfg.WORKFLOW_ID || "original";
   document.getElementById("MAX_RETRIES").value = cfg.MAX_RETRIES;
   document.getElementById("MAX_EXEC_RETRIES").value = cfg.MAX_EXEC_RETRIES;
-  document.getElementById("provider").value = "qwen";
+  document.getElementById("provider").value = matchingProvider(cfg.DS_BASE_URL);
+  document.getElementById("AIDER_MODEL").value = cfg.AIDER_MODEL || "";
 
   const tbody = document.querySelector("#stage-table tbody");
   tbody.innerHTML = "";
@@ -42,6 +56,8 @@ async function loadSchema() {
     const inp = document.getElementById(s.prefix + "_MODEL");
     inp.addEventListener("input", () => { inp.dataset.customized = "1"; });
   }
+  const aiderInput = document.getElementById("AIDER_MODEL");
+  aiderInput.addEventListener("input", () => { aiderInput.dataset.customized = "1"; });
 }
 
 document.getElementById("provider").addEventListener("change", (e) => {
@@ -52,11 +68,16 @@ document.getElementById("provider").addEventListener("change", (e) => {
     const inp = document.getElementById(s.prefix + "_MODEL");
     if (inp && !inp.dataset.customized) inp.value = p.model_hint;
   }
+  const aiderInput = document.getElementById("AIDER_MODEL");
+  if (!aiderInput.dataset.customized) {
+    aiderInput.value = p.aider_model_hint || `openai/${p.model_hint}`;
+  }
 });
 
 document.getElementById("run-btn").addEventListener("click", async () => {
   const config = {
     DS_BASE_URL: document.getElementById("DS_BASE_URL").value,
+    AIDER_MODEL: document.getElementById("AIDER_MODEL").value,
     MAX_RETRIES: parseInt(document.getElementById("MAX_RETRIES").value, 10),
     MAX_EXEC_RETRIES: parseInt(document.getElementById("MAX_EXEC_RETRIES").value, 10),
   };

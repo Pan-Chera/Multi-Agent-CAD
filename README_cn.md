@@ -179,6 +179,16 @@ pip install -e ".[web]"
 python -m multi_agent_cad.web
 ```
 
+提供商选择器已包含 OpenRouter（`https://openrouter.ai/api/v1`）。切换预设时，
+会填写各阶段及 Aider 的建议模型名，并保留手动修改过的模型。页面首次打开时读取
+`config.py` 中的现有配置。OpenRouter 的 Aider 模型名采用 OpenAI 兼容格式，
+例如 `openai/qwen/qwen3-max`。
+
+API key 留空时，Web UI 依次使用服务器的 `DASHSCOPE_API_KEY` 环境变量和
+`config.py` 中的 `DS_API_KEY`；表单填写的 key 优先，API 客户端也可继续通过
+请求中的 `config.DS_API_KEY` 提供 key。服务器 key 不会返回到配置界面或写入任务
+配置文件。请使用与当前提供商对应的 key。
+
 界面默认仅监听 `127.0.0.1`。生成的 Python 会以当前用户权限执行，因此不要将
 服务直接暴露到不可信网络。只有显式设置 `MAC_WEB_ALLOW_DEST_PATH=1` 后，界面
 才允许把结果复制到任意本地目录。

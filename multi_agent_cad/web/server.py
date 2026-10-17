@@ -120,6 +120,12 @@ _PROVIDER_PRESETS: dict[str, dict[str, str]] = {
     "qwen": {
         "ds_base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
         "model_hint": "qwen3.8-max",
+        "aider_model_hint": "openai/deepseek-v4-pro",
+    },
+    "openrouter": {
+        "ds_base_url": "https://openrouter.ai/api/v1",
+        "model_hint": "qwen/qwen3-max",
+        "aider_model_hint": "openai/qwen/qwen3-max",
     },
     "openai": {
         "ds_base_url": "https://api.openai.com/v1",
@@ -228,6 +234,7 @@ def _origin_host_port(origin: str) -> str:
 # gateways, vLLM on a private host, etc.
 _ALLOWED_DS_SCHEMES = frozenset({"http", "https"})
 _PROVIDER_HOST_EXACT = frozenset({
+    "openrouter.ai",
     "api.openai.com",
     "api.deepseek.com",
     "generativelanguage.googleapis.com",
@@ -396,12 +403,25 @@ async def run(req: Request) -> dict:
     prompt = (body.get("prompt") or config.get("USER_REQUEST", "") or "").strip()
     dest_path = (body.get("dest_path") or "").strip()
     workflow = body.get("workflow") or config.get("WORKFLOW_ID", "original")
-    api_key = body.get("api_key", "") or config.get("DS_API_KEY", "")
+    from multi_agent_cad import config as cfg
+
+    # Keep explicit request keys first, then use the same env/config order
+    # as the CLI. The schema never exposes server keys to the browser.
+    api_key = (
+        (body.get("api_key") or "").strip()
+        or (config.get("DS_API_KEY") or "").strip()
+        or os.environ.get("DASHSCOPE_API_KEY", "").strip()
+        or (getattr(cfg, "DS_API_KEY", "") or "").strip()
+    )
 
     if not prompt:
         raise HTTPException(400, "prompt is required")
     if not api_key:
-        raise HTTPException(400, "api_key is required (fill it in the form)")
+        raise HTTPException(
+            400,
+            "api_key is required (fill it in the form, set DASHSCOPE_API_KEY, "
+            "or configure DS_API_KEY in config.py)",
+        )
 
     # C2 — DS_BASE_URL scheme + host allowlist. Reject with 400 (not run-then-fail)
     # so an attacker cannot drive a job with an off-policy endpoint.
