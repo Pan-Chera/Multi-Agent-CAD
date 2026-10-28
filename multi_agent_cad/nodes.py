@@ -14,6 +14,7 @@ Nodes implemented in this file:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -199,7 +200,7 @@ def _llm_client() -> OpenAI:
 # Pipeline cache
 # ---------------------------------------------------------------------------
 
-_CACHE_DIR = Path(__file__).resolve().parent.parent / "pipeline_cache"
+_CACHE_DIR = Path.cwd() / "pipeline_cache"
 
 # build123d API reference — passed to Aider as a read-only context file
 _BUILD123D_REF = str(Path(__file__).resolve().parent / "build123d_reference.md")
@@ -237,8 +238,45 @@ def _load_cache(path: Path):
 
 def _save_cache(path: Path, data) -> None:
     """Save data as JSON to the cache directory."""
-    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f".{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _planning_fingerprint(stage: str, payload) -> str:
+    """Invalidate plans when their inputs, prompts, model or images change."""
+    from multi_agent_cad import config as cfg
+
+    prefix = "SPEC_PLANNER_" if stage == "spec_planner" else "ARCHITECT_"
+    settings = {k: getattr(cfg, k) for k in dir(cfg) if k.startswith(prefix)}
+    images_by_name = {}
+    image_dir = Path.cwd() / _CFG_USER_IMAGES_DIR
+    if _CFG_SP_MULTIMODAL != "never":
+        from multi_agent_cad.image_preprocess import _repo_root
+        for directory in (image_dir, _repo_root() / image_dir.name):
+            if not directory.is_dir():
+                continue
+            for p in directory.iterdir():
+                name = p.name.lower()
+                if name not in images_by_name and p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+                    try:
+                        images_by_name[name] = hashlib.sha256(p.read_bytes()).hexdigest()
+                    except OSError:
+                        images_by_name[name] = "unreadable"
+    images = sorted(images_by_name.items())
+    data = {"payload": payload, "settings": settings, "images": images,
+            "endpoint": _DS_BASE_URL, "prompt": _load_prompt(stage),
+            "image_settings": [_CFG_SP_MULTIMODAL, _CFG_USER_IMAGE_MAX_SIZE,
+                               _CFG_USER_IMAGE_JPEG_QUALITY]}
+    return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _remove_execution_outputs(step: Path, stl: Path, iteration: int) -> None:
+    """A successful execution must create fresh, nonempty artifacts."""
+    for path in (step, stl, step.parent / f"temp_measurements_{iteration}.json",
+                 step.parent / f"temp_missed_{iteration}.json"):
+        path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -923,6 +961,7 @@ def _node_python_coder_deterministic(
 
     # ── Execute via cadpy.generation in a filtered child process ──
     try:
+        _remove_execution_outputs(step_path, stl_path, iteration)
         # Write token snapshot to file before execution (crash safety).
         # If run_script_generator crashes (e.g., OCP SIGSEGV at export_step),
         # the parent reads this file to recover token stats that would
@@ -998,11 +1037,11 @@ def _node_python_coder_deterministic(
             node_history=_coder_history,
         )
 
-    if not step_path.is_file():
-        print("[DETERMINISTIC CODER] STEP missing after cadpy run")
+    if not step_path.is_file() or not stl_path.is_file() or min(step_path.stat().st_size, stl_path.stat().st_size) == 0:
+        print("[DETERMINISTIC CODER] STEP/STL missing or empty after cadpy run")
         return _coder_failure_state(
             iteration=iteration,
-            error_message="Deterministic coder executed but did not produce STEP file",
+            error_message="Deterministic coder executed but did not produce nonempty STEP and STL files",
             script_path=str(script_path),
             node_history=_coder_history,
         )
@@ -2916,7 +2955,7 @@ Fillets/chamfers MUST come after ALL boolean operations (union, cut).
             "max_tokens": _AIDER_MAX_TOKENS,  # avoid truncation
             # litellm-level request timeout (s): see LLM_CODEGEN_API_TIMEOUT.
             "timeout": _CFG_LLM_CODEGEN_API_TIMEOUT,
-            "extra_body": {"enable_thinking": False},
+            **_REPAIR_KWARGS,
         }
         io = InputOutput(
             yes=True,
@@ -3042,24 +3081,7 @@ def node_python_coder(state: GraphState) -> dict:
 
     # Original LLM-based path follows...
     qa_report = state.get("qa_report")
-    force_refresh: bool = state.get("force_refresh", False)
-
-    # -- Cache: reuse existing .step/.stl ONLY on fresh runs (not retries) -
     cwd = Path.cwd()
-    cached_step = cwd / f"temp_output_{iteration}.step"
-    cached_stl = cwd / f"temp_output_{iteration}.stl"
-    cached_code = cwd / f"temp_design_{iteration}.py"
-    is_fresh_run = (iteration == 0 and qa_report is None)
-    if is_fresh_run and not force_refresh and cached_step.is_file() and cached_stl.is_file():
-        python_code = cached_code.read_text(encoding="utf-8") if cached_code.is_file() else ""
-        print("[CACHE] Reusing existing .step/.stl — skipping Python Coder")
-        return {
-            "current_python_code": python_code,
-            "current_step_path": str(cached_step.resolve()),
-            "current_stl_path": str(cached_stl.resolve()),
-            "execution_log": ["node_python_coder: reused cached artifacts"],
-            "node_history": list(state.get("node_history", [])) + ["coder"],
-        }
 
     if architect_plan is None:
         return {
@@ -3217,6 +3239,7 @@ def node_python_coder(state: GraphState) -> dict:
     # 7. Execute the script
     # ------------------------------------------------------------------
     try:
+        _remove_execution_outputs(step_path, stl_path, iteration)
         result = subprocess.run(
             [sys.executable, str(script_path)],
             capture_output=True,
@@ -3273,9 +3296,9 @@ def node_python_coder(state: GraphState) -> dict:
 
     # Verify output files exist (defensive check)
     missing_files: list[str] = []
-    if not step_path.is_file():
+    if not step_path.is_file() or step_path.stat().st_size == 0:
         missing_files.append(str(step_path))
-    if not stl_path.is_file():
+    if not stl_path.is_file() or stl_path.stat().st_size == 0:
         missing_files.append(str(stl_path))
 
     if missing_files:
@@ -3994,8 +4017,6 @@ def _run_engine_a_cadpy(
     # Load feature measurements from white-box instrumentation if not provided
     if feature_measurements is None:
         measurements_file = Path(f"temp_measurements_{iteration}.json")
-        if not measurements_file.is_file():
-            measurements_file = Path("temp_measurements_0.json")
         if measurements_file.is_file():
             try:
                 with open(measurements_file, 'r', encoding='utf-8') as f:
@@ -4830,7 +4851,7 @@ def _run_engine_b_check_mesh(
             errors=[f"check_mesh.py not found at {_CHECK_MESH_SCRIPT}"],
         )
 
-    cmd = [sys.executable, str(_CHECK_MESH_SCRIPT), stl_path, "--format", "json", "--skip-print-orientation", "--iteration", str(iteration)]
+    cmd = [sys.executable, str(_CHECK_MESH_SCRIPT), str(Path(stl_path).resolve()), "--format", "json", "--skip-print-orientation", "--iteration", str(iteration)]
     if spec_path is not None and spec_path.is_file():
         cmd += ["--spec", str(spec_path)]
 
@@ -4842,7 +4863,7 @@ def _run_engine_b_check_mesh(
             encoding="utf-8",
             errors="replace",
             timeout=_CFG_CHECK_MESH_TIMEOUT,
-            cwd=str(_REPO_ROOT),
+            cwd=str(Path(stl_path).resolve().parent),
             env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
     except subprocess.TimeoutExpired:
@@ -4903,8 +4924,6 @@ def _run_engine_b_check_mesh(
 
     # -- 3.5. Load feature measurements from white-box instrumentation --------
     measurements_file = Path(f"temp_measurements_{iteration}.json")
-    if not measurements_file.is_file():
-        measurements_file = Path("temp_measurements_0.json")
     if measurements_file.is_file():
         try:
             with open(measurements_file, 'r', encoding='utf-8') as f:
@@ -6815,7 +6834,7 @@ Please replace the 'pass' statement in gen_step() with the full implementation.
             # litellm-level request timeout (s): full-script generation
             # runs 30k-65k output tokens; 120s truncated these mid-file.
             "timeout": _CFG_LLM_CODEGEN_API_TIMEOUT,
-            "extra_body": {"enable_thinking": False},
+            **_REPAIR_KWARGS,
         }
                 io = InputOutput(
                     yes=True,
@@ -7014,7 +7033,7 @@ def _run_repair_on_script(
             # litellm-level request timeout (s): full-script generation
             # runs 30k-65k output tokens; 120s truncated these mid-file.
             "timeout": _CFG_LLM_CODEGEN_API_TIMEOUT,
-            "extra_body": {"enable_thinking": False},
+            **_REPAIR_KWARGS,
         }
                 io = InputOutput(
                     yes=True,       # auto-confirm all prompts
@@ -7269,7 +7288,9 @@ def _execute_cad_script(
         print(f"[EXECUTE CAD] Cannot read script: {script_path}")
         return False, f"Cannot read script: {script_path}"
 
-    if "def gen_step():" in code and 'if __name__ == "__main__":' not in code:
+    if re.search(r"(?m)^def gen_step\s*\(", code) and not re.search(
+        r"(?m)^if __name__\s*==\s*(['\"])__main__\1\s*:", code,
+    ):
         code += (
             '\n\nif __name__ == "__main__":\n'
             '    import sys as _sys, json as _json\n'
@@ -7285,20 +7306,23 @@ def _execute_cad_script(
     # temp_output_autonomous_0.step).  Rewrite export_step / export_stl
     # path arguments to ensure files are written where the caller expects.
     import re as _re
-    _step_name = step_out.name
-    _stl_name = stl_out.name
+    _step_name = step_out.resolve().as_posix()
+    _stl_name = stl_out.resolve().as_posix()
+    def _redirect_path(match, target):
+        prefix = _re.sub(r'''r?["']$''', "", match.group(1))
+        return prefix + repr(target) + match.group(3)[1:]
     # Match path arguments in export_step(...) and export_stl(...) calls.
     # Handles both raw strings r"..." and regular strings "...", with
-    # absolute or relative paths.  The regex captures the filename portion
-    # (the last path component) and replaces it with the expected name.
+    # absolute or relative paths. Replace the complete literal so a copied
+    # source cannot keep exporting into the previous job's directory.
     code = _re.sub(
         r'(export_step\s*\([^,]+,\s*r?["\'])([^"\']*?)(["\'])',
-        lambda m: m.group(1) + _re.sub(r'[^/\\]+\.step$', _step_name, m.group(2)) + m.group(3),
+        lambda m: _redirect_path(m, _step_name) if m.group(2).lower().endswith(".step") else m.group(0),
         code,
     )
     code = _re.sub(
         r'(export_stl\s*\([^,]+,\s*r?["\'])([^"\']*?)(["\'])',
-        lambda m: m.group(1) + _re.sub(r'[^/\\]+\.stl$', _stl_name, m.group(2)) + m.group(3),
+        lambda m: _redirect_path(m, _stl_name) if m.group(2).lower().endswith(".stl") else m.group(0),
         code,
     )
 
@@ -7306,12 +7330,12 @@ def _execute_cad_script(
     # This ensures the hash is computed from the same files that were exported
     code = _re.sub(
         r'(with\s+open\s*\(\s*r?["\'])([^"\']*?\.step)(["\'],\s*["\']rb["\'])',
-        lambda m: m.group(1) + _re.sub(r'[^/\\]+\.step$', _step_name, m.group(2)) + m.group(3),
+        lambda m: _redirect_path(m, _step_name),
         code,
     )
     code = _re.sub(
         r'(with\s+open\s*\(\s*r?["\'])([^"\']*?\.stl)(["\'],\s*["\']rb["\'])',
-        lambda m: m.group(1) + _re.sub(r'[^/\\]+\.stl$', _stl_name, m.group(2)) + m.group(3),
+        lambda m: _redirect_path(m, _stl_name),
         code,
     )
 
@@ -7323,6 +7347,7 @@ def _execute_cad_script(
     print(f"[EXECUTE CAD] Running: {script_path.name}")
 
     try:
+        _remove_execution_outputs(step_out, stl_out, iteration)
         result = subprocess.run(
             [sys.executable, str(script_path)],
             capture_output=True,
@@ -7350,8 +7375,8 @@ def _execute_cad_script(
         )
 
     # Check for output files at the expected paths
-    found_step = step_out.is_file()
-    found_stl = stl_out.is_file()
+    found_step = step_out.is_file() and step_out.stat().st_size > 0
+    found_stl = stl_out.is_file() and stl_out.stat().st_size > 0
 
     if found_step and found_stl:
         print(f"[EXECUTE CAD] SUCCESS — STEP: {_file_size_kb(step_out)}, STL: {_file_size_kb(stl_out)}")
@@ -7371,6 +7396,7 @@ def _validate_geometry_against_request(
     step_path: str,
     user_request: str,
     engine_a: EngineReport,
+    measurement_iteration: int = 0,
 ) -> list[str]:
     """Validate that the generated geometry matches the user request.
 
@@ -7502,10 +7528,7 @@ def _validate_geometry_against_request(
         or "fillet" in user_request
     )
     if wants_fillets:
-        _iter = os.environ.get("ITERATION", "0")
-        measurements_path = Path(f"temp_measurements_{_iter}.json")
-        if not measurements_path.is_file():
-            measurements_path = Path("temp_measurements_0.json")
+        measurements_path = Path(f"temp_measurements_{measurement_iteration}.json")
         if measurements_path.is_file():
             try:
                 with open(measurements_path, "r", encoding="utf-8") as f:
@@ -7616,7 +7639,7 @@ def _optimize_print_orientation(stl_path: Path) -> tuple[Path, str | None]:
                 mesh.apply_transform(rotation_matrix)
 
                 # Save to a temporary file
-                rotated_path = stl_path.parent / f"{stl_path.stem}_rotated{stl_path.suffix}"
+                rotated_path = stl_path.parent / f"print_{stl_path.stem}{stl_path.suffix}"
                 mesh.export(rotated_path)
 
                 info = f"Rotated to {best['name']} (base area {best['base_area']:.0f}mm², overhang {best['overhang_ratio']*100:.1f}%)"
@@ -7881,13 +7904,15 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
     # the next outer loop is N+1; using retry_iter there can silently load an
     # unrelated file left by an older run. Track the artifact, not the loop.
     current_measurement_iteration = iteration
-    for retry in range(MAX_RETRIES):
+    # MAX_RETRIES counts repairs; the extra round verifies the last repair.
+    for retry in range(MAX_RETRIES + 1):
         retry_iter = iteration + retry
+        judge_decision = None  # decisions belong to this geometry/QA round
         # Reset to original at the start of each iteration so interventions
         # from previous rounds do not leak into subsequent Aider calls.
         user_request = original_user_request
         print(f"\n{'='*60}")
-        print(f"  AUTONOMOUS LOOP — Retry {retry + 1}/{MAX_RETRIES}")
+        print(f"  AUTONOMOUS LOOP — QA round {retry + 1}/{MAX_RETRIES + 1}")
         print(f"{'='*60}")
 
         # Per-iteration token snapshot (for benchmark analysis)
@@ -7982,6 +8007,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                 step_path=str(current_step),
                 user_request=user_request,
                 engine_a=engine_a,
+                measurement_iteration=current_measurement_iteration,
             )
             if geometry_errors:
                 # Inject geometry errors into the QA report
@@ -8026,7 +8052,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
         # Skip on the first iteration (retry == 0): the user_request is already
         # the modification requirement for the existing file. Let Aider apply
         # it directly first; only ask for user refinement from retry >= 1.
-        if retry == 0:
+        if retry == 0 or retry == MAX_RETRIES or current_step is None or current_stl is None:
             choice = 1  # auto-iterate — apply user_request directly
             all_log_lines.append(
                 f"node_autonomous_skill_loop [retry {retry}]: "
@@ -8034,8 +8060,8 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
             )
         else:
             choice = _prompt_iteration_choice(
-                step_path=str(current_step.resolve()),
-                stl_path=str(current_stl.resolve()),
+                step_path=str(current_step.resolve()) if current_step else None,
+                stl_path=str(current_stl.resolve()) if current_stl else None,
                 qa_report=last_qa_report,
                 retry=retry,
                 max_retries=MAX_RETRIES,
@@ -8055,9 +8081,12 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                 "qa_report": last_qa_report,
                 "error_type": ErrorType.NONE,
                 "judge_decision": judge_decision,  # F13: might be None if Judge hasn't run
-                "current_step_path": str(current_step.resolve()),
-                "current_stl_path": str(rotated_stl.resolve()),
+                "current_step_path": str(current_step.resolve()) if current_step else None,
+                "current_stl_path": str(current_stl.resolve()) if current_stl else None,
+                "current_print_stl_path": str(rotated_stl.resolve()) if rotated_stl else None,
                 "current_python_code": python_code,
+                "current_python_code_path": str(script_path.resolve()),
+                "measurement_iteration": current_measurement_iteration,
                 "iteration_count": retry_iter + 1,
                 "execution_log": all_log_lines,
                 "node_history": list(state.get("node_history", [])) + ["autonomous_skill_loop"],
@@ -8100,6 +8129,7 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
         # requirements have been applied. Let Aider run first.
         clean_geometric_pass = (
             (retry > 0 or workflow_id != "aider")
+            and not _skip_qa and current_step is not None and current_stl is not None
             and last_qa_report.all_passed
             and last_qa_report.error_type == ErrorType.NONE
         )
@@ -8181,9 +8211,12 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                 "qa_report": last_qa_report,
                 "error_type": ErrorType.NONE,
                 "judge_decision": judge_decision,  # F13: might be None if Judge hasn't run
-                "current_step_path": str(current_step.resolve()),
-                "current_stl_path": str(rotated_stl.resolve()),
+                "current_step_path": str(current_step.resolve()) if current_step else None,
+                "current_stl_path": str(current_stl.resolve()) if current_stl else None,
+                "current_print_stl_path": str(rotated_stl.resolve()) if rotated_stl else None,
                 "current_python_code": python_code,
+                "current_python_code_path": str(script_path.resolve()),
+                "measurement_iteration": current_measurement_iteration,
                 "iteration_count": retry_iter + 1,
                 "execution_log": all_log_lines,
                 "node_history": list(state.get("node_history", [])) + ["autonomous_skill_loop"],
@@ -8204,7 +8237,8 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
             except Exception as exc:
                 print(f"[AUTONOMOUS JUDGE] WARNING: Failed to load feature measurements: {exc}")
 
-        if judge_decision is None:
+        if (judge_decision is None and current_step is not None and current_stl is not None
+                and not _skip_qa and not (retry == 0 and workflow_id == "aider")):
             judge_decision = node_judge_qa(
                 user_request=user_request,
                 qa_report=last_qa_report,
@@ -8258,9 +8292,12 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                         "qa_report": last_qa_report,
                         "error_type": ErrorType.NONE,
                         "judge_decision": judge_decision,
-                        "current_step_path": str(current_step.resolve()),
-                        "current_stl_path": str(rotated_stl.resolve()),
+                        "current_step_path": str(current_step.resolve()) if current_step else None,
+                        "current_stl_path": str(current_stl.resolve()) if current_stl else None,
+                        "current_print_stl_path": str(rotated_stl.resolve()) if rotated_stl else None,
                         "current_python_code": python_code,
+                        "current_python_code_path": str(script_path.resolve()),
+                        "measurement_iteration": current_measurement_iteration,
                         "iteration_count": retry_iter + 1,
                         "execution_log": all_log_lines,
                         "node_history": list(state.get("node_history", [])) + ["autonomous_skill_loop"],
@@ -8288,9 +8325,11 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                         "qa_report": last_qa_report,
                         "error_type": ErrorType.FATAL,
                         "judge_decision": judge_decision,
-                        "current_step_path": str(current_step.resolve()),
-                        "current_stl_path": str(current_stl.resolve()),
+                        "current_step_path": str(current_step.resolve()) if current_step else None,
+                        "current_stl_path": str(current_stl.resolve()) if current_stl else None,
                         "current_python_code": python_code,
+                        "current_python_code_path": str(script_path.resolve()),
+                        "measurement_iteration": current_measurement_iteration,
                         "iteration_count": retry_iter + 1,
                         "execution_log": all_log_lines,
                         "node_history": list(state.get("node_history", [])) + ["autonomous_skill_loop"],
@@ -8313,7 +8352,9 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
         # --------------------------------------------------------------
         # Phase 3: Build repair prompt & run Aider or fallback repair
         # --------------------------------------------------------------
-        error_details = last_qa_report.error_details or []
+        if retry == MAX_RETRIES:
+            break  # never perform a repair without budget for its validation
+        error_details = list(last_qa_report.error_details or [])
         # Also include improvement suggestions and warnings for richer context
         for sug in (last_qa_report.improvement_suggestions or []):
             if sug not in error_details:
@@ -8403,9 +8444,11 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
                     "qa_report": last_qa_report,
                     "error_type": ErrorType.FATAL,
                     "judge_decision": judge_decision,  # F13: audit trail on Aider-failed path
-                    "current_step_path": str(current_step.resolve()),
-                    "current_stl_path": str(current_stl.resolve()),
+                    "current_step_path": str(current_step.resolve()) if current_step else None,
+                    "current_stl_path": str(current_stl.resolve()) if current_stl else None,
                     "current_python_code": python_code,
+                    "current_python_code_path": str(script_path.resolve()),
+                    "measurement_iteration": current_measurement_iteration,
                     "iteration_count": retry_iter + 1,
                     "execution_log": all_log_lines,
                     "node_history": list(state.get("node_history", [])) + ["autonomous_skill_loop"],
@@ -8524,9 +8567,11 @@ def node_autonomous_skill_loop(state: GraphState) -> dict:
         "qa_report": last_qa_report,
         "error_type": ErrorType.FATAL,
         "judge_decision": judge_decision,  # F13: audit trail on MAX_RETRIES path
-        "current_step_path": str(current_step.resolve()),
-        "current_stl_path": str(current_stl.resolve()),
+        "current_step_path": str(current_step.resolve()) if current_step else None,
+        "current_stl_path": str(current_stl.resolve()) if current_stl else None,
         "current_python_code": python_code,
+        "current_python_code_path": str(script_path.resolve()),
+        "measurement_iteration": current_measurement_iteration,
         "iteration_count": iteration + MAX_RETRIES,
         "execution_log": all_log_lines,
         "node_history": list(state.get("node_history", [])) + ["autonomous_skill_loop"],
@@ -8587,6 +8632,7 @@ def node_spec_planner(state: GraphState) -> dict:
     user_request: str = state.get("user_request", "").strip()
     iteration: int = state.get("iteration_count", 0)
     force_refresh: bool = state.get("force_refresh", False)
+    fingerprint = _planning_fingerprint("spec_planner", user_request)
 
     # -- Cache: skip LLM call only on fresh runs (not retries) --------------
     is_retry = (
@@ -8595,7 +8641,7 @@ def node_spec_planner(state: GraphState) -> dict:
     )
     if not force_refresh and not is_retry:
         cached = _load_cache(_CACHE_DIR / "cad_brief.json")
-        if cached:
+        if isinstance(cached, dict) and cached.get("__input_fingerprint") == fingerprint:
             try:
                 cad_brief = CADBrief.model_validate(cached)
                 print("[CACHE] Loaded cad_brief.json — skipping Spec Planner")
@@ -8862,7 +8908,9 @@ def node_spec_planner(state: GraphState) -> dict:
         log_lines.append(f"    ... and {target_count - 8} more")
 
     # -- Save to cache --------------------------------------------------------
-    _save_cache(_CACHE_DIR / "cad_brief.json", cad_brief.model_dump())
+    _save_cache(_CACHE_DIR / "cad_brief.json", {
+        **cad_brief.model_dump(), "__input_fingerprint": fingerprint,
+    })
 
     return {
         "cad_brief": cad_brief,
@@ -8904,6 +8952,10 @@ def node_geometric_architect(state: GraphState) -> dict:
     qa_report = state.get("qa_report")
     error_type = state.get("error_type")
     force_refresh: bool = state.get("force_refresh", False)
+    fingerprint = _planning_fingerprint("geometric_architect", {
+        "brief": _plan_or_dict_to_json(cad_brief),
+        "request": state.get("user_request", ""),
+    })
 
     # -- Cache: skip LLM call if we already have a valid ArchitectPlan ------
     # Only use cache for fresh designs, not retries
@@ -8916,7 +8968,7 @@ def node_geometric_architect(state: GraphState) -> dict:
     )
     if not force_refresh and not is_retry:
         cached = _load_cache(_CACHE_DIR / "architect_plan.json")
-        if cached:
+        if isinstance(cached, dict) and cached.get("__input_fingerprint") == fingerprint:
             try:
                 plan = ArchitectPlan.model_validate(cached)
                 print("[CACHE] Loaded architect_plan.json — skipping Geometric Architect")
@@ -9334,7 +9386,9 @@ def node_geometric_architect(state: GraphState) -> dict:
         log_lines.append(f"    ... and {step_count - 8} more steps")
 
     # -- Save to cache --------------------------------------------------------
-    _save_cache(_CACHE_DIR / "architect_plan.json", architect_plan.model_dump())
+    _save_cache(_CACHE_DIR / "architect_plan.json", {
+        **architect_plan.model_dump(), "__input_fingerprint": fingerprint,
+    })
 
     return {
         "architect_plan": architect_plan,

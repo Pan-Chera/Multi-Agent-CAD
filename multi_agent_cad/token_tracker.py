@@ -60,42 +60,37 @@ class _Tracker:
     def _record(self, *, model, usage, module: str) -> None:
         if usage is None:
             return
+        def value(obj, key, default=0):
+            return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+
         try:
-            prompt = getattr(usage, "prompt_tokens", 0) or 0
-            completion = getattr(usage, "completion_tokens", 0) or 0
-            api_total = getattr(usage, "total_tokens", 0) or (prompt + completion)
+            prompt = value(usage, "prompt_tokens") or 0
+            completion = value(usage, "completion_tokens") or 0
+            api_total = value(usage, "total_tokens") or (prompt + completion)
 
             cache_read = 0
-            details = getattr(usage, "prompt_tokens_details", None)
+            details = value(usage, "prompt_tokens_details", None)
             if details is not None:
                 if hasattr(details, "model_dump"):
                     cache_read = (details.model_dump() or {}).get("cached_tokens", 0) or 0
                 else:
-                    cache_read = getattr(details, "cached_tokens", 0) or 0
+                    cache_read = value(details, "cached_tokens") or 0
 
-            comp_details = getattr(usage, "completion_tokens_details", None)
+            comp_details = value(usage, "completion_tokens_details", None)
             reasoning = 0
             if comp_details is not None:
                 if hasattr(comp_details, "model_dump"):
                     reasoning = (comp_details.model_dump() or {}).get("reasoning_tokens", 0) or 0
                 else:
-                    reasoning = getattr(comp_details, "reasoning_tokens", 0) or 0
+                    reasoning = value(comp_details, "reasoning_tokens") or 0
         except Exception:
             return
 
-        # Bailian GLM non-standard behavior: completion_tokens is the VISIBLE
-        # answer only, reasoning_tokens (thinking) is reported SEPARATELY and
-        # is NOT a subset of completion_tokens. So actual billed output =
-        # completion + reasoning. Standard OpenAI o1 reports reasoning as a
-        # subset of completion — don't double-count there. Heuristic:
-        # if reasoning > completion, Bailian-style (add them); else standard.
-        if reasoning > 0 and reasoning > completion:
-            billed_output = completion + reasoning
-        else:
-            billed_output = completion
-
-        # Bailian's total_tokens also excludes reasoning — recompute.
-        billed_total = prompt + cache_read + billed_output
+        # OpenAI-compatible usage reports include cached input and reasoning
+        # in their parent counts. Preserve the provider's total; do not infer
+        # alternative billing rules from the relative sizes of counters.
+        billed_output = completion
+        billed_total = api_total
 
         with self._lock:
             self._calls.append({

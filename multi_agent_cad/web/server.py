@@ -22,6 +22,8 @@ import asyncio
 import json
 import os
 import shutil
+import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -158,6 +160,7 @@ def _config_schema() -> dict:
         "CODER_MODEL", "CODER_TEMPERATURE", "CODER_MAX_TOKENS",
         "AIDER_MODEL", "AIDER_MAX_TOKENS",
         "REPAIR_MODEL", "REPAIR_TEMPERATURE", "REPAIR_MAX_TOKENS",
+        "JUDGE_MODEL", "JUDGE_TEMPERATURE", "JUDGE_MAX_TOKENS",
         "USER_REQUEST", "WORKFLOW_ID",
     ]
     return {k: getattr(cfg, k, None) for k in fields}
@@ -174,6 +177,14 @@ async def _lifespan(app: FastAPI):
         yield
     finally:
         cleanup_task.cancel()
+        await asyncio.gather(cleanup_task, return_exceptions=True)
+        await asyncio.gather(*(_terminate_job(job) for job in list(_JOBS.values())
+                               if job.get("proc") and job["proc"].returncode is None),
+                             return_exceptions=True)
+        tasks = [task for job in _JOBS.values() for task in job.get("tasks", [])]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 app = FastAPI(title="MAC Web UI", lifespan=_lifespan)
@@ -403,6 +414,18 @@ async def run(req: Request) -> dict:
     prompt = (body.get("prompt") or config.get("USER_REQUEST", "") or "").strip()
     dest_path = (body.get("dest_path") or "").strip()
     workflow = body.get("workflow") or config.get("WORKFLOW_ID", "original")
+    if workflow not in {"original", "aider"}:
+        raise HTTPException(400, "workflow must be original or aider")
+    source = None
+    if workflow == "aider":
+        previous = _JOBS.get(body.get("source_job_id", ""))
+        previous_result = (previous or {}).get("result") or {}
+        source_path = previous_result.get("py")
+        if not previous_result.get("done") or not source_path:
+            raise HTTPException(400, "aider requires source_job_id of a completed job with Python source")
+        source = Path(source_path).resolve()
+        if not source.is_relative_to(Path(previous["tempdir"]).resolve()) or not source.is_file():
+            raise HTTPException(400, "source job's Python artifact is unavailable")
     from multi_agent_cad import config as cfg
 
     # Keep explicit request keys first, then use the same env/config order
@@ -435,6 +458,17 @@ async def run(req: Request) -> dict:
             )
         raise HTTPException(400, "DS_BASE_URL must use http or https scheme")
 
+    # Provider changes must also cover the otherwise hidden Judge and
+    # provider-specific request options. Explicit API overrides still win.
+    config = dict(config)
+    if ds_base_url and ds_base_url.rstrip("/") != cfg.DS_BASE_URL.rstrip("/"):
+        preset = next((p for p in _PROVIDER_PRESETS.values()
+                       if p["ds_base_url"].rstrip("/") == ds_base_url.rstrip("/")), {})
+        config.setdefault("JUDGE_MODEL", config.get("CODER_MODEL") or preset.get("model_hint") or cfg.JUDGE_MODEL)
+        if not (urlparse(ds_base_url).hostname or "").endswith(".aliyuncs.com"):
+            for stage in ("SPEC_PLANNER", "ARCHITECT", "CODER", "REPAIR", "JUDGE"):
+                config.setdefault(f"{stage}_KWARGS", {})
+
     # C2 — dest_path: keep opt-in gate, add MAC_WEB_DEST_ROOT + relative-under-root.
     if dest_path and os.environ.get(_ALLOW_DEST_PATH_ENV) != "1":
         raise HTTPException(
@@ -446,6 +480,9 @@ async def run(req: Request) -> dict:
 
     job_id = uuid.uuid4().hex[:12]
     tempdir = Path(tempfile.mkdtemp(prefix=f"macjob_{job_id}_"))
+    if source is not None:
+        copied_source = tempdir / "temp_design_source.py"
+        shutil.copy2(source, copied_source)
 
     # config.json — everything except the API key (key goes via env var).
     cfg_out = dict(config)
@@ -473,6 +510,11 @@ async def run(req: Request) -> dict:
         "--out", str(tempdir),
         "--workflow", workflow,
     ]
+    if source is not None:
+        cmd += ["--source", str(copied_source)]
+
+    process_options = ({"start_new_session": True} if os.name == "posix" else
+                       {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP})
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -481,21 +523,23 @@ async def run(req: Request) -> dict:
         stderr=asyncio.subprocess.STDOUT,
         env=env,
         cwd=str(tempdir),
+        **process_options,
     )
 
-    queue: asyncio.Queue = asyncio.Queue()
     job: dict[str, Any] = {
         "proc": proc,
         "tempdir": tempdir,
         "dest_path": str(safe_dest_path) if safe_dest_path else None,
-        "queue": queue,
+        "events": [],
+        "subscribers": set(),
+        "process_group": True,
         "result": None,
         "started_at": time.time(),
     }
     _JOBS[job_id] = job
 
-    asyncio.create_task(_reader_task(job_id, job))
-    asyncio.create_task(_watcher_task(job_id, job))
+    job["tasks"] = [asyncio.create_task(_reader_task(job_id, job)),
+                    asyncio.create_task(_watcher_task(job_id, job))]
     return {"job_id": job_id}
 
 
@@ -518,27 +562,52 @@ async def cancel_job(job_id: str) -> dict:
 
 
 async def _terminate_job(job: dict) -> None:
-    """Send SIGTERM, wait up to 5s, escalate to SIGKILL if the runner
-    hasn't exited (e.g. stuck inside a subprocess.run for the CAD script).
-    The reader task observes the proc exit and emits the synthetic 'done'."""
+    """Terminate the dedicated runner process group, including CAD children."""
     proc = job["proc"]
+    grouped = job.get("process_group") and isinstance(getattr(proc, "pid", None), int)
     try:
-        proc.terminate()
+        if grouped and os.name == "posix":
+            os.killpg(proc.pid, signal.SIGTERM)
+        elif grouped and os.name == "nt":
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill", "/PID", str(proc.pid), "/T", "/F",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(killer.wait(), timeout=10)
+        else:
+            proc.terminate()
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
         except asyncio.TimeoutError:
-            try:
-                proc.kill()
-                await proc.wait()
-            except ProcessLookupError:
-                pass
+            proc.kill()
     except ProcessLookupError:
         pass
+    finally:
+        # A runner may exit before a descendant that ignores SIGTERM.
+        if grouped and os.name == "posix":
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if proc.returncode is None:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+
+
+def _publish(job: dict, msg: dict | None) -> None:
+    """Retain progress for replay and broadcast to every connected browser."""
+    events = job.setdefault("events", [])
+    if msg is not None:
+        events.append(msg)
+    item = (len(events), msg)
+    for queue in list(job.setdefault("subscribers", set())):
+        queue.put_nowait(item)
 
 
 async def _reader_task(job_id: str, job: dict) -> None:
     proc = job["proc"]
-    queue: asyncio.Queue = job["queue"]
     try:
         assert proc.stdout is not None
         async for raw in proc.stdout:
@@ -548,7 +617,7 @@ async def _reader_task(job_id: str, job: dict) -> None:
             try:
                 msg = json.loads(line)
             except json.JSONDecodeError:
-                await queue.put({"log": line})
+                _publish(job, {"log": line})
                 continue
             if not isinstance(msg, dict):
                 # The subprocess (web_runner + LangGraph / aider / build123d)
@@ -557,15 +626,15 @@ async def _reader_task(job_id: str, job: dict) -> None:
                 # aider echoing a JSON literal mid-repair. Treat them as log
                 # lines so the SSE stream keeps flowing instead of crashing
                 # the reader on `msg.get("done")`.
-                await queue.put({"log": line})
+                _publish(job, {"log": line})
                 continue
             if msg.get("done"):
                 if job.get("dest_path"):
                     _copy_artifacts(msg, job["dest_path"])
                 job["result"] = msg
-                await queue.put(msg)
+                _publish(job, msg)
                 break
-            await queue.put(msg)
+            _publish(job, msg)
 
         rc = await proc.wait()
         if job.get("result") is None:
@@ -576,17 +645,17 @@ async def _reader_task(job_id: str, job: dict) -> None:
                 if job.get("dest_path"):
                     _copy_artifacts(msg, job["dest_path"])
                 job["result"] = msg
-                await queue.put(msg)
+                _publish(job, msg)
             else:
                 err = {"error": f"runner exited (rc={rc}) without 'done'", "rc": rc}
                 job["result"] = err
-                await queue.put(err)
+                _publish(job, err)
     except Exception as exc:  # pragma: no cover
         err = {"error": f"reader task crashed: {exc}"}
         job["result"] = err
-        await queue.put(err)
+        _publish(job, err)
     finally:
-        await queue.put(None)  # sentinel: SSE stream ends
+        _publish(job, None)  # sentinel: SSE stream ends
 
 
 def _stl_to_glb(stl_path: str, glb_path: str) -> bool:
@@ -619,7 +688,6 @@ async def _watcher_task(job_id: str, job: dict) -> None:
     """
     tempdir = job["tempdir"]
     proc = job["proc"]
-    queue: asyncio.Queue = job["queue"]
     live_glb = tempdir / "temp_output_0.live.glb"
     last_sig: tuple[str, float] | None = None  # (path, mtime) of last converted STL
     while proc.returncode is None:
@@ -656,7 +724,7 @@ async def _watcher_task(job_id: str, job: dict) -> None:
         if not ok:
             continue
         ts = int(time.time() * 1000)
-        await queue.put({
+        _publish(job, {
             "intermediate": True,
             "glb": f"/api/jobs/{job_id}/files/live.glb?t={ts}",
         })
@@ -684,7 +752,7 @@ def _copy_artifacts(result: dict, dest: str) -> None:
                 )
                 return
         dest_path.mkdir(parents=True, exist_ok=True)
-        for key in ("step", "stl", "glb", "py", "measurements", "missed"):
+        for key in ("step", "stl", "print_stl", "glb", "py", "measurements", "missed"):
             src = result.get(key)
             if src:
                 p = Path(src)
@@ -740,33 +808,48 @@ def _harvest_intermediate(job: dict) -> dict:
 
 
 @app.get("/api/jobs/{job_id}/events")
-async def job_events(job_id: str) -> StreamingResponse:
+async def job_events(job_id: str, request: Request) -> StreamingResponse:
     if job_id not in _JOBS:
         raise HTTPException(404, "job not found")
     job = _JOBS[job_id]
-    queue: asyncio.Queue = job["queue"]
+    try:
+        last_id = max(0, int(request.headers.get("Last-Event-ID", "0")))
+    except ValueError:
+        raise HTTPException(400, "Last-Event-ID must be an integer")
 
     async def event_stream():
-        while True:
-            try:
-                msg = await asyncio.wait_for(queue.get(), timeout=15.0)
-            except asyncio.TimeoutError:
-                yield ": heartbeat\n\n"
-                continue
-            if msg is None:
-                break
-            yield f"data: {json.dumps(msg)}\n\n"
-            if msg.get("done") or msg.get("error"):
-                # Drain any remaining (e.g. sentinel) without blocking.
-                while not queue.empty():
-                    extra = queue.get_nowait()
-                    if extra is None:
-                        break
-                break
+        queue = asyncio.Queue()
+        subscribers = job.setdefault("subscribers", set())
+        subscribers.add(queue)
+        history = list(job.setdefault("events", []))
+        try:
+            for sequence, msg in enumerate(history, 1):
+                if sequence <= last_id:
+                    continue
+                yield f"id: {sequence}\ndata: {json.dumps(msg)}\n\n"
+                if msg.get("done") or msg.get("error"):
+                    return
+            # Results are durable even if the caller already consumed the
+            # terminal event or attached after a reader error.
+            if job.get("result") is not None:
+                yield f"id: {len(history)}\ndata: {json.dumps(job['result'])}\n\n"
+                return
+            while True:
+                try:
+                    sequence, msg = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+                    continue
+                if msg is None:
+                    return
+                yield f"id: {sequence}\ndata: {json.dumps(msg)}\n\n"
+                if msg.get("done") or msg.get("error"):
+                    return
+        finally:
+            subscribers.discard(queue)
 
     return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
+        event_stream(), media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
@@ -787,7 +870,7 @@ async def job_file(job_id: str, name: str) -> FileResponse:
     tempdir = job.get("tempdir")
 
     def _find_in_tempdir(pattern: str) -> str | None:
-        if not tempdir:
+        if not tempdir or job.get("result") is not None:
             return None
         matches = sorted(
             Path(tempdir).rglob(pattern),
@@ -801,6 +884,7 @@ async def job_file(job_id: str, name: str) -> FileResponse:
         "live.glb": str(tempdir / "temp_output_0.live.glb") if tempdir else None,
         "model.step": result.get("step") or _find_in_tempdir("temp_output_*.step"),
         "model.stl": result.get("stl") or _find_in_tempdir("temp_output_*.stl"),
+        "print.stl": result.get("print_stl"),
         "source.py": result.get("py") or _find_in_tempdir("temp_design_*.py"),
         "measurements.json": result.get("measurements")
             or _find_in_tempdir("temp_measurements_*.json"),
@@ -815,6 +899,7 @@ async def job_file(job_id: str, name: str) -> FileResponse:
         "live.glb": "model/gltf-binary",
         "model.step": "application/step",
         "model.stl": "model/stl",
+        "print.stl": "model/stl",
         "source.py": "text/x-python",
         "measurements.json": "application/json",
         "missed.json": "application/json",

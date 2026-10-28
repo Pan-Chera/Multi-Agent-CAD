@@ -22,7 +22,6 @@ Usage::
 from __future__ import annotations
 
 import sys
-import subprocess
 from pathlib import Path
 
 # Ensure the project root is on sys.path
@@ -35,8 +34,8 @@ from langgraph.graph import END, StateGraph
 # Importing token_tracker patches openai.resources.chat.completions.Completions.create
 # and registers a litellm.success_callback, so Aider + direct LLM calls are both captured.
 from multi_agent_cad.token_tracker import tracker as _token_tracker
-from multi_agent_cad.schemas import GraphState
-from multi_agent_cad.nodes import node_autonomous_skill_loop
+from multi_agent_cad.schemas import ErrorType, GraphState
+from multi_agent_cad.nodes import node_autonomous_skill_loop, _execute_cad_script
 
 
 # ---------------------------------------------------------------------------
@@ -58,8 +57,8 @@ def node_existing_file_loader(state: GraphState) -> dict:
     After locating the file, this node:
       - Reads its content (so downstream nodes see the current code).
       - Executes it once via ``subprocess.run`` to produce fresh STEP/STL.
-      - Auto-discovers the produced ``.step`` / ``.stl`` (or reuses the most
-        recent ones in cwd if the script doesn't produce new files).
+      - Uses known fresh ``.step`` / ``.stl`` paths. Failed execution never
+        falls back to unrelated artifacts already present in cwd.
 
     The user_request in state is treated as MODIFICATION REQUIREMENTS for the
     existing file (e.g., "add a fillet to the top edge"). The autonomous skill
@@ -106,7 +105,7 @@ def node_existing_file_loader(state: GraphState) -> dict:
             print(f"  Run the original workflow first (python -m multi_agent_cad.graph)")
             print(f"  or set current_python_code_path in state to point to a .py file.")
             return {
-                "error_type": "FATAL",
+                "error_type": ErrorType.FATAL,
                 "execution_log": [
                     f"node_existing_file_loader [iter {iteration}]: "
                     f"FATAL — no existing .py file to modify",
@@ -122,7 +121,7 @@ def node_existing_file_loader(state: GraphState) -> dict:
     except OSError as exc:
         print(f"  [ERROR] Cannot read {code_path}: {exc}")
         return {
-            "error_type": "FATAL",
+            "error_type": ErrorType.FATAL,
             "execution_log": [
                 f"node_existing_file_loader [iter {iteration}]: "
                 f"FATAL — cannot read {code_path}: {exc}",
@@ -130,53 +129,17 @@ def node_existing_file_loader(state: GraphState) -> dict:
             "node_history": list(state.get("node_history", [])) + ["existing_file_loader"],
         }
 
-    # -- 3. Execute the script to produce fresh STEP/STL -------------------
-    # The script typically writes to temp_output_*.step/.stl. After execution,
-    # we auto-discover the most recent .step/.stl in cwd as the baseline
-    # for the autonomous loop's QA.
-    print(f"\n  Executing existing script to produce baseline STEP/STL ...")
-    try:
-        result = subprocess.run(
-            [sys.executable, str(code_path)],
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
-        if result.returncode == 0:
-            print(f"  Initial execution: SUCCESS")
-        else:
-            print(f"  Initial execution: FAILED (autonomous loop will fix)")
-            err = (result.stderr or "")[:200]
-            print(f"  Error: {err}")
-    except subprocess.TimeoutExpired:
-        print(f"  Initial execution: TIMEOUT (autonomous loop will fix)")
-    except Exception as e:
-        print(f"  Initial execution: ERROR - {e}")
-        print(f"  Autonomous loop will attempt to fix this")
-
-    # -- 4. Auto-discover STEP/STL outputs --------------------------------
-    # Prefer the most recent .step / .stl in cwd (the script just wrote them).
-    step_candidates = sorted(
-        Path.cwd().glob("temp_output*.step"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
+    # Execute into known paths; old files are never a baseline for this run.
+    step = Path.cwd() / f"temp_output_aider_baseline_{iteration}.step"
+    stl = Path.cwd() / f"temp_output_aider_baseline_{iteration}.stl"
+    ok, execution_error = _execute_cad_script(
+        code_path.resolve(), step, stl, iteration=iteration,
     )
-    stl_candidates = sorted(
-        Path.cwd().glob("temp_output*.stl"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    actual_step_path = str(step_candidates[0]) if step_candidates else None
-    actual_stl_path = str(stl_candidates[0]) if stl_candidates else None
-
-    if actual_step_path:
-        print(f"  Baseline STEP: {Path(actual_step_path).name}")
-    else:
-        print(f"  Baseline STEP: (none — autonomous loop will start without QA)")
-    if actual_stl_path:
-        print(f"  Baseline STL : {Path(actual_stl_path).name}")
-    else:
-        print(f"  Baseline STL : (none — autonomous loop will start without QA)")
+    python_code = code_path.read_text(encoding="utf-8")
+    actual_step_path = str(step.resolve()) if ok else None
+    actual_stl_path = str(stl.resolve()) if ok else None
+    if not ok:
+        print(f"  Baseline execution failed; entering repair: {execution_error[:300]}")
 
     return {
         "current_python_code": python_code,
@@ -321,6 +284,10 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # Final report (always runs — on interrupt, shows partial state)
     # ------------------------------------------------------------------
+    from multi_agent_cad.graph import pipeline_exit_code
+    exit_code = exit_code or pipeline_exit_code(accumulated_state)
+    if exit_code and accumulated_state.get("error_type") == ErrorType.NONE:
+        accumulated_state["error_type"] = ErrorType.FATAL
     _print_final_report(accumulated_state)
 
     # ------------------------------------------------------------------

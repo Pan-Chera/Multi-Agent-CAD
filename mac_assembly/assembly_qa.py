@@ -1701,10 +1701,13 @@ def _check_kinematics(
     for mate in motion:
         rotational = mate.mate_type == MateType.REVOLUTE
         if rotational:
-            samples = np.linspace(
-                -cfg.KINEMATIC_SWEEP_DEG, cfg.KINEMATIC_SWEEP_DEG,
-                cfg.KINEMATIC_SWEEP_SAMPLES,
-            )
+            lower, upper = mate.limit_lower, mate.limit_upper
+            if lower is None or upper is None:
+                lower, upper = -cfg.KINEMATIC_SWEEP_DEG, cfg.KINEMATIC_SWEEP_DEG
+            samples = np.unique(np.concatenate((
+                np.linspace(lower, upper, cfg.KINEMATIC_SWEEP_SAMPLES),
+                np.array([0.0]),
+            )))
             unit = "deg"
         else:
             lower = mate.limit_lower if mate.mate_type == MateType.LINEAR else None

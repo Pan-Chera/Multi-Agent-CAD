@@ -31,7 +31,7 @@
       </label>
       <label>API key <input type="password" id="api_key" placeholder="Optional if configured on server" autocomplete="off" /></label>
       <label>DS_BASE_URL <input type="text" id="DS_BASE_URL" /></label>
-      <p class="hint">Switching provider auto-fills DS_BASE_URL and a suggested model name. The thinking toggle (<code>*_KWARGS</code>) is Qwen-specific — leave it for Qwen, ignore for others.</p>
+      <p class="hint">Switching provider auto-fills DS_BASE_URL and a suggested model name. Qwen-specific request options are removed when switching to another provider.</p>
       <p class="hint">Leave the key blank to use the server's DASHSCOPE_API_KEY or DS_API_KEY in config.py. Use a key for the selected provider.</p>
     </details>
 
@@ -52,6 +52,9 @@
           <option value="original">original — deterministic coder first, Aider fallback</option>
           <option value="aider">aider — modify an existing temp_design*.py</option>
         </select>
+      </label>
+      <label>Source job ID (required for aider)
+        <input type="text" id="source_job_id" placeholder="A completed job with Python source" />
       </label>
       <label>Output directory on server (optional)
         <input type="text" id="dest_path" placeholder="Optional path (requires MAC_WEB_ALLOW_DEST_PATH=1)" />

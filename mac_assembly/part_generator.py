@@ -400,6 +400,24 @@ def _newest(work_dir: Path, pattern: str) -> Path | None:
     return newest_file(work_dir, pattern)
 
 
+def _final_artifact_paths(part_dir: Path) -> tuple[Path | None, Path | None, Path | None]:
+    manifest = part_dir / "part_final_artifacts.json"
+    if manifest.is_file():
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            paths = []
+            for key in ("current_step_path", "current_stl_path", "current_python_code_path"):
+                path = Path(data[key]) if data.get(key) else None
+                paths.append(path if path and path.is_file() and path.stat().st_size > 0 else None)
+            return paths[0], paths[1], paths[2]
+        except (OSError, ValueError, TypeError, KeyError):
+            return None, None, None
+    # Compatibility for old jobs and interrupted runs without a final state.
+    return (_newest(part_dir, "temp_output_*.step"),
+            _newest(part_dir, "temp_output_*.stl"),
+            _newest(part_dir, "temp_design_*.py"))
+
+
 def _resume_recovery_candidate(part_dir: Path, request: str) -> Path | None:
     """Return a matching unfinished generated script eligible for one Aider recovery.
 
@@ -630,6 +648,7 @@ def run_part(
         )
 
     _seed_cumulative_tokens(part_dir)
+    (part_dir / "part_final_artifacts.json").unlink(missing_ok=True)
     log_path = _next_attempt_log(part_dir, "part_log_")
     started = time.time()
     attempt = 1
@@ -661,9 +680,7 @@ def run_part(
         # crashed before/at launch (no subprocess ran) -- no token archive
         error = f"part subprocess crashed: {exc}"
 
-    step = _newest(part_dir, "temp_output_*.step")
-    stl = _newest(part_dir, "temp_output_*.stl")
-    design = _newest(part_dir, "temp_design_*.py")
+    step, stl, design = _final_artifact_paths(part_dir)
 
     if ok and (step is None or stl is None):
         ok = False
@@ -727,6 +744,7 @@ def run_part_remodel(
     runner_mode = "resume" if resume_only else "aider"
 
     _seed_cumulative_tokens(part_dir)
+    (part_dir / "part_final_artifacts.json").unlink(missing_ok=True)
     log_path = _next_attempt_log(part_dir, "part_remodel_log_")
     started = time.time()
     try:
@@ -757,9 +775,7 @@ def run_part_remodel(
 
 def _harvest(spec: PartSpec, part_dir: Path, *, ok: bool, attempt: int,
              error: str | None, token_usage: dict | None = None) -> PartResult:
-    step = _newest(part_dir, "temp_output_*.step")
-    stl = _newest(part_dir, "temp_output_*.stl")
-    design = _newest(part_dir, "temp_design_*.py")
+    step, stl, design = _final_artifact_paths(part_dir)
     if ok and (step is None or stl is None):
         ok = False
         error = error or "remodel reported success but STEP/STL missing"

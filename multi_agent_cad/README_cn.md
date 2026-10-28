@@ -103,20 +103,14 @@ python -m multi_agent_cad.graph_aider
 
 Web UI 的启动命令见根目录快速开始。界面提供配置表单、浏览器 3D 预览和
 文件下载，但目前会自动迭代，不暴露 CLI 的轮间检查点。Web UI 为任务建立
-独立临时目录，而 CLI 默认将 `temp_*` 产物写入仓库根目录。安全和网络监听
+独立临时目录，而 CLI 将 `temp_*` 产物写入当前工作目录。修改已完成的 Web 任务时，选择 `aider` 并填写源任务 ID；源码会复制到新任务目录。进度支持断线重连与刷新页面后恢复，最终下载使用工作流确认的产物。打印方向优化后的 STL 提供单独下载，不会作为装配局部网格使用。安全和网络监听
 说明统一维护在根 README 与 [`SECURITY.md`](../SECURITY.md) 中。
 
 ## 缓存与更换提示词
 
 `pipeline_cache/cad_brief.json` 缓存 Spec Planner 的输出；`pipeline_cache/architect_plan.json` 缓存 Geometric Architect 的输出。重跑**同一**需求时，可以复用这两阶段并重新执行代码生成和修复。
 
-**重要：**单零件缓存只检查文件是否存在，**不会**验证当前 `USER_REQUEST` 是否与缓存一致。生成**不同**模型前，只删除这两个缓存文件：
-
-```bash
-rm pipeline_cache/cad_brief.json pipeline_cache/architect_plan.json
-```
-
-也可在 [`graph.py`](graph.py) 的 `get_default_initial_state` 中设置 `force_refresh: True`。装配体工作流采用独立的缓存与指纹规则，不要将这里的行为直接套用到装配体。
+缓存位于当前工作目录的 `pipeline_cache/`，Web 任务各自独立。输入指纹包含需求、参考图、模型配置和系统提示词；输入变化后会自动使相关规划缓存失效。没有指纹的旧缓存会重新生成一次。仍可在 [`graph.py`](graph.py) 的 `get_default_initial_state` 中设置 `force_refresh: True` 强制刷新。
 
 参考图可放在仓库根目录的 `user_input_images/`。Spec Planner 可以据此提取几何意图，QA Judge 可以将参考图与渲染视图对比。Web UI 任务目录没有输入图片时，会使用根目录的图片。
 
@@ -140,3 +134,5 @@ QA 过程可以审查：规划结果、生成代码、测量值、遗漏特征�
 [项目首页](../README_cn.md#单零件基准测试)的总指标来自单零件工作流中**10 条共享提示词、141 个评估特征**的对比测试；它**不是**装配体成功率，也不保证未见提示词的表现。逐提示词的 token/成本明细和方法见 [`qwen3.7_token.md`](../docs/qwen3.7_token.md)、[英文评估](../docs/quantified_quality.md)与[中文评估](../docs/quantified_quality_cn.md)。基准提示词源自 [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad)；展示用提示词为本项目原创。
 
 除非附有可复现的计时方案，否则运行耗时方面的数字仅应视为非正式观察。对于生成的几何，尤其是“一体打印即可活动”的多实体零件，仍须按目标制造工艺进行检查与验证。
+
+运行时 Token 汇总采用 API 返回的 `total_tokens`；缓存输入和推理明细不再额外累加。历史基准表保留原始记录值，重新计算对比前需核对原始 usage。CLI 验证失败会返回非零退出码。`MAX_RETRIES` 表示修复次数，最后一次修复后仍会进行 QA。

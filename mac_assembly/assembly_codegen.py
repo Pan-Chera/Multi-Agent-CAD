@@ -206,6 +206,7 @@ for _label, _shape in _parts.items():
     _loc = _shape.location
     manifest.append({{
         "label": _label,
+        "source_step": _part_steps.get(_label),
         "bbox_min": [bb.min.X, bb.min.Y, bb.min.Z],
         "bbox_max": [bb.max.X, bb.max.Y, bb.max.Z],
         "location": {{
@@ -1199,7 +1200,8 @@ def run_assembly_script(
         shutil.rmtree(placed_dir, ignore_errors=True)
 
     python = python_bin or sys.executable
-    env = dict(os.environ)
+    from multi_agent_cad.nodes import _build_child_env
+    env = _build_child_env(0)
     try:
         proc = subprocess.run(  # noqa: S603
             [python, str(script_path)],

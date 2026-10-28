@@ -73,8 +73,8 @@ mac-config-reset = "multi_agent_cad._config_defaults:main"
 
 [tool.setuptools.packages.find]
 where = [".", "packages/cadpy/src"]
-include = ["multi_agent_cad*", "mac_assembly*", "cadpy*"]
-exclude = ["tmp*", "legacy_refs*", "packages*", "pipeline_cache*", "tests*"]
+include = ["multi_agent_cad*", "mac_assembly*", "cadpy*", "legacy_refs*"]
+exclude = ["tmp*", "packages*", "pipeline_cache*", "tests*"]
 
 [tool.setuptools.package-data]
 multi_agent_cad = [

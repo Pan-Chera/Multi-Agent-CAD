@@ -156,6 +156,21 @@ def _normalize_error(raw) -> ErrorType | None:
         return None
 
 
+def pipeline_exit_code(state: dict) -> int:
+    """Exit successfully only when the run delivered valid artifact paths."""
+    if _normalize_error(state.get("error_type")) != ErrorType.NONE:
+        return 1
+    qa = state.get("qa_report")
+    semantic = qa.get("semantic_verification") if isinstance(qa, dict) else getattr(qa, "semantic_verification", None)
+    if semantic == "failed":
+        return 1
+    for key in ("current_step_path", "current_stl_path"):
+        path = Path(state[key]) if state.get(key) else None
+        if path is None or not path.is_file() or path.stat().st_size == 0:
+            return 1
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Graph construction
 # ---------------------------------------------------------------------------
@@ -300,6 +315,9 @@ def _print_final_report(state: dict) -> None:
     print(f"  Iterations    : {iterations}")
     print(f"  STEP file     : {step_path}")
     print(f"  STL file      : {stl_path}")
+    print_stl = state.get("current_print_stl_path")
+    if print_stl and print_stl != stl_path:
+        print(f"  Print STL     : {print_stl}")
 
     if qa is not None:
         qa_obj = qa
@@ -438,6 +456,9 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # Use the state accumulated from stream events (avoids re-running the
     # entire pipeline with app.invoke()).
+    exit_code = exit_code or pipeline_exit_code(accumulated_state)
+    if exit_code and _normalize_error(accumulated_state.get("error_type")) == ErrorType.NONE:
+        accumulated_state["error_type"] = ErrorType.FATAL
     _print_final_report(accumulated_state)
 
     # ------------------------------------------------------------------

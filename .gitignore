@@ -26,6 +26,8 @@ __pycache__/
 .coverage.*
 htmlcov/
 .python-version
+build/
+dist/
 
 # Aider runtime cache (tags index for code repair). Auto-generated per run.
 .aider.tags.cache.v4/
@@ -56,6 +58,7 @@ temp_output_*.step
 temp_output_*.stp
 temp_output_*.stl
 temp_output_*.3mf
+print_temp_output_*.stl
 temp_measurements_*.json
 temp_missed_*.json
 
@@ -85,6 +88,7 @@ tests/*
 # Stable timeout and public-prompt regressions also run in CI.
 !tests/test_llm_timeouts.py
 !tests/test_natural_language_benchmark_prompts.py
+tests/release/__pycache__/
 
 # ── Local dev scripts & scratch space ──────────────────────────────────────
 tmp/

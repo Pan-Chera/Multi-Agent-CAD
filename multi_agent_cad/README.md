@@ -113,21 +113,19 @@ The iteration suffix is not necessarily `0`; inspect the latest run rather than 
 The Web UI launch commands are in the root Quick Start. It provides a
 configuration form, browser 3D preview, and downloads, but currently
 auto-iterates instead of exposing the CLI checkpoint. UI jobs use isolated
-temporary directories; CLI runs write `temp_*` artifacts to the repository
-root. Security and network-binding notes are also maintained in the root
+temporary directories; CLI runs write `temp_*` artifacts to the current working
+directory. To modify a completed Web job, select `aider` and supply its job ID in
+`Source job ID`; the Python source is copied into a new isolated job. Progress
+reconnects automatically and the active job can be recovered after a page refresh.
+Downloads use the final workflow state. The optional print-oriented STL is a
+separate download and is never used as the assembly-local mesh. Security and network-binding notes are also maintained in the root
 README and [`SECURITY.md`](../SECURITY.md).
 
 ## Cache and prompt changes
 
 `pipeline_cache/cad_brief.json` stores the Spec Planner output; `pipeline_cache/architect_plan.json` stores the Geometric Architect output. Re-running the **same** request can reuse these stages and restart code generation/repair.
 
-**Important:** the single-part cache checks file presence, not whether the current `USER_REQUEST` matches its contents. Before generating a **different** model, remove only these two cache files:
-
-```bash
-rm pipeline_cache/cad_brief.json pipeline_cache/architect_plan.json
-```
-
-Alternatively, set `force_refresh: True` in [`graph.py`](graph.py)'s `get_default_initial_state`. The assembly workflow has separate caches and fingerprint rules; do not assume this single-part behavior applies there.
+Caches are scoped to the current working directory (each Web job has its own cache). Input fingerprints include the request, reference images, model settings, and system prompt. A different input invalidates the relevant plan automatically; legacy caches without fingerprints are regenerated once. Set `force_refresh: True` in [`graph.py`](graph.py)'s `get_default_initial_state` to bypass matching caches.
 
 Reference images can be placed in repository-root `user_input_images/`. Spec Planner can use them to infer geometric intent, and the QA Judge can compare them with rendered views. For Web UI jobs, the root image folder is used when the job directory has no input images.
 
@@ -151,3 +149,5 @@ QA is inspectable: plans, generated code, measurements, missed-feature diagnosti
 The headline comparison on the [project homepage](../README.md#single-part-benchmark) covers **ten shared prompts and 141 evaluated features** in the single-part workflow. It does **not** measure assembly success or establish a general guarantee for unseen prompts. Full prompt-level token/cost data and methodology are in [`qwen3.7_token.md`](../docs/qwen3.7_token.md), the [English evaluation](../docs/quantified_quality.md), and the [Chinese evaluation](../docs/quantified_quality_cn.md). The benchmark prompts originate from [earthtojake/text-to-cad](https://github.com/earthtojake/text-to-cad); the showcase prompts are original to this repository.
 
 Wall-clock speed figures should be treated as informal observations unless accompanied by a reproducible timing protocol. Generated geometry, especially multi-body print-in-place parts, should still be inspected and validated for the intended manufacturing process.
+
+Runtime accounting uses the API-reported `total_tokens`; cached input and reasoning details are subsets, not additional tokens. Historical benchmark tables retain their recorded values and require raw-usage reconciliation before recomputing comparisons. CLI validation failures return a nonzero exit status. `MAX_RETRIES` counts repair attempts, and the final repaired model always receives a QA pass before delivery.

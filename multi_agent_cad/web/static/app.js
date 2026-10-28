@@ -6,6 +6,7 @@ const STAGES = [
   { prefix: "ARCHITECT",    label: "2. Geometric Architect" },
   { prefix: "CODER",        label: "3. Python Coder" },
   { prefix: "REPAIR",       label: "4. Aider Repair (fallback)" },
+  { prefix: "JUDGE",        label: "5. QA Judge" },
 ];
 
 let providers = {};
@@ -93,6 +94,7 @@ document.getElementById("run-btn").addEventListener("click", async () => {
     api_key: document.getElementById("api_key").value,
     workflow: document.getElementById("workflow").value,
     dest_path: document.getElementById("dest_path").value,
+    source_job_id: document.getElementById("source_job_id").value,
   };
 
   const log = document.getElementById("log");
@@ -110,11 +112,18 @@ document.getElementById("run-btn").addEventListener("click", async () => {
   stopBtn.disabled = true;
   stopBtn.textContent = "■ Stop";
 
-  const r = await fetch("/api/run", {
+  let r;
+  try {
+    r = await fetch("/api/run", {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-MAC-CSRF": "1" },
     body: JSON.stringify(body),
-  });
+    });
+  } catch (error) {
+    status.textContent = "Submission failed: " + error;
+    runBtn.disabled = false;
+    return;
+  }
   if (!r.ok) {
     const t = await r.text();
     status.textContent = "Error: " + t;
@@ -134,10 +143,11 @@ document.getElementById("stop-btn").addEventListener("click", async () => {
   stopBtn.textContent = "Cancelling...";
   status.textContent = "Cancelling — waiting for subprocess to exit...";
   try {
-    await fetch(`/api/jobs/${currentJobId}/cancel`, {
+    const response = await fetch(`/api/jobs/${currentJobId}/cancel`, {
       method: "POST",
       headers: { "X-MAC-CSRF": "1" },
     });
+    if (!response.ok) throw new Error(await response.text());
   } catch (e) {
     status.textContent = "Cancel request failed: " + e;
     stopBtn.disabled = false;
@@ -149,18 +159,22 @@ document.getElementById("stop-btn").addEventListener("click", async () => {
 
 function streamEvents(jobId) {
   currentJobId = jobId;
+  if (typeof localStorage !== "undefined") localStorage.setItem("mac-active-job", jobId);
   const log = document.getElementById("log");
   const status = document.getElementById("status");
   const mv = document.getElementById("mv");
   const runBtn = document.getElementById("run-btn");
   const stopBtn = document.getElementById("stop-btn");
   const es = new EventSource(`/api/jobs/${jobId}/events`);
+  runBtn.disabled = true;
+  stopBtn.disabled = false;
 
   function finishStream() {
     runBtn.disabled = false;
     stopBtn.disabled = true;
     stopBtn.textContent = "■ Stop";
     currentJobId = null;
+    if (typeof localStorage !== "undefined") localStorage.removeItem("mac-active-job");
   }
 
   es.onmessage = (ev) => {
@@ -198,6 +212,10 @@ function streamEvents(jobId) {
       es.close();
       finishStream();
       showResult(jobId, msg);
+      if (msg.py) document.getElementById("source_job_id").value = jobId;
+      if (msg.semantic_verification === "unverified") {
+        status.textContent += " · visual semantics unverified";
+      }
     }
     if (msg.error) {
       status.textContent = "Error: " + msg.error;
@@ -207,10 +225,21 @@ function streamEvents(jobId) {
     }
   };
 
-  es.onerror = () => {
-    status.textContent = "Connection lost.";
-    es.close();
-    finishStream();
+  es.onerror = async () => {
+    status.textContent = "Connection interrupted — reconnecting; job is still tracked.";
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/result`);
+      if (response.status === 404) {
+        es.close();
+        finishStream();
+        status.textContent = "Job unavailable — the server may have restarted.";
+        return;
+      }
+      if (response.ok) {
+        const result = await response.json();
+        if (result.done || result.error) es.onmessage({data: JSON.stringify(result)});
+      }
+    } catch { /* EventSource retries automatically and preserves Last-Event-ID. */ }
   };
 }
 
@@ -230,6 +259,7 @@ function showResult(jobId, msg) {
     ["GLB (preview)", "model.glb", msg.glb],
     ["STEP", "model.step", msg.step],
     ["STL", "model.stl", msg.stl],
+    ["Print-oriented STL", "print.stl", msg.print_stl],
     ["Python source", "source.py", msg.py],
     ["Measurements", "measurements.json", msg.measurements],
     ["Runtime diagnostics", "missed.json", msg.missed],
@@ -249,4 +279,7 @@ function showResult(jobId, msg) {
   document.getElementById("stats").textContent = statsStr.join(" · ");
 }
 
-loadSchema();
+loadSchema().then(() => {
+  const jobId = typeof localStorage !== "undefined" && localStorage.getItem("mac-active-job");
+  if (jobId) streamEvents(jobId);
+});

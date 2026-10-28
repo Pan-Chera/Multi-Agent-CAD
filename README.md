@@ -205,7 +205,7 @@ STEP runtime. If an existing environment has already upgraded, run
 >
 > The last step registers the `mac-config-reset` console script and lets you run `python -m multi_agent_cad.graph` from any directory. See [requirements.txt](requirements.txt) / [pyproject.toml](pyproject.toml) for the canonical dependency list.
 
-> **Windows**: the same `conda env create` + `pip install --no-deps aider-chat==0.82.3` flow works — `trimesh` and `rtree` come from conda-forge prebuilt; `OCP` is pulled in transitively by `build123d` (via its PyPI dep `cadquery-ocp-novtk`). Don't use the pure-pip workaround below on Windows — native wheels for `trimesh`/`rtree` can be unreliable. Set the API key in PowerShell as `$env:DASHSCOPE_API_KEY = "sk-..."` (or `set DASHSCOPE_API_KEY=sk-...` in cmd.exe). For the Web UI under conda, `pip install -e ".[web]"` inside the activated env works — `uvloop` auto-skips on Windows. Windows isn't in CI, but the code avoids Unix-only APIs and uses UTF-8 throughout; issues welcome.
+> **Windows**: the same `conda env create` + `pip install --no-deps aider-chat==0.82.3` flow works — `trimesh` and `rtree` come from conda-forge prebuilt; `OCP` is pulled in transitively by `build123d` (via its PyPI dep `cadquery-ocp-novtk`). Don't use the pure-pip workaround below on Windows — native wheels for `trimesh`/`rtree` can be unreliable. Set the API key in PowerShell as `$env:DASHSCOPE_API_KEY = "sk-..."` (or `set DASHSCOPE_API_KEY=sk-...` in cmd.exe). For the Web UI under conda, `pip install -e ".[web]"` inside the activated env works — `uvloop` auto-skips on Windows. CI covers Windows with Python 3.11 and Linux with Python 3.11/3.12, including an isolated wheel installation check.
 
 ### Generate one part
 

@@ -12,9 +12,19 @@ on:
 
 jobs:
   release-contract:
-    name: Release contract (no API key)
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
+    name: Release contract (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.11"
 
     steps:
       - name: Checkout
@@ -23,11 +33,11 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
 
       - name: Install package and test dependencies
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
           pip install -e ".[mesh,science,dev,web]"
 
       - name: Run release-contract tests
@@ -37,6 +47,11 @@ jobs:
 
       - name: Compile public packages
         run: python -m compileall -q multi_agent_cad mac_assembly packages/cadpy/src/cadpy
+
+      - name: Verify isolated wheel installation and mesh engine
+        run: |
+          python -m pip wheel . --no-deps --no-build-isolation --wheel-dir dist
+          python tests/release/check_wheel_install.py dist
 
   smoke-test:
     name: Pipeline smoke test (default prompt)

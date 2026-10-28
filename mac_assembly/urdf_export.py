@@ -374,18 +374,30 @@ def _build_link_tree(mates: list[dict]) -> tuple[str | None, bool]:
 
 
 def _find_part_stl(work_dir: Path, part_label: str) -> Path | None:
-    """Find the link-local STL for a part.
-
-    Looks in ``parts/<part_label>/temp_output_*.stl``; delegates the
-    "newest" pick to ``file_utils.newest_file`` (single source of truth,
-    R3) so it can never disagree with part_generator's harvest.
-    """
+    """Find the unrotated mesh of the STEP actually used in the assembly."""
     from mac_assembly.file_utils import newest_file
 
+    manifest = work_dir / "assembly_manifest.json"
+    if manifest.is_file():
+        for entry in json.loads(manifest.read_text(encoding="utf-8")):
+            if entry.get("label") == part_label and entry.get("source_step"):
+                step = Path(entry["source_step"])
+                if not step.is_absolute():
+                    step = work_dir / step
+                mesh = step.with_suffix(".stl")
+                # Never fall back to a different revision for an authoritative STEP.
+                return mesh if mesh.is_file() and mesh.stat().st_size > 0 else None
     part_dir = work_dir / "parts" / part_label
     if not part_dir.is_dir():
         return None
-    return newest_file(part_dir, "temp_output_*.stl")
+    step = newest_file(part_dir, "temp_output_*.step")
+    if step is not None:
+        mesh = step.with_suffix(".stl")
+        return mesh if mesh.is_file() and mesh.stat().st_size > 0 else None
+    # Older jobs may contain only STLs. Exclude legacy print-oriented copies.
+    meshes = [p for p in part_dir.glob("temp_output_*.stl")
+              if not p.stem.endswith("_rotated") and p.is_file() and p.stat().st_size > 0]
+    return max(meshes, key=lambda p: p.stat().st_mtime_ns) if meshes else None
 
 
 # ---------------------------------------------------------------------------

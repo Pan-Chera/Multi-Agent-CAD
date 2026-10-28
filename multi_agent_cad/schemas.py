@@ -1200,6 +1200,12 @@ class GraphState(TypedDict, total=False):
     current_stl_path: str | None
     """Absolute filesystem path to the most recently generated .stl file."""
 
+    current_print_stl_path: str | None
+    """Optional print-oriented mesh; never used as an assembly-local mesh."""
+
+    measurement_iteration: int
+    """Execution iteration that produced the current geometry and diagnostics."""
+
     # -- Dual-Engine QA output --
     qa_report: QAReport | None
     """Merged QA report from the Dual-Engine QA node.  Its error_type field

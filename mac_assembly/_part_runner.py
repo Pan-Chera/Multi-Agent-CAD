@@ -141,7 +141,17 @@ def main(argv: list[str] | None = None) -> int:
 
     error = final.get("error_type")
     error_str = getattr(error, "value", str(error)) if error else "none"
-    ok = error_str == "none"
+    from multi_agent_cad.graph import pipeline_exit_code
+    ok = pipeline_exit_code(final) == 0
+    # The parent must harvest the accepted state, not the newest partial
+    # file left by a failed attempt or an independent print-oriented copy.
+    import json
+    artifacts = {key: final.get(key) for key in (
+        "current_step_path", "current_stl_path", "current_python_code_path",
+    )}
+    temporary = part_dir / "part_final_artifacts.tmp"
+    temporary.write_text(json.dumps(artifacts, indent=2), encoding="utf-8")
+    temporary.replace(part_dir / "part_final_artifacts.json")
 
     print(f"[part_runner:{mode}] PART_DONE error_type={error_str}")
     return 0 if ok else 1

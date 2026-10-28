@@ -1059,6 +1059,21 @@ def _print_end_to_end_tokens(state: dict) -> None:
 
 
 
+def assembly_exit_code(state: dict) -> int:
+    """Keep process status consistent with delivered geometry and QA."""
+    qa = state.get("qa_report")
+    decision = state.get("judge_decision")
+    if qa is None or getattr(qa, "semantic_verification", None) == "failed":
+        return 1
+    accepted = decision is not None and decision.action == AssemblyJudgeAction.ACCEPT
+    if not (qa.all_passed or accepted):
+        return 1
+    if decision is not None and decision.action == AssemblyJudgeAction.HALT:
+        return 1
+    path = Path(state["assembly_step_path"]) if state.get("assembly_step_path") else None
+    return 0 if path and path.is_file() and path.stat().st_size > 0 else 1
+
+
 def _final_report(state: dict) -> None:
     print()
     print("=" * 70)
@@ -1273,7 +1288,7 @@ def main() -> int:
     # an older run. Never package those stale files as this run's delivery.
     if not accumulated.get("assembly_step_path"):
         print("  No assembly was produced in this run. No handoff packet.")
-        return 0
+        return 1
 
     # Handoff packet: GLB + URDF + snapshot views + manifest (viewer-ready).
     # Best-effort: a handoff export bug should not crash the pipeline, but
@@ -1301,7 +1316,7 @@ def main() -> int:
         except Exception:  # noqa: BLE001 - log write must not mask the original error
             print(f"  handoff FAILED: {exc}\n{tb}")
 
-    return 0
+    return assembly_exit_code(accumulated)
 
 
 if __name__ == "__main__":

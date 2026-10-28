@@ -44,8 +44,8 @@ API_BASE_ENV_VAR = "OPENAI_API_BASE"
 # Retry / Iteration Budgets
 # ============================================================================
 
-# Max outer retries for the autonomous skill loop (Phase 4).
-# Each retry runs a full QA -> Aider repair -> re-execute cycle.
+# Max repair attempts for the autonomous skill loop (Phase 4).
+# Initial geometry and every repaired geometry receive QA, including the final repair.
 MAX_RETRIES = 3
 
 # Inner exec retries within each outer retry.  When Aider edits the code
