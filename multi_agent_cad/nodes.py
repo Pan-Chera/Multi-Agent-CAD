@@ -111,6 +111,7 @@ def _build_child_env(iteration: int) -> dict[str, str]:
     allow = _CHILD_ENV_ALLOWLIST | extra_names
     child_env = {k: v for k, v in os.environ.items() if k in allow}
     child_env["ITERATION"] = str(iteration)
+    child_env["PYTHONIOENCODING"] = "utf-8"
     return child_env
 
 
@@ -1010,6 +1011,14 @@ def _node_python_coder_deterministic(
             proc.stdin = None
             try:
                 stdout, stderr = proc.communicate(timeout=_CFG_CAD_SCRIPT_TIMEOUT)
+            except subprocess.TimeoutExpired as exc:
+                proc.kill()
+                stdout, stderr = proc.communicate()
+                raise RuntimeError(
+                    f"cadpy subprocess timed out after {_CFG_CAD_SCRIPT_TIMEOUT} seconds.\n"
+                    f"--- stdout ---\n{_tail(stdout or '', 20)}\n"
+                    f"--- stderr ---\n{_tail(stderr or '', 20)}"
+                ) from exc
             except BaseException:
                 proc.kill()
                 proc.communicate()

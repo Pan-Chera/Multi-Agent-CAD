@@ -7,6 +7,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -52,10 +54,11 @@ def test_cadpy_child_preserves_geometry_and_filters_env(monkeypatch, tmp_path, h
     monkeypatch.setenv("MAC_REVIEW_EXTRA", "allowed-value")
     monkeypatch.setattr(nodes, "_has_unsupported_placeholders", lambda code: hybrid)
     monkeypatch.setattr(nodes, "_plan_to_code", lambda *args: _CODE)
+    monkeypatch.setattr(nodes, "_CFG_CAD_SCRIPT_TIMEOUT", 30)
 
     def fill(script_path, *args, **kwargs):
         # Mimic an Aider edit: the actual edited file must be loaded by cadpy.
-        script_path.write_text(script_path.read_text() + "\n# aider-filled\n")
+        script_path.write_text(script_path.read_text(encoding="utf-8") + "\n# aider-filled\n", encoding="utf-8")
         return True
 
     def unexpected_fill(*args, **kwargs):
@@ -64,7 +67,7 @@ def test_cadpy_child_preserves_geometry_and_filters_env(monkeypatch, tmp_path, h
     monkeypatch.setattr(nodes, "_fill_unsupported_with_aider", fill if hybrid else unexpected_fill)
     result = nodes._node_python_coder_deterministic({}, object(), 7)
     assert "SUCCESS" in result["execution_log"][-1], result
-    probe = json.loads((tmp_path / "env_probe.json").read_text())
+    probe = json.loads((tmp_path / "env_probe.json").read_text(encoding="utf-8"))
     assert probe["pid"] != os.getpid()
     assert probe["secrets_present"] == []
     assert probe["iteration"] == "7"
@@ -79,7 +82,7 @@ def test_cadpy_child_preserves_geometry_and_filters_env(monkeypatch, tmp_path, h
     assert mesh.is_watertight
     assert mesh.volume == pytest.approx(6000)
     assert list(mesh.extents) == pytest.approx([10, 20, 30])
-    assert json.loads((tmp_path / "temp_measurements_7.json").read_text())["volume"] == pytest.approx(6000)
+    assert json.loads((tmp_path / "temp_measurements_7.json").read_text(encoding="utf-8"))["volume"] == pytest.approx(6000)
     assert (tmp_path / "temp_token_snapshot.json").is_file()
     if hybrid:
         assert "aider-filled" in result["current_python_code"]
@@ -139,3 +142,25 @@ def test_cadpy_child_stops_when_parent_pipe_closes(tmp_path):
             if proc.poll() is None:
                 proc.kill()
             proc.wait(timeout=5)
+
+
+@pytest.mark.parametrize("broken", [False, True])
+def test_windows_parent_monitor_can_stop_without_a_blocking_read(monkeypatch, broken):
+    from multi_agent_cad import _cadpy_runner as runner
+
+    peek = Mock(side_effect=OSError("broken pipe") if broken else None)
+    exit_process = Mock(side_effect=SystemExit(1))
+    handles = Mock(return_value=123)
+    monkeypatch.setitem(sys.modules, "_winapi", SimpleNamespace(PeekNamedPipe=peek))
+    monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace(get_osfhandle=handles))
+    monkeypatch.setattr(runner, "os", SimpleNamespace(name="nt", _exit=exit_process))
+    stopped = SimpleNamespace(wait=Mock(side_effect=[False, True]))
+    if broken:
+        with pytest.raises(SystemExit) as exc:
+            runner._watch_parent_pipe(9, stopped)
+        assert exc.value.code == 1
+    else:
+        runner._watch_parent_pipe(9, stopped)
+        exit_process.assert_not_called()
+    handles.assert_called_once_with(9)
+    peek.assert_called_once_with(123)

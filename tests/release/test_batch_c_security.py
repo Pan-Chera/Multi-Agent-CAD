@@ -124,7 +124,7 @@ class TestCSRFMiddleware:
         import json
         import shlex
 
-        readme = (Path(__file__).resolve().parents[2] / "README.md").read_text()
+        readme = (Path(__file__).resolve().parents[2] / "README.md").read_text(encoding="utf-8")
         example = readme.split("curl -X POST http://127.0.0.1:8000/api/run", 1)[1]
         args = shlex.split(example.split("```", 1)[0].replace("\\\n", ""))
         headers = dict(args[i + 1].split(": ", 1)
@@ -430,11 +430,15 @@ class TestDestPathValidator:
         assert r.status_code == 400
         assert "MAC_WEB_DEST_ROOT" in r.json()["detail"]
 
-    def test_dest_path_absolute_rejected(self, client, monkeypatch, tmp_path):
+    @pytest.mark.parametrize("rooted", [False, True])
+    def test_dest_path_absolute_rejected(self, client, monkeypatch, tmp_path, rooted):
         """Absolute dest_path is rejected even with root set."""
         monkeypatch.setenv("MAC_WEB_ALLOW_DEST_PATH", "1")
         monkeypatch.setenv("MAC_WEB_DEST_ROOT", str(tmp_path))
-        r = self._post(client, "/etc/cron.d")
+        # Windows also has root-relative paths (/etc/cron.d) whose drive
+        # is implicit; both they and fully-qualified paths are forbidden.
+        dest = "/etc/cron.d" if rooted else str(tmp_path / "absolute-output")
+        r = self._post(client, dest)
         assert r.status_code == 400
         assert "relative" in r.json()["detail"].lower() or "absolute" in r.json()["detail"].lower()
 

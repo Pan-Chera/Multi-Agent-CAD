@@ -13,6 +13,31 @@ import threading
 from pathlib import Path
 
 
+def _watch_parent_pipe(fd: int, stopped: threading.Event) -> None:
+    """Poll for pipe closure without leaving a blocking read at shutdown."""
+    if os.name == "nt":
+        import _winapi
+        import msvcrt
+
+        handle = msvcrt.get_osfhandle(fd)
+
+        def parent_exited() -> bool:
+            try:
+                _winapi.PeekNamedPipe(handle)
+                return False
+            except OSError:
+                return True
+    else:
+        import select
+
+        def parent_exited() -> bool:
+            return bool(select.select([fd], [], [], 0)[0])
+
+    while not stopped.wait(0.1):
+        if parent_exited():
+            os._exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--script", required=True, type=Path)
@@ -22,17 +47,27 @@ def main() -> None:
     parser.add_argument("--watch-parent", action="store_true")
     args = parser.parse_args()
 
+    stopped = threading.Event()
+    watcher = None
     if args.watch_parent:
         # The parent keeps this pipe open without sending data. EOF means the
         # parent was cancelled or died; stop CAD work instead of orphaning it.
-        # A pipe works on Windows too, where parent PID reparenting differs.
-        def stop_on_parent_exit() -> None:
-            # Avoid a buffered stdin lock held by a daemon during shutdown.
-            os.read(sys.stdin.fileno(), 1)
-            os._exit(1)
+        # A blocking CRT stdin read can deadlock normal Windows shutdown.
+        # Polling lets the monitor stop before Python finalizes its streams.
+        watcher = threading.Thread(
+            target=_watch_parent_pipe, args=(sys.stdin.fileno(), stopped), daemon=True,
+        )
+        watcher.start()
 
-        threading.Thread(target=stop_on_parent_exit, daemon=True).start()
+    try:
+        _generate(args)
+    finally:
+        stopped.set()
+        if watcher is not None:
+            watcher.join(timeout=1)
 
+
+def _generate(args: argparse.Namespace) -> None:
     repo_root = Path(__file__).resolve().parent.parent
     # Match the parent runner's source-checkout imports. Installed packages
     # still resolve through site-packages when the vendored source is absent.

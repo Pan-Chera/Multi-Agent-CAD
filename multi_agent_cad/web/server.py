@@ -312,7 +312,7 @@ def _validate_dest_path(dest: str) -> Path:
             "MAC_WEB_DEST_ROOT must be an absolute directory path",
         )
     p = Path(dest)
-    if p.is_absolute():
+    if p.anchor:
         raise HTTPException(
             400,
             "dest_path must be relative, not absolute",
