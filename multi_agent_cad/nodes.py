@@ -78,6 +78,11 @@ def _safe_print(*args, **kwargs) -> None:
 _CHILD_ENV_ALLOWLIST = frozenset({
     "PATH",
     "HOME",
+    "USERPROFILE",       # pathlib/ezdxf home lookup on Windows
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "APPDATA",
+    "LOCALAPPDATA",
     "TMPDIR",
     "TMP",
     "TEMP",

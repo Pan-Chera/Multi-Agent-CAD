@@ -176,14 +176,16 @@ def test_existing_download_routes_serve_original_files(web_probe, tmp_path, name
     assert r.content == b"original-artifact"
 
 
-def test_provider_frontend_behavior():
+def test_provider_frontend_behavior(tmp_path):
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is needed for the frontend DOM probe")
     script = Path(__file__).with_name("web_provider_probe.cjs")
+    config_path = tmp_path / "frontend-config.json"
+    config_path.write_text(json.dumps({"config": server._config_schema(),
+                                       "providers": server._PROVIDER_PRESETS}), encoding="utf-8")
     result = subprocess.run(
-        [node, str(script)], input=json.dumps({"config": server._config_schema(),
-                                              "providers": server._PROVIDER_PRESETS}),
-        capture_output=True, text=True, timeout=30,
+        [node, str(script), str(config_path)], stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, encoding="utf-8", timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr

@@ -25,6 +25,7 @@ Path("env_probe.json").write_text(json.dumps({
     ) if key in os.environ],
     "iteration": os.environ.get("ITERATION"),
     "extra": os.environ.get("MAC_REVIEW_EXTRA"),
+    "home": str(Path.home()),
 }))
 # --- Generated solids ---
 body = bd.Box(10, 20, 30)
@@ -72,6 +73,7 @@ def test_cadpy_child_preserves_geometry_and_filters_env(monkeypatch, tmp_path, h
     assert probe["secrets_present"] == []
     assert probe["iteration"] == "7"
     assert probe["extra"] == "allowed-value"
+    assert probe["home"] == str(Path.home())
     assert os.environ["DASHSCOPE_API_KEY"] == "review-dummy-key"
     assert os.environ["ITERATION"] == "parent-value"
     assert Path(result["current_python_code_path"]).is_file()

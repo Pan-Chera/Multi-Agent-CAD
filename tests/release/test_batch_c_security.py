@@ -575,6 +575,30 @@ class TestChildEnvAllowlist:
         assert env["ITERATION"] == "3"
         assert env["PATH"] == "/usr/bin"
 
+    def test_build_child_env_preserves_windows_home_lookup(self, monkeypatch):
+        import ntpath
+        from unittest.mock import patch
+        from multi_agent_cad.nodes import _build_child_env
+
+        home = r"C:\Users\cad-user"
+        runtime = {"USERPROFILE": home, "HOMEDRIVE": "C:", "HOMEPATH": r"\Users\cad-user",
+                   "APPDATA": home + r"\AppData\Roaming", "LOCALAPPDATA": home + r"\AppData\Local"}
+        for key, value in runtime.items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
+        env = _build_child_env(0)
+        assert all(env[key] == value for key, value in runtime.items())
+        assert "OPENAI_API_KEY" not in env
+        # ntpath uses Windows home semantics even when this test runs on Unix.
+        with patch.dict(os.environ, env, clear=True):
+            assert ntpath.expanduser("~") == home
+
+        # The assembly orchestration subprocess must retain these paths too;
+        # filtering them there would starve its CAD grandchildren again.
+        from mac_assembly.part_generator import _make_subprocess_env
+        part_env = _make_subprocess_env()
+        assert all(part_env[key] == value for key, value in runtime.items())
+
     def test_build_child_env_mac_child_env_allow_override(self, monkeypatch):
         """MAC_CHILD_ENV_ALLOW adds operator-specified vars to the allowlist."""
         from multi_agent_cad.nodes import _build_child_env

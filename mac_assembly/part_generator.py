@@ -816,10 +816,11 @@ def _make_subprocess_env() -> dict:
     subsequent part die with "DASHSCOPE_API_KEY is not set", which the loop
     then retried as a generic part failure).
     """
-    env = dict(
-        PATH=os.environ.get("PATH", "/usr/bin:/bin"),
-        PYTHONPATH=str(_PROJECT_ROOT),
-    )
+    from multi_agent_cad.nodes import _build_child_env
+    env = _build_child_env(0)
+    env.pop("ITERATION", None)
+    env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
+    env["PYTHONPATH"] = str(_PROJECT_ROOT)
     for key in _ENV_FORWARD_KEYS:
         if key in os.environ:
             env[key] = os.environ[key]
