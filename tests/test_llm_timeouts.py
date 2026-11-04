@@ -5,7 +5,9 @@ Planning and code generation still have independent settings and call sites.
 """
 from __future__ import annotations
 
+import inspect
 import os
+import re
 import runpy
 import subprocess
 import sys
@@ -70,21 +72,25 @@ class TestTimeoutValues(unittest.TestCase):
         into a codegen/repair path, and the Aider litellm extra_params must
         carry the codegen timeout (regression against silent 120s revert).
         """
-        src = (_REPO_ROOT / "multi_agent_cad" / "nodes.py").read_text(
-            encoding="utf-8"
-        )
+        from multi_agent_cad import nodes
+
+        src = "\n".join(inspect.getsource(fn) for fn in (
+            nodes._call_llm_json_with_retry, nodes.node_python_coder,
+            nodes.generate_initial_solution, nodes._fill_unsupported_with_aider,
+            nodes._run_repair_on_script, nodes._run_direct_repair_fallback,
+        ))
         # Planning and codegen must use their own settings even when the
         # current defaults happen to be equal.
         self.assertEqual(
-            src.count("timeout=_CFG_LLM_API_TIMEOUT,"), 1,
+            len(re.findall(r"timeout=(?:_nodes\.)?_CFG_LLM_API_TIMEOUT,", src)), 1,
             "planning timeout must be confined to _call_llm_json_with_retry",
         )
         self.assertGreaterEqual(
-            src.count("timeout=_CFG_LLM_CODEGEN_API_TIMEOUT"), 3,
+            len(re.findall(r"timeout=(?:_nodes\.)?_CFG_LLM_CODEGEN_API_TIMEOUT", src)), 3,
             "coder + generate + repair fallback must use the codegen timeout",
         )
         self.assertGreaterEqual(
-            src.count('"timeout": _CFG_LLM_CODEGEN_API_TIMEOUT'), 3,
+            len(re.findall(r'"timeout": (?:_nodes\.)?_CFG_LLM_CODEGEN_API_TIMEOUT', src)), 3,
             "all three Aider Model.extra_params must set a litellm timeout",
         )
 

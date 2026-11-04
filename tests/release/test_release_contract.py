@@ -209,14 +209,21 @@ def test_extract_json_last_fenced_block(name: str, raw: str, expected: str) -> N
 
 
 def test_build123d_ref_not_in_editable_fnames() -> None:
-    """BUG-007: every `Coder.create(...)` call in `multi_agent_cad/nodes.py`
+    """BUG-007: every `Coder.create(...)` call exposed by `multi_agent_cad.nodes`
     must pass `_BUILD123D_REF` via `read_only_fnames=[...]` (read-only
     context) -- never via `fnames=[...]` (editable files).  Otherwise the
     LLM can edit the build123d reference doc, and the corruption persists
     across runs.  `script_path` must remain in `fnames`; `auto_commits` and
     `add_gitignore_files` must not be silently dropped.
     """
-    source = (ROOT / "multi_agent_cad" / "nodes.py").read_text(encoding="utf-8")
+    import inspect
+    from multi_agent_cad import nodes
+
+    source = "\n".join(inspect.getsource(fn) for fn in (
+        nodes._fill_unsupported_with_aider,
+        nodes.generate_initial_solution,
+        nodes._run_repair_on_script,
+    ))
     tree = ast.parse(source)
     coder_calls: list[ast.Call] = []
     for node in ast.walk(tree):
@@ -228,7 +235,7 @@ def test_build123d_ref_not_in_editable_fnames() -> None:
             and node.func.attr == "create"
         ):
             coder_calls.append(node)
-    assert coder_calls, "expected at least one Coder.create call in nodes.py"
+    assert coder_calls, "expected at least one Coder.create call in the Aider helpers"
 
     problems: list[str] = []
     for call in coder_calls:
@@ -246,6 +253,7 @@ def test_build123d_ref_not_in_editable_fnames() -> None:
             continue
         fnames_elems = [
             elt.id if isinstance(elt, ast.Name) else
+            elt.attr if isinstance(elt, ast.Attribute) and isinstance(elt.value, ast.Name) and elt.value.id == "_nodes" else
             (ast.literal_eval(elt) if isinstance(elt, (ast.Str, ast.Constant)) else "<expr>")
             for elt in fnames_list.elts
         ]
@@ -274,6 +282,7 @@ def test_build123d_ref_not_in_editable_fnames() -> None:
             continue
         readonly_elems = [
             elt.id if isinstance(elt, ast.Name) else
+            elt.attr if isinstance(elt, ast.Attribute) and isinstance(elt.value, ast.Name) and elt.value.id == "_nodes" else
             (ast.literal_eval(elt) if isinstance(elt, (ast.Str, ast.Constant)) else "<expr>")
             for elt in readonly_list.elts
         ]

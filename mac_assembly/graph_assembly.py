@@ -1242,8 +1242,8 @@ def main() -> int:
 
     accumulated: dict = dict(initial)
     # Exit-code contract:
-    #   0   normal completion
-    #   1   runtime exception during app.stream
+    #   0   completed with a nonempty assembly artifact and accepted QA
+    #   1   runtime exception, incomplete output, or rejected QA
     #   130 KeyboardInterrupt (POSIX SIGINT convention)
     #   2   preflight failure (returned above, before this block)
     # A crashed run must NOT build a handoff packet or print a "successful

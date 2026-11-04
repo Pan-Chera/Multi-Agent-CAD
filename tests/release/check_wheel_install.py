@@ -27,18 +27,22 @@ def main() -> None:
         probe = '''
 from pathlib import Path
 import sys
-from build123d import Box, export_stl
+from build123d import Box, export_step, export_stl
 import cadpy.generation
 import multi_agent_cad.nodes as nodes
 from multi_agent_cad.schemas import CADBrief
 assert Path(nodes.__file__).is_relative_to(Path(sys.argv[1]))
 assert nodes._CHECK_MESH_SCRIPT.is_file(), "wheel is missing the mesh engine"
 export_stl(Box(10, 20, 30), "part.stl")
+export_step(Box(10, 20, 30), "part.step")
+topology = nodes._load_step_topology(str(Path("part.step").resolve()))
+assert topology[-1] is None, topology[-1]
+assert topology[4] is not None and abs(topology[4] - 6000) < 1e-5, topology[4]
 brief = CADBrief(part_name="box", part_category="flat-plate", user_request_raw="box")
 report = nodes._run_engine_b_check_mesh(stl_path=str(Path("part.stl").resolve()), cad_brief=brief)
 assert not report.errors, report.errors
 assert report.raw_json, "installed mesh engine returned no analysis"
-print("Installed wheel: CAD imports and mesh QA passed without credentials.")
+print("Installed wheel: CAD imports, exact STEP volume and mesh QA passed without credentials.")
 '''
         subprocess.run([sys.executable, "-B", "-c", probe, str(target)],
                        cwd=root, env=env, check=True, timeout=180)

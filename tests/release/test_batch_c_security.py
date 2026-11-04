@@ -709,9 +709,11 @@ class TestChildEnvAllowlist:
         We can't easily invoke the full coder node here (it needs an LLM), but
         we can verify the call site uses _build_child_env by reading the source.
         """
-        from pathlib import Path as P
-        nodes_path = P(__file__).resolve().parents[2] / "multi_agent_cad" / "nodes.py"
-        src = nodes_path.read_text(encoding="utf-8")
+        import inspect
+        from multi_agent_cad import nodes
+        src = "\n".join(inspect.getsource(fn) for fn in (
+            nodes.node_python_coder, nodes._execute_cad_script,
+        ))
         # Both subprocess.run call sites for the LLM-authored script must pass env=
         # (the check_mesh.py subprocess at line 4776 is project-shipped code,
         # not LLM-authored, so it's intentionally exempt).
