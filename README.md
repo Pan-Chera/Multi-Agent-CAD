@@ -1,6 +1,4 @@
-# MAC — Multi-Agent CAD for Parts and Assemblies
-
-> Generate editable CAD parts and multi-part assemblies from natural language.
+# MAC — Multi-Agent CAD for Parts and Assemblies from Natural Language
 
 > Tsinghua University, College AI, IEI Lab
 
